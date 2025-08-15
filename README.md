@@ -1,6 +1,6 @@
 # Imagus Mass Downloader Mod
 
-This is a community-modified version of the Imagus extension, enhanced with powerful features for bulk downloading of media from web pages.
+This is a community-modified version of the Imagus extension for Google Chrome, based on https://github.com/Zren/chrome-extension-imagus and enhanced with powerful features for bulk downloading of media from web pages.
 
 ## Key Features
 
@@ -20,3 +20,6 @@ This is a community-modified version of the Imagus extension, enhanced with powe
 5. Select the `src` folder from the downloaded project files.
 
 The extension is now installed and ready to use.
+
+## Usage
+Pin the extension button on the Chrome toolbar, go to a page with a video or image gallery, click the button and follow the instructions that appear below it. After starting the bulk download, a new tab with progress, statistics and controls will open. Filtering options can be changed in the main extension settings, section Download All Settings.
