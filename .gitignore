@@ -1,0 +1,10 @@
+# Personal files and backups
+Memory_Bank.txt
+Backups/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Gemini CLI metadata
+.gemini/

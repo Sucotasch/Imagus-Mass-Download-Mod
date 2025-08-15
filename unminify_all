@@ -1,0 +1,13 @@
+#!/bin/bash
+
+unminify () {
+	inFile="$1"
+	outFile="unminified/$1"
+	echo "'$inFile'  =>  '$outFile'"
+	cat "$inFile" | jq | sponge "$outFile"
+}
+
+
+mkdir -p unminified/src
+unminify src/sieve.jsn
+unminify src/locales.jsn

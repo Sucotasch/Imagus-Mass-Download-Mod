@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Imagus Download Progress</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+    
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 20px;
+      text-align: center;
+    }
+    
+    h1 {
+      margin: 0;
+      font-size: 24px;
+    }
+    
+    .stats {
+      display: flex;
+      justify-content: space-around;
+      padding: 15px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e9ecef;
+    }
+    
+    .stat-item {
+      text-align: center;
+    }
+    
+    .stat-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: #495057;
+    }
+    
+    .stat-label {
+      font-size: 14px;
+      color: #6c757d;
+    }
+    
+    .controls {
+      padding: 15px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e9ecef;
+      display: flex;
+      justify-content: space-between;
+    }
+    
+    button {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    
+    button:hover {
+      background: #5a6fd8;
+    }
+    
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    
+    .progress-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    
+    .progress-table th {
+      background: #f8f9fa;
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #e9ecef;
+      position: sticky;
+      top: 0;
+    }
+    
+    .progress-table td {
+      padding: 12px;
+      border-bottom: 1px solid #e9ecef;
+    }
+    
+    .progress-table tr:hover {
+      background: #f8f9fa;
+    }
+    
+    .thumbnail {
+      width: 60px;
+      height: 60px;
+      object-fit: cover;
+      border-radius: 4px;
+      background: #eee;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #6c757d;
+      font-size: 12px;
+    }
+    
+    .status-badge {
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    
+    .status-pending {
+      background: #fff3cd;
+      color: #856404;
+    }
+    
+    .status-scanning {
+      background: #cce5ff;
+      color: #004085;
+    }
+    
+    .status-downloading {
+      background: #d1ecf1;
+      color: #0c5460;
+    }
+    
+    .status-completed {
+      background: #d4edda;
+      color: #155724;
+    }
+    
+    .status-failed {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #e9ecef;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea, #764ba2);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+    
+    .error-details {
+      color: #dc3545;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #6c757d;
+    }
+    
+    .file-info {
+      font-size: 12px;
+      color: #6c757d;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Imagus Download Progress</h1>
+    </header>
+    <p id="scanStatus" style="text-align: center; font-size: 1.1em; margin: 10px 0; color: #495057;"></p>
+    
+    <div class="stats">
+      <div class="stat-item">
+        <div class="stat-value" id="totalFiles">0</div>
+        <div class="stat-label">Total Files</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="completedFiles">0</div>
+        <div class="stat-label">Completed</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="pendingFiles">0</div>
+        <div class="stat-label">Pending</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="failedFiles">0</div>
+        <div class="stat-label">Failed</div>
+      </div>
+    </div>
+    
+    <div class="controls">
+      <div>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+      <div>
+        <button id="clearBtn">Clear Completed</button>
+        <button id="clearAllBtn" style="margin-left: 10px;">Clear All</button>
+        <button id="cancelAllBtn" style="margin-left: 10px; background-color: #dc3545;">Cancel All</button>
+      </div>
+    </div>
+    
+    <div id="progressContainer">
+      <table class="progress-table">
+        <thead>
+          <tr>
+            <th>Preview</th>
+            <th>File Info</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="progressBody">
+          <tr>
+            <td colspan="5" class="empty-state">
+              No downloads in progress. Start a download to see progress here.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  
+  <script src="js/download-progress.js"></script>
+</body>
+</html>
