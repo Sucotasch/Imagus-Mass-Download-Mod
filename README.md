@@ -5,10 +5,8 @@ This is a community-modified version of the Imagus extension for Google Chrome, 
 ## Key Features
 Core:
 Enlarges thumbnails and shows images/videos when hovering over links.
-▪ Filters
-An extensible set of rules for getting images, media or other content with higher resolution.
-▪ Permissions
-A list of user-defined rules to block/allow the extension to work on specific sites.
+▪ An extensible set of rules for getting images, media or other content with higher resolution.
+▪ A list of user-defined rules to block/allow the extension to work on specific sites.
 
 Mod:
 - **Mass Download:** Scan the current web page to find all media that can be zoomed by Imagus and download them all with a single click or hotkey (default: 'X').
