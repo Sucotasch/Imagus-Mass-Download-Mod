@@ -277,6 +277,14 @@
 			</div>
 
 			<div class="prow tiptop">
+				<div class="tip">Elements containing these words in their text or link will be skipped during the scan. Comma-separated.</div>
+				<label for="da_excludedKeywords">Excluded Keywords</label>
+				<span>
+					<input id="da_excludedKeywords" name="da_excludedKeywords" type="text" placeholder="e.g., login, register, cart, profile">
+				</span>
+			</div>
+
+			<div class="prow tiptop">
 				<div class="tip">The minimum size for an image to be downloaded (in KB).</div>
 				<label for="da_minImageSize">Min Image Size (KB)</label>
 				<span>
@@ -450,7 +458,7 @@ Pixlr|https://apps.pixlr.com/editor/?image=%url</textarea>
 
 				<li style="list-style-type: none" class="shortcuts">
 					<label><input name="keys_prefs" value="P"> <span data-lng="SC_PREFS"></span></label>
-					<label><input name="keys_flipH" value="Q"> <span data-lng="SC_FLIPV"></span></label>
+					<label><input name="keys_flipH" value="shift Q"> <span data-lng="SC_FLIPV"></span></label>
 					<label><input name="keys_flipV" value="W"> <span data-lng="SC_FLIPH"></span></label>
 					<label><input name="keys_rotL" value="E"> <span data-lng="SC_ROTL"></span></label>
 					<label><input name="keys_rotR" value="R"> <span data-lng="SC_ROTR"></span></label>
@@ -459,6 +467,7 @@ Pixlr|https://apps.pixlr.com/editor/?image=%url</textarea>
 					<label><input name="keys_mFitW" value="3"> <span data-lng="SC_MFITW"></span></label>
 					<label><input name="keys_mFitH" value="4"> <span data-lng="SC_MFITH"></span></label>
 					<label><input name="keys_send" value="S"> <span data-lng="SC_SENDTO"></span></label>
+					<label><b>Ctrl +</b> <input name="keys_downloadAll" value="Q"> Download All Media</label>
 				</li>
 
 				<li style="list-style-type: none"><h4>In album</h4></li>

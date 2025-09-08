@@ -45,6 +45,7 @@
 	"tls": {
 		"advanced": false,
 		"sieveAutoUpdate": false,
+		"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt",
 		"opzoom": true,
 		"sendToHosts": [
 			["+TinEye", "https://www.tineye.com/search?sort=size&order=desc&url=%url"],
@@ -63,7 +64,7 @@
 		"mFitH": "4",
 		"rotL": "E",
 		"rotR": "R",
-		"flipH": "Q",
+		"flipH": "shift Q",
 		"flipV": "W",
 		"prefs": "P",
 		"send": "S",
@@ -74,7 +75,8 @@
 		"hz_caption": "C",
 		"hz_open": "O",
 		"hz_history": "H",
-		"downloadAll": "X"
+		"downloadAll": "Q",
+		"downloadAll_ctrl": true
 	},
 	"da": {
 		"excludedExtensions": ".png, .svg",
@@ -83,8 +85,10 @@
 		"downloadOnUnknown": true,
 		"maxConcurrentDownloads": 3,
 		"maxConcurrentFilters": 5,
-		"resolutionTimeout": 8
+		"resolutionTimeout": 8,
+		"excludedKeywords": "login, signup, register, logout, signin, signout, faq, help, support, contact, about, terms, privacy, cookie"
 	},
 	"grants": [],
-	"sieveRepository": ""
+	"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt",
+	"sieve": ""
 }

@@ -3,6 +3,7 @@
 
 var prefs_, sieveResLocal;
 var downloadReferers = {};
+var downloadInitiatorTabId = null;
 
 // Queues and flags
 var filterQueue = [];
@@ -13,13 +14,33 @@ var scanInProgress = false;
 
 // Download progress tracking
 var downloadProgress = {};
+var downloadStats = { found: 0, filtered: 0, downloaded: 0 };
 var downloadProgressTabId = null;
+
+// URL Selection and Validation Global Variables
+var globalProcessedUrls = new Set(); // For deduplication across phases
+var urlValidationStats = {
+	totalValidations: 0,
+	successfulValidations: 0,
+	recentFailures: [],
+	circuitBreakerOpen: false
+};
 
 function checkAllQueuesEmpty() {
     if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
         if (downloadProgressTabId) {
-            chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }).catch(() => { downloadProgressTabId = null; });
+            chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }, function() {
+                if (chrome.runtime.lastError) {
+                    downloadProgressTabId = null;
+                }
+            });
         }
+    }
+}
+
+function forceAllComplete() {
+    if (downloadProgressTabId) {
+        chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }).catch(() => { downloadProgressTabId = null; });
     }
 }
 
@@ -35,53 +56,40 @@ function processFilterQueue() {
 
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
-        // Define settings from prefs inside the function to ensure they are fresh
         const excludedExtensions = ((prefs_ && prefs_.da && prefs_.da.excludedExtensions) || '.png, .svg').split(',').map(s => s.trim().toLowerCase());
         const minImageSize = ((prefs_ && prefs_.da && prefs_.da.minImageSize) || 45) * 1024;
         const minVideoSize = ((prefs_ && prefs_.da && prefs_.da.minVideoSize) || 2) * 1024 * 1024;
         const downloadOnUnknown = (prefs_ && prefs_.da) ? prefs_.da.downloadOnUnknown : true;
 
-        fetch(task.url)
-            .then(response => {
-                if (!scanInProgress) return Promise.reject('Scan canceled');
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                if (task.url.startsWith('http')) {
-                    const contentType = response.headers.get('Content-Type') || '';
-                    if (contentType.startsWith('text/html')) {
-                        updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
-                        return Promise.reject('HTML page');
-                    }
-                }
-                return response.blob();
-            })
-            .then(blob => {
-                if (!scanInProgress) return;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-                const size = blob.size;
-                const type = blob.type;
+        // Step 1: Attempt HEAD Request
+        fetch(task.url, { method: 'HEAD', signal: controller.signal, headers: { 'Referer': task.referer || '' } })
+            .then(response => {
+                clearTimeout(timeoutId);
+                const contentType = response.headers.get('Content-Type') || '';
+                const contentLength = response.headers.get('Content-Length');
+
+                if (!response.ok || !contentLength || contentType.startsWith('text/html')) {
+                    throw new Error('Fallback to GET');
+                }
+
+                const size = parseInt(contentLength, 10);
                 const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
 
-                if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
-                     updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
-                     return;
+                if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(contentType.split(';')[0])) {
+                    updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                    return Promise.reject('stop');
                 }
-                
-                let passed = true;
 
-                if (type.startsWith('image/')) {
-                    if (minImageSize > 0 && size < minImageSize) {
-                        passed = false;
-                    }
-                } else if (type.startsWith('video/')) {
-                    if (minVideoSize > 0 && size < minVideoSize) {
-                        passed = false;
-                    }
-                } else {
-                    if (!downloadOnUnknown) {
-                        passed = false; // If we don't know the type, and the user wants to skip unknowns
-                    }
+                let passed = true;
+                if (contentType.startsWith('image/')) {
+                    if (minImageSize > 0 && size < minImageSize) passed = false;
+                } else if (contentType.startsWith('video/')) {
+                    if (minVideoSize > 0 && size < minVideoSize) passed = false;
+                } else if (!downloadOnUnknown) {
+                    passed = false;
                 }
 
                 if (passed) {
@@ -92,15 +100,57 @@ function processFilterQueue() {
                 }
             })
             .catch(error => {
-                if (error === 'Scan canceled' || error === 'HTML page') return; // Do nothing, already handled
-                if (downloadOnUnknown) {
-                    if (scanInProgress) { // Check again in case it was canceled during error handling
-                        downloadQueue.push(task);
-                        processDownloadQueue();
-                    }
-                } else {
-                    updateDownloadProgress(task.url, 'failed', 0, 'Filter error', null, task);
+                clearTimeout(timeoutId);
+                if (error === 'stop' || !scanInProgress) {
+                    return; // Controlled stop, not a real error
                 }
+
+                // Step 2: Fallback to GET Request
+                return fetch(task.url, { headers: { 'Referer': task.referer || '' } })
+                    .then(response => {
+                        if (!scanInProgress) return Promise.reject('Scan canceled');
+                        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                        
+                        const contentType = response.headers.get('Content-Type') || '';
+                        if (contentType.startsWith('text/html')) {
+                            updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
+                            return Promise.reject('HTML page');
+                        }
+                        return response.blob();
+                    })
+                    .then(blob => {
+                        if (!scanInProgress) return;
+
+                        const size = blob.size;
+                        const type = blob.type;
+                        const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
+
+                        if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
+                            updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                            return;
+                        }
+
+                        let passed = true;
+                        if (type.startsWith('image/')) {
+                            if (minImageSize > 0 && size < minImageSize) passed = false;
+                        } else if (type.startsWith('video/')) {
+                            if (minVideoSize > 0 && size < minVideoSize) passed = false;
+                        } else if (!downloadOnUnknown) {
+                            passed = false;
+                        }
+
+                        if (passed) {
+                            downloadQueue.push(task);
+                            processDownloadQueue();
+                        } else {
+                            updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                        }
+                    })
+                    .catch(getError => {
+                        if (getError.name !== 'AbortError' && getError !== 'Scan canceled' && getError !== 'HTML page') {
+                            updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
+                        }
+                    });
             })
             .finally(() => {
                 activeFilters--;
@@ -144,6 +194,7 @@ function processDownloadQueue() {
 						updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
 						activeDownloads--;
 						processDownloadQueue();
+						setTimeout(checkAllQueuesEmpty, 100);
 					} else {
                         updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
 					}
@@ -166,6 +217,11 @@ chrome.downloads.onChanged.addListener(function(delta) {
                     // Try to find the task in our downloadProgress
                     const existingTask = downloadProgress[url] ? downloadProgress[url].task : null;
                     updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
+                    
+                    downloadStats.downloaded++;
+                    if (downloadProgressTabId) {
+                        chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats });
+                    }
                 }
                 activeDownloads--;
                 processDownloadQueue();
@@ -222,6 +278,11 @@ var withBaseURI = function(base, link, addProtocol) {
 };
 
 var updateSieve = function(localUpdate, callback) {
+	// Если не указано явно и настройки не загружены - используем локальное обновление
+	if (localUpdate === undefined) {
+		localUpdate = !prefs_ || !prefs_.tls;
+	}
+	
 	var newSieve;
 	var xhr = new XMLHttpRequest;
 
@@ -265,7 +326,7 @@ var updateSieve = function(localUpdate, callback) {
 		this.onload = null;
 
 		try {
-			if ( !localUpdate && !this.responseText ) {
+			if (!localUpdate && (this.status !== 200 || !this.responseText)) {
 				throw new Error('HTTP ' + this.status);
 			}
 
@@ -278,28 +339,50 @@ var updateSieve = function(localUpdate, callback) {
 				ex.message
 			);
 
-			if ( !localUpdate ) {
-				cfg.get('sieve', function(items) {
-					if ( !items.sieve ) {
-						updateSieve(true);
-					}
-				});
+			if (callback) {
+				callback(null);
 			}
 		}
 	};
 
+	xhr.onerror = function() {
+		console.warn(app.name + ': Network error while updating sieve');
+		if (callback) {
+			callback(null);
+		}
+	};
+
 	xhr.overrideMimeType('application/json;charset=utf-8');
-	xhr.open(
-		'GET',
-		withBaseURI(document.baseURI, 'sieve.jsn'),
-		true
-	);
+	
+	// Use repository URL from preferences for online update
+	var sieveURL;
+	if (localUpdate) {
+		sieveURL = withBaseURI(document.baseURI, 'sieve.jsn');
+	} else {
+		// Проверяем наличие настроек и URL репозитория
+		if (!prefs_ || !prefs_.tls) {
+			console.warn(app.name + ': Preferences not initialized yet');
+			if (callback) {
+				callback(null);
+			}
+			return;
+		}
+		
+		// Используем URL из настроек или настроек по умолчанию
+		sieveURL = prefs_.sieveRepository || "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt";
+	}
+		
+	xhr.open('GET', sieveURL, true);
 	xhr.send(null);
 };
 
 var cacheSieve = function(newSieve) {
 	if(typeof newSieve === 'string') {
-		newSieve = JSON.parse(newSieve);
+		if (newSieve === '') {
+			newSieve = {};
+		} else {
+			newSieve = JSON.parse(newSieve);
+		}
 	} else {
 		newSieve = JSON.parse(JSON.stringify(newSieve));
 	}
@@ -464,6 +547,282 @@ var updatePrefs = function(sentPrefs, callback) {
 	defPrefs.send(null);
 };
 
+// URL Selection and Validation Functions
+
+// Heuristic scoring for URL quality assessment
+function calculateUrlHeuristicScore(url) {
+	let score = 0;
+	
+	// Media file extensions (high priority)
+	if (/\.(jpg|jpeg|png|gif|webp|mp4|webm|avi|mov)$/i.test(url)) {
+		score += 50;
+	}
+	
+	// Dimension indicators in URL
+	const dimensionMatch = url.match(/(\d{3,4})[x×](\d{3,4})/);
+	if (dimensionMatch) {
+		const width = parseInt(dimensionMatch[1]);
+		const height = parseInt(dimensionMatch[2]);
+		score += Math.min(width * height / 10000, 30); // Cap at +30
+	}
+	
+	// Quality indicators
+	if (/(?:original|full|large|master|raw|hd|high)/i.test(url)) {
+		score += 20;
+	}
+	if (/(?:thumb|small|preview|mini|tiny)/i.test(url)) {
+		score -= 20;
+	}
+	
+	// Protocol preference
+	if (url.startsWith('https://')) {
+		score += 5;
+	}
+	
+	// Clean URLs (no query params often indicate direct files)
+	if (!url.includes('?')) {
+		score += 10;
+	}
+	
+	// Penalize script-like URLs
+	if (/\.(php|asp|jsp|cgi|do)/.test(url)) {
+		score -= 15;
+	}
+	
+	return score;
+}
+
+// Validate single URL using current version's proven approach
+async function validateSingleUrlContent(url, referer, timeout = 3000) {
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), timeout);
+	
+	try {
+		// Use same approach as current filtering: full fetch
+		const response = await fetch(url, {
+			signal: controller.signal,
+			headers: { 'Referer': referer }
+		});
+		
+		clearTimeout(timeoutId);
+		
+		if (!response.ok) {
+			return { 
+				url, 
+				isValid: false, 
+				reason: `HTTP ${response.status}`,
+				contentType: '',
+				contentLength: 0
+			};
+		}
+		
+		const contentType = response.headers.get('Content-Type') || '';
+		const contentLength = parseInt(response.headers.get('Content-Length')) || 0;
+		
+		// Check for HTML error pages (same as current version)
+		if (contentType.startsWith('text/html')) {
+			return { 
+				url, 
+				isValid: false, 
+				reason: 'HTML page',
+				contentType,
+				contentLength
+			};
+		}
+		
+		// Validate media content
+		const isValidMedia = contentType.startsWith('image/') || 
+						   contentType.startsWith('video/') || 
+						   contentType.startsWith('audio/');
+		
+		// For unknown types, check content size
+		if (!isValidMedia && contentLength < 1024) {
+			return { 
+				url, 
+				isValid: false, 
+				reason: 'too small',
+				contentType,
+				contentLength
+			};
+		}
+		
+		return {
+			url,
+			isValid: isValidMedia || contentLength > 1024,
+			contentType,
+			contentLength,
+			reason: 'valid'
+		};
+		
+	} catch (error) {
+		clearTimeout(timeoutId);
+		return { 
+			url, 
+			isValid: false, 
+			reason: error.name === 'AbortError' ? 'timeout' : 'network-error',
+			contentType: '',
+			contentLength: 0
+		};
+	}
+}
+
+// Find best URL from array using hybrid approach
+async function findBestUrlWithValidation(urlArray, referer) {
+    if (!urlArray || urlArray.length === 0) {
+        return null;
+    }
+
+    // Filter out invalid entries and create a clean array of URLs
+    const cleanUrlArray = urlArray.filter(url => typeof url === 'string' && url);
+    if (cleanUrlArray.length === 0) {
+        return null;
+    }
+
+	// Check circuit breaker
+	const recentFailureRate = urlValidationStats.recentFailures.length / 10;
+	if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
+		console.warn('[URL Selection] Circuit breaker open, using heuristic only');
+		// Fall back to heuristic selection
+		const scored = cleanUrlArray.map(url => ({
+			url,
+			score: calculateUrlHeuristicScore(url)
+		})).sort((a, b) => b.score - a.score);
+		
+		return scored.length > 0 ? scored[0].url : null;
+	}
+	
+	// Pre-filter with heuristics
+	const scoredUrls = cleanUrlArray.map(url => ({
+		url: url,
+		score: calculateUrlHeuristicScore(url)
+	})).sort((a, b) => b.score - a.score);
+	
+	// Limit validation to top candidates
+	const candidatesToValidate = scoredUrls.slice(0, Math.min(5, scoredUrls.length));
+	
+	try {
+		// Validate in parallel with timeout protection
+		const validationPromises = candidatesToValidate.map(({ url }) => 
+			validateSingleUrlContent(url, referer, 1500)
+		);
+		
+		const results = await Promise.allSettled(validationPromises);
+		
+		// Process results
+		const validUrls = results
+			.filter(r => r.status === 'fulfilled' && r.value.isValid)
+			.map(r => r.value)
+			.sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
+		
+		// Update statistics
+		urlValidationStats.totalValidations++;
+		if (validUrls.length > 0) {
+			urlValidationStats.successfulValidations++;
+			// Clear recent failures on success
+			urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
+			urlValidationStats.circuitBreakerOpen = false;
+			
+			return validUrls[0].url;
+		}
+		
+		// No valid URLs found, record failure and use heuristic fallback
+		urlValidationStats.recentFailures.push(Date.now());
+		urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
+		
+		console.warn('[URL Selection] No valid URLs found, using heuristic fallback');
+		return scoredUrls.length > 0 ? scoredUrls[0].url : null;
+		
+	} catch (error) {
+		// Record failure
+		urlValidationStats.recentFailures.push(Date.now());
+		urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
+		
+		// Open circuit breaker if too many recent failures
+		if (urlValidationStats.recentFailures.length >= 8) {
+			urlValidationStats.circuitBreakerOpen = true;
+			setTimeout(() => {
+				urlValidationStats.circuitBreakerOpen = false;
+			}, 30000); // 30 second circuit breaker
+		}
+		
+		console.warn('[URL Selection] Validation failed, using heuristic fallback:', error);
+		return scoredUrls.length > 0 ? scoredUrls[0].url : null;
+	}
+}
+
+// Main group processing function
+async function processUrlGroupsWithValidation(groups, referer) {
+	let processedGroups = 0;
+	let foundUrls = 0;
+	
+	for (const group of groups) {
+		try {
+			const bestUrl = await findBestUrlWithValidation(group.urls, referer);
+			
+			if (bestUrl) {
+				if (!globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
+					globalProcessedUrls.add(bestUrl);
+					foundUrls++;
+					
+					// Create task using same structure as single URLs
+					const task = {
+						url: bestUrl,
+						referer: referer,
+						priorityExt: (bestUrl.match(/#([\da-z]{3,4})$/) || [])[1],
+						ext: {
+							img: 'jpg',
+							video: 'mp4',
+							audio: 'mp3'
+						}[((/.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(bestUrl)) ? 'video' : 'img')],
+						isFromArray: true,
+						originalArraySize: group.urls.length
+					};
+					
+					// Use existing filtering pipeline
+					filterQueue.push(task);
+					processFilterQueue();
+				}
+			}
+		} catch (error) {
+			console.warn('[URL Group Processing] Error processing group:', error);
+			// Continue with next group
+		}
+		
+		processedGroups++;
+		
+		// Send progress updates
+		if (downloadProgressTabId) {
+			chrome.tabs.sendMessage(downloadProgressTabId, {
+				cmd: 'updateStatus',
+				status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
+				done: false
+			}, function(response) {
+				if (chrome.runtime.lastError) {
+					downloadProgressTabId = null;
+				}
+			});
+		}
+		
+		// Rate limiting to prevent server overload
+		await new Promise(resolve => setTimeout(resolve, 200));
+	}
+	
+	// Signal completion back to content script
+	chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+		if (tabs[0]) {
+			chrome.tabs.sendMessage(tabs[0].id, {
+				cmd: 'groupAnalysisComplete',
+				processedCount: foundUrls,
+				totalGroups: processedGroups
+			}, function(response) {
+				if (chrome.runtime.lastError) {
+					console.log('Content script may have been unloaded');
+				}
+			});
+		}
+	});
+}
+
 var onMessage = function(ev, origin, postMessage) {
 	var msg, e;
 
@@ -541,12 +900,23 @@ var onMessage = function(ev, origin, postMessage) {
 			break;
 
 		case 'update_sieve':
-			updateSieve(true, function(newSieve) {
-				e.postMessage({updated_sieve: newSieve});
+			updateSieve(false, function(newSieve) {
+				if (newSieve) {
+					e.postMessage({updated_sieve: newSieve});
+				} else {
+					// If online update fails, try local update
+					updateSieve(true, function(newSieve) {
+						e.postMessage({updated_sieve: newSieve});
+					});
+				}
 			});
 			break;
 
-		case 'downloadMass':
+		        case 'downloadMass':
+			if (globalProcessedUrls.has(msg.url)) {
+				break;
+			}
+			globalProcessedUrls.add(msg.url);
 			filterQueue.push({
 				url: msg.url,
 				referer: msg.referer,
@@ -555,6 +925,14 @@ var onMessage = function(ev, origin, postMessage) {
 				isPrivate: e.isPrivate
 			});
 			processFilterQueue();
+			break;
+		
+		case 'updateFilterStats':
+			downloadStats.found = msg.found;
+			downloadStats.filtered = msg.filtered;
+			if (downloadProgressTabId) {
+				chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats });
+			}
 			break;
 		
 		case 'downloadProgressUpdate':
@@ -597,6 +975,11 @@ var onMessage = function(ev, origin, postMessage) {
 
 		case 'updateStatus':
 			chrome.runtime.sendMessage(msg);
+			break;
+
+		case 'resolveAndDownloadGroups':
+			// Process URL groups asynchronously
+			processUrlGroupsWithValidation(msg.groups, msg.referer);
 			break;
 
 		case 'resolve':
@@ -669,7 +1052,8 @@ var onMessage = function(ev, origin, postMessage) {
 					}
 					var group = data.params.length;
 					group = Array.apply(null, Array(group)).map(function(_, i) { return i; }).join('|');
-					group = RegExp('([^\\]?)\$(' + group + ')', 'g');
+					group = RegExp('([^\\]?)\
+$(' + group + ')', 'g');
 					group = !group.test(sel) ? el : sel.replace(group, function(m, prefix, id) {
 						return id < data.params.length && prefix !== '\\' ? prefix + (data.params[id] ? RegExp.escape(data.params[id]) : '') : m;
 					});
@@ -718,13 +1102,8 @@ var onMessage = function(ev, origin, postMessage) {
 		
 		case 'getDownloadStatus':
 			e.postMessage({
-				items: downloadProgress
-			});
-			break;
-		
-		case 'getDownloadStatus':
-			e.postMessage({
-				items: downloadProgress
+				items: downloadProgress,
+				stats: downloadStats
 			});
 			break;
 		
@@ -739,7 +1118,7 @@ var onMessage = function(ev, origin, postMessage) {
 			processDownloadQueue();
 			break;
 
-		case 'retryDownload':
+		        case 'retryDownload':
 			const urlToRetry = msg.url;
 			if (!urlToRetry) break;
 
@@ -763,6 +1142,11 @@ var onMessage = function(ev, origin, postMessage) {
 		
 		case 'openDownloadProgress':
 			scanInProgress = true; // Reset cancellation flag for a new run
+			// Reset progress tracking for new session
+			downloadProgress = {};
+			globalProcessedUrls.clear(); // Clear deduplication set for new session
+			downloadInitiatorTabId = origin.tab ? origin.tab.id : null;
+			// Note: downloadStats will be updated when content script sends actual data
 			openDownloadProgressTab(origin.tab);
 			break;
 		
@@ -772,10 +1156,12 @@ var onMessage = function(ev, origin, postMessage) {
 					delete downloadProgress[url];
 				}
 			}
+			downloadStats.downloaded = 0;
 			break;
 
 		case 'clearAllDownloads':
 			downloadProgress = {};
+			downloadStats = { found: 0, filtered: 0, downloaded: 0 };
 			break;
 
 		case 'cancelAllDownloads':
@@ -793,15 +1179,17 @@ var onMessage = function(ev, origin, postMessage) {
 				}
 			}
 
-			chrome.tabs.query({}, function(tabs) {
-				for (var i=0; i<tabs.length; ++i) {
-					chrome.tabs.sendMessage(tabs[i].id, { cmd: 'stopScanning' }, () => { 
-						void chrome.runtime.lastError; 
-					});
-				}
-			});
-            // Notify the progress page that the process is complete to stop the refresh timer.
-            checkAllQueuesEmpty();
+			activeDownloads = 0;
+			activeFilters = 0;
+
+			if (downloadInitiatorTabId) {
+				chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }, () => { 
+					void chrome.runtime.lastError; 
+				});
+				downloadInitiatorTabId = null;
+			}
+			// Force completion after stopping all scans
+			forceAllComplete();
 			break;
 	}
 
@@ -811,6 +1199,10 @@ var onMessage = function(ev, origin, postMessage) {
 
 // Download progress tracking functions
 function updateDownloadProgress(url, status, progress, error, downloadId, task) {
+	if (typeof url !== 'string' || !url) {
+		console.error('Invalid URL passed to updateDownloadProgress:', url);
+		return;
+	}
 	if (!downloadProgress[url]) {
 		downloadProgress[url] = {
 			url: url,
@@ -889,48 +1281,60 @@ document.title = ':: ' + app.name + ' ::';
 cfg.migrateOldStorage(
 	['version', 'hz', 'tls', 'keys', 'grants', 'sieve'],
 	function() {
-		cfg.get('version', function(items) {
-			var day = 24 * 3600 * 1000;
-			var version = items.version || {};
-			var lastCheck = version.lastCheck || 0;
+		// Сначала загружаем все настройки
+		updatePrefs(null, function() {
+			cfg.get('version', function(items) {
+				var day = 24 * 3600 * 1000;
+				var version = items.version || {};
+				var lastCheck = version.lastCheck || 0;
 
-			if ( version.current !== app.version ) {
-				var oldVersion = version.current;
-				version = {
-					current: app.version,
-					lastCheck: Date.now() + (Math.random() * 15 | 0) * day
-				};
-				console.info(
-					app.name + ' has been '
-						+ (oldVersion ? 'updated!' : 'installed!')
-				);
-				cfg.set({version: version}, function() {
-					if ( oldVersion ) {
+				if ( version.current !== app.version ) {
+					var oldVersion = version.current;
+					version = {
+						current: app.version,
+						lastCheck: Date.now() + (Math.random() * 15 | 0) * day
+					};
+					console.info(
+						app.name + ' has been '
+							+ (oldVersion ? 'updated!' : 'installed!')
+					);
+					cfg.set({version: version}, function() {
+						// Загружаем локальные фильтры sieve при первой установке или обновлении
 						updateSieve(true);
-					} else {
-						updatePrefs();
-					}
-				});
-				return;
-			}
-
-			updatePrefs(null, function() {
-				if ( !prefs_.tls.sieveAutoUpdate ) {
+					});
 					return;
 				}
 
-				if ( lastCheck && Date.now() - lastCheck < 15 * day ) {
+			// Проверяем наличие настроек перед автообновлением
+			if (!prefs_ || !prefs_.tls) {
+				return;
+			}
+
+			// Проверяем настройки автообновления
+			if (!prefs_.tls.sieveAutoUpdate) {
+				return;
+			}
+
+			var sieveURL = (prefs_ && prefs_.sieveRepository)
+				? prefs_.sieveRepository
+				: withBaseURI(document.baseURI, 'info.json');
+
+				if ( lastCheck && Date.now() - lastCheck < 15 * day && sieveURL.indexOf('info.json') > -1) {
 					return;
 				}
 
 				var xhr = new XMLHttpRequest;
 				xhr.onload = function() {
 					try {
-						// {sieve_ver: timestamp}
-						var check = JSON.parse(this.responseText);
+						if (sieveURL.indexOf('info.json') > -1) {
+							// {sieve_ver: timestamp}
+							var check = JSON.parse(this.responseText);
 
-						if (lastCheck < check.sieve_ver) {
-							updateSieve();
+							if (lastCheck < check.sieve_ver) {
+								updateSieve(false);  // явно указываем онлайн-обновление
+							}
+						} else {
+							updateSieve(false);  // явно указываем онлайн-обновление
 						}
 					} catch (ex) {
 						console.warn(app.name + ': update check failed!', ex);
@@ -940,7 +1344,7 @@ cfg.migrateOldStorage(
 					cfg.set({version: version});
 				};
 
-				xhr.open('GET', withBaseURI(document.baseURI, 'info.json', true));
+				xhr.open('GET', sieveURL, true);
 				xhr.send(null);
 			});
 		});

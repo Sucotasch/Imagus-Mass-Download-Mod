@@ -7,6 +7,8 @@
   const completedFilesEl = document.getElementById('completedFiles');
   const pendingFilesEl = document.getElementById('pendingFiles');
   const failedFilesEl = document.getElementById('failedFiles');
+  const statsFoundEl = document.getElementById('stats-found');
+  const statsFilteredEl = document.getElementById('stats-filtered');
   const refreshBtn = document.getElementById('refreshBtn');
   const clearBtn = document.getElementById('clearBtn');
   const clearAllBtn = document.getElementById('clearAllBtn');
@@ -23,13 +25,18 @@
   
   // Handle status response from background script
   function handleStatusResponse(response) {
-    if (response && response.items) {
-        const newItems = response.items;
-        downloadItems = {}; // Clear the old list to ensure a fresh start
-        for (const id in newItems) {
-            // Process each item through the standard update function
-            // to ensure a consistent object structure (including the 'id' property).
-            updateDownloadItem(newItems[id]);
+    if (response) {
+        if (response.items) {
+            const newItems = response.items;
+            downloadItems = {}; // Clear the old list to ensure a fresh start
+            for (const id in newItems) {
+                // Process each item through the standard update function
+                // to ensure a consistent object structure (including the 'id' property).
+                updateDownloadItem(newItems[id]);
+            }
+        }
+        if (response.stats) {
+            updateGlobalStats(response.stats);
         }
         updateDisplay();
     }
@@ -93,6 +100,8 @@
             clearInterval(refreshIntervalId);
             refreshIntervalId = null;
         }
+    } else if (request.cmd === 'updateStats') {
+        updateGlobalStats(request.stats);
     }
   }
   
@@ -116,34 +125,37 @@
     
     // Update item properties
     Object.assign(downloadItems[id], data);
-    
-    // Update stats
-    updateStats();
   }
-  
-  // Update statistics
-  function updateStats() {
+
+  // Calculate and display summary stats from the items table
+  function calculateAndDisplaySummaryStats() {
     const items = Object.values(downloadItems);
-    downloadStats.total = items.length;
-    downloadStats.completed = items.filter(item => item.status === 'completed').length;
-    downloadStats.pending = items.filter(item => item.status === 'pending' || item.status === 'scanning' || item.status === 'downloading').length;
-    downloadStats.failed = items.filter(item => item.status === 'failed' || item.status === 'canceled').length;
-    downloadStats.skipped = items.filter(item => item.status === 'skipped').length;
+    const completed = items.filter(item => item.status === 'completed').length;
+    const failed = items.filter(item => item.status === 'failed' || item.status === 'canceled').length;
+    
+    // This now refers to the number of items to be downloaded after filtering
+    totalFilesEl.textContent = items.length; 
+    completedFilesEl.textContent = completed;
+    failedFilesEl.textContent = failed;
   }
   
-  // Update the display
+  // Update the global stats display (found, filtered)
+  function updateGlobalStats(stats) {
+      if (stats.found !== undefined) {
+          statsFoundEl.textContent = stats.found;
+      }
+      if (stats.filtered !== undefined) {
+          statsFilteredEl.textContent = stats.filtered;
+      }
+      if (stats.downloaded !== undefined) {
+          completedFilesEl.textContent = stats.downloaded;
+      }
+  }
+
+  // Update the entire display
   function updateDisplay() {
-    updateStats();
-    updateStatsDisplay();
+    calculateAndDisplaySummaryStats();
     renderTable();
-  }
-  
-  // Update statistics display
-  function updateStatsDisplay() {
-    totalFilesEl.textContent = downloadStats.total;
-    completedFilesEl.textContent = downloadStats.completed;
-    pendingFilesEl.textContent = downloadStats.pending;
-    failedFilesEl.textContent = downloadStats.failed;
   }
   
   // Render the table
@@ -173,7 +185,7 @@
         </td>
         <td style="word-break: break-all;">
           <div><strong>${item.fileName}</strong></div>
-          <div class="file-info">${item.url}</div>
+          <div class="file-info"><a href="${item.url}" target="_blank" rel="noopener noreferrer">${item.url}</a></div>
           <div class="file-info">${item.fileType.toUpperCase()}</div>
         </td>
         <td>
@@ -207,6 +219,12 @@
   
   // Get thumbnail based on file type
   function getThumbnail(item) {
+    const failedPreviewSvg = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNCRkJEQkQiIHN0cm9rZS1widthPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0yMS40NCAxMS4wNWExMC4wMiAxMC4wMiAwIDAgMC0xOC44OCAwIi8+PHBhdGggZD0iTTMuNSAyMS41YTEwLjAyIDEwLjAyIDAgMCAwIDE4Ljg4IDAiLz48cGF0aCBkPSJtMTAuNDYgMTAuNDZhMiAyIDAgMCAwLTIuOTIgMCIvPjxwYXRoIGQ9Ik0xNC44IDE0LjhhMiAyIDAgMCAxLTIuOTIgMCIvPjxwYXRoIGQ9Ik0xNC41IDE5LjUgOS41IDE0LjUiLz48cGF0aCBkPSJtNSAxMC0xLTEiLz48cGF0aCBkPSJtMTkgMTQgMSAxIi8+PHBhdGggZD0ibTIgMiAyMCAyMCIgc3Ryb2tlPSIjRDMyRjJGIiBzdHJva2Utd2lkdGg9IjIuNSIvPjwvc3ZnPg==';
+    
+    if (item.status === 'failed' && item.fileType === 'image') {
+        return `<img src="${failedPreviewSvg}" alt="Failed Preview" style="width:100%;height:100%;object-fit:contain;padding:8px;">`;
+    }
+
     if (item.fileType === 'image') {
       return `<img src="${item.url}" alt="Preview" style="width:100%;height:100%;object-fit:cover;">`;
     } else if (item.fileType === 'video') {
@@ -271,6 +289,11 @@
             delete downloadItems[id];
         }
     });
+	updateGlobalStats({
+		found: statsFoundEl.textContent,
+		filtered: statsFilteredEl.textContent,
+		downloaded: 0
+	});
     updateDisplay();
   }
 
@@ -278,6 +301,7 @@
   function clearAll() {
     chrome.runtime.sendMessage({ cmd: 'clearAllDownloads' });
     downloadItems = {};
+	updateGlobalStats({ found: 0, filtered: 0, downloaded: 0 });
     updateDisplay();
   }
   

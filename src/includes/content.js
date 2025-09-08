@@ -18,6 +18,49 @@ if (imgDoc && imgDoc.parentNode === doc.body && imgDoc.src === win.location.href
 	return;
 }
 
+// Helper functions for the mass downloader
+var _isElementVisible = function(el) {
+    if (!el) {
+        return false;
+    }
+
+    if (!el.isConnected) {
+        return false;
+    }
+
+    if (el.hidden) {
+        return false;
+    }
+    
+    if (el.closest('details:not([open])')) {
+        return false;
+    }
+    
+    if (el.offsetWidth === 0 || el.offsetHeight === 0) {
+        var rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) {
+            return false;
+        }
+    }
+
+    var style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || parseFloat(style.opacity) === 0) {
+        return false;
+    }
+
+    return true;
+};
+
+var _hasStopWords = function(el, keywords) {
+    if (!keywords) return false;
+    const text = (el.textContent || el.alt || el.title || '').toLowerCase();
+    const href = (el.href || '').toLowerCase();
+    return keywords.some(word => {
+        const wordBoundary = new RegExp('\b' + word + '\b');
+        return wordBoundary.test(text) || href.includes(word);
+    });
+};
+
 var flip = function(el, ori) {
 	if (!el.scale) {
 		el.scale = {'h': 1, 'v': 1};
@@ -2982,6 +3025,16 @@ var PVI = {
 			return;
 		}
 
+		key = shortcut.key(e);
+
+		if (cfg.keys.downloadAll_ctrl ? e.ctrlKey : !e.ctrlKey) {
+			if (key === cfg.keys.downloadAll) {
+				PVI.downloadAll(document);
+				pdsp(e);
+				return;
+			}
+		}
+
 		if (shortcut.isModifier(e)) {
 			if (PVI.keyup_freeze_on || typeof PVI.freeze === 'number') {
 				return;
@@ -3023,8 +3076,6 @@ var PVI = {
 				PVI.mover({'target': PVI.lastScrollTRG});
 			}
 		}
-
-		key = shortcut.key(e);
 
 		// pressing Escape before the delay is elapsed
 		if (PVI.state < 3 && PVI.fireHide && key === 'Esc') {
@@ -4317,6 +4368,14 @@ var PVI = {
 		if ( d.cmd === 'resolved' ) {
 			// id can be -1
 			var trg = PVI.resolving[d.id] || PVI.TRG;
+
+			// If the target element that initiated the request is no longer available,
+			// then there is nothing to do.
+			if (!trg) {
+				delete PVI.resolving[d.id];
+				return;
+			}
+
 			var rule = cfg.sieve[d.params.rule.id];
 
 			delete PVI.resolving[d.id];
@@ -4697,7 +4756,7 @@ var PVI = {
         PVI.downloadAllAudioEl = doc.createElement('audio');
         PVI.downloadAllAudioEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'; // 1-second silent wav
         PVI.downloadAllAudioEl.loop = true;
-        PVI.downloadAllAudioEl.play().catch(e => console.warn('Could not play keep-awake audio.'));
+        PVI.downloadAllAudioEl.play().catch(e => {});
     },
 
     _stopKeepAwake: function(finalMessage) {
@@ -4720,38 +4779,111 @@ var PVI = {
         }
     },
 
+    filterQueueAsynchronously: function(elementsToFilter) {
+        const chunkSize = 100;
+        let index = 0;
+        const filteredElements = [];
+        const keywords = (cfg.da && cfg.da.excludedKeywords) ? cfg.da.excludedKeywords.split(',').map(w => w.trim()).filter(w => w) : [];
+
+        function processChunk() {
+            if (!PVI.downloadAllActive) {
+                PVI._stopKeepAwake('Scanning canceled.');
+                return;
+            }
+
+            let chunkEnd = Math.min(index + chunkSize, elementsToFilter.length);
+            
+            for (let i = index; i < chunkEnd; i++) {
+                const el = elementsToFilter[i];
+                if (_isElementVisible(el) && !_hasStopWords(el, keywords)) {
+                    filteredElements.push(el);
+                } else {
+                    PVI.downloadAllFiltered++; // Increment counter for skipped items
+                }
+            }
+            
+            index += chunkSize;
+            
+            const progressText = `Filtering ${index > elementsToFilter.length ? elementsToFilter.length : index}/${elementsToFilter.length}... Found ${filteredElements.length} candidates.`;
+            PVI._updateDownloadAllStatus(progressText);
+
+            if (index < elementsToFilter.length) {
+                setTimeout(processChunk, 50);
+            } else {
+                // Filtering is complete
+                PVI.downloadAllQueue = filteredElements;
+                PVI.downloadAllTotal = filteredElements.length;
+                PVI.downloadAllFound = 0;
+                
+                // Send the final filtered count to the background script
+                Port.send({ cmd: 'updateFilterStats', found: elementsToFilter.length, filtered: PVI.downloadAllFiltered });
+
+                const finalMessage = `Filtering complete. Found ${PVI.downloadAllTotal} items to process.`;
+                PVI._updateDownloadAllStatus(finalMessage);
+                PVI.processNextInQueue();
+            }
+        }
+
+        processChunk();
+    },
+
 	downloadAll: function(doc, sendResponse, sender) {
 		if (PVI.downloadAllActive) {
 			if (sendResponse) sendResponse({status: 'already running'});
 			return;
 		}
 		PVI.downloadAllActive = true;
-		PVI.downloadAllQueue = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
-		PVI.downloadAllTotal = PVI.downloadAllQueue.length;
+        
+        const allElements = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
+        
+		PVI.downloadAllTotal = allElements.length; // Initial total for display
 		PVI.downloadAllFound = 0;
+        PVI.downloadAllFiltered = 0; // Initialize filtered counter
 		PVI.downloadAllUniqueUrls.clear();
+		PVI.ambiguousUrlGroups = []; // Initialize URL array collection for two-phase processing
 		PVI.downloadAllSendResponse = sendResponse || null;
 
-        PVI._updateDownloadAllStatus(`Found ${PVI.downloadAllTotal} items. Starting scan...`);
+        PVI._updateDownloadAllStatus(`Found ${PVI.downloadAllTotal} potential items. Starting filtering...`);
         PVI._startKeepAwake();
 		
 		Port.send({ cmd: 'openDownloadProgress', tab: sender ? sender.tab : null });
 		
-PVI.processNextInQueue();
+        // Start the new asynchronous filtering stage
+        PVI.filterQueueAsynchronously(allElements);
 	},
 
 	processNextInQueue: function() {
+		PVI.reset(true);
 		if (!PVI.downloadAllActive) {
             PVI._stopKeepAwake('Scanning canceled.');
             return;
         }
 
 		if (PVI.downloadAllQueue.length === 0) {
-            const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
-			Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items.`, done: true });
-			PVI.downloadAllActive = false;
-            PVI._stopKeepAwake(finalMessage);
-			if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({status: 'done'});
+			if (PVI.ambiguousUrlGroups.length > 0) {
+				// Phase 2: Send arrays for background processing
+				const statusMessage = `Scan complete. Found ${PVI.downloadAllFound} direct items. Analyzing ${PVI.ambiguousUrlGroups.length} complex items...`;
+				PVI._updateDownloadAllStatus(statusMessage);
+				Port.send({ cmd: 'updateStatus', status: statusMessage, done: false });
+				
+				// Send groups for processing but keep control
+				Port.send({
+					cmd: 'resolveAndDownloadGroups',
+					groups: PVI.ambiguousUrlGroups,
+					referer: window.location.href
+				});
+				
+				// DON'T set downloadAllActive = false yet!
+				// Background will signal when complete
+			} else {
+				// No arrays to process, complete immediately
+				const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
+				PVI._updateDownloadAllStatus(finalMessage);
+				Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items.`, done: true });
+				PVI.downloadAllActive = false;
+				PVI._stopKeepAwake(finalMessage);
+				if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({status: 'done'});
+			}
 			return;
 		}
 
@@ -4790,6 +4922,25 @@ PVI.processNextInQueue();
             }
 
 			if (result) {
+				// Phase 1: Handle URL arrays by collecting them for background processing
+				if (Array.isArray(result) && result.length > 1) {
+					// Store array for background processing
+					PVI.ambiguousUrlGroups.push({
+						urls: result,
+						referer: window.location.href,
+						elementInfo: {
+							tagName: (PVI.TRG && PVI.TRG.tagName) || 'unknown',
+							className: (PVI.TRG && PVI.TRG.className) || '',
+							src: (PVI.TRG && (PVI.TRG.src || PVI.TRG.href)) || ''
+						}
+					});
+					
+					// Continue to next item immediately
+					setTimeout(PVI.processNextInQueue, 100);
+					return;
+				}
+				
+				// Handle single URLs (existing logic)
 				let url = Array.isArray(result) ? (result.find(u => u[0] === '#') || result[0]) : result;
 				url = url.replace(/^#/, '');
 
@@ -4806,6 +4957,7 @@ PVI.processNextInQueue();
 							video: 'mp4',
 							audio: 'mp3'
 						}[((/\\.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(url)) ? 'video' : 'img')],
+						isSingle: true // Mark for deduplication
 					});
                     Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
 					setTimeout(PVI.processNextInQueue, 500); // Delay before next item
@@ -4841,6 +4993,52 @@ PVI.processNextInQueue();
 		}
 	}
 };
+
+// Add completion handler for group analysis
+PVI.handleGroupAnalysisComplete = function(processedCount) {
+	const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
+	PVI._updateDownloadAllStatus(finalMessage);
+	Port.send({ cmd: 'updateStatus', status: finalMessage, done: true });
+	
+	PVI.downloadAllActive = false;
+	PVI._stopKeepAwake(finalMessage);
+	if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({status: 'done'});
+};
+
+// Add message listener for group completion
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+	chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+		if (message.cmd === 'groupAnalysisComplete') {
+			if (PVI.handleGroupAnalysisComplete) {
+				PVI.handleGroupAnalysisComplete(message.processedCount || 0);
+			}
+			return true; // Indicate that we've handled the message
+		} else if (message.cmd === 'stopScanning') {
+			if (PVI.downloadAllActive) {
+				console.log('Mass Download scan stopped by background script.');
+				PVI.downloadAllActive = false;
+				if (typeof hideDownloadStatus === 'function') {
+					hideDownloadStatus();
+				} else if (typeof PVI._updateDownloadAllStatus === 'function') {
+					PVI._updateDownloadAllStatus('Scan canceled by user.', true);
+					setTimeout(() => PVI._updateDownloadAllStatus('', false), 2000);
+				}
+			}
+			return true;
+		}
+		// Handle other messages if needed
+		return false; // Let other listeners handle this message
+	});
+}
+
+// Remove the old Port.addListener code since it won't work
+// if (typeof Port !== 'undefined' && Port.addListener) {
+//	Port.addListener('groupAnalysisComplete', function(msg) {
+//		if (PVI.handleGroupAnalysisComplete) {
+//			PVI.handleGroupAnalysisComplete(msg.processedCount || 0);
+//		}
+//	});
+// }
 
 PVI.capturedMoveEvent = null;
 PVI.onInitMouseMove = function(e) {
