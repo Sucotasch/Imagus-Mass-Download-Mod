@@ -9,12 +9,14 @@ Enlarges thumbnails and shows images/videos when hovering over links.
 ▪ A list of user-defined rules to block/allow the extension to work on specific sites.
 
 Mod:
-- **Mass Download:** Scan the current web page to find all media that can be zoomed by Imagus and download them all with a single click.
+- **Advanced Mass Download:** A completely redesigned two-phase algorithm scans the page, validates URLs in the background, and uses heuristics to find the best quality media, ensuring more accurate and reliable downloads.
+- **Quick Start Hotkey:** Press `Ctrl+Q` to instantly start the mass download process on the current page.
 - **Persistent Progress UI:** A dedicated tab opens to show the real-time progress of all downloads. It provides detailed stats on completed, pending, failed, and skipped files.
-- **Pre-download Filtering:** To avoid downloading unwanted thumbnails and icons, the mod includes a powerful pre-filtering system:
-  - **Filter by Type:** Automatically skips common UI image types (e.g., `.png`, `.svg`).
-  - **Filter by Size:** Checks the file size before downloading and skips files that are too small (e.g., images < 45KB, videos < 2MB). These values are configurable in the extension's options.
-- **Operation Control:** The download process can be fully canceled at any time from the progress page. Failed or canceled downloads can be retried individually.
+- **Powerful Pre-download Filtering:** To avoid downloading unwanted content, the mod includes a robust filtering system:
+  - **Pre-scan Filtering:** In-page filtering of invisible elements and elements matching stop-words *before* the main scan, significantly improving performance on large pages.
+  - **Stop-Words:** Configure a list of keywords in the settings to exclude links containing them (e.g., "avatar", "profile").
+  - **Filter by Type & Size:** Automatically skips common UI image types and checks file sizes before downloading to avoid tiny images or videos. These values are configurable.
+- **Operation Control:** The download process can be fully canceled at any time. Failed or canceled downloads can be retried individually from the progress page.
 
 ## Installation
 
