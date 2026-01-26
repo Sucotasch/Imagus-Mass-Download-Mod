@@ -576,7 +576,7 @@ function onMessage(message, sender, sendResponse) {
                 });
             } else {
                 console.info(manifest.name + ': Progress tab disabled in settings');
-                downloadProgressTabId = null;
+                // Don't reset downloadProgressTabId - preserve for next time setting is enabled
             }
             break;
 
