@@ -996,249 +996,250 @@ async function processFilterQueue() {
 
             if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(contentType.split(';')[0])) {
                 updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
-                activeFilters--;
-                continue;
-            }
-
-            let passed = true;
-            if (contentType.startsWith('image/')) {
-                if (minImageSize > 0 && size < minImageSize) passed = false;
-            } else if (contentType.startsWith('video/')) {
-                if (minVideoSize > 0 && size < minVideoSize) passed = false;
-            } else if (!downloadOnUnknown) {
-                passed = false;
-            }
-
-            if (passed) {
-                downloadQueue.push(task);
-                processDownloadQueue();
+                // Don't continue - let finally block run to call checkAllQueuesEmpty
             } else {
-                updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
-            }
-        } catch (error) {
-            clearTimeout(timeoutId);
-            if (!scanInProgress) {
-                activeFilters--;
-                continue;
-            }
+                if (contentType.startsWith('image/')) {
+                    if (minImageSize > 0 && size < minImageSize) passed = false;
+                } else if (contentType.startsWith('video/')) {
+                    if (minVideoSize > 0 && size < minVideoSize) passed = false;
+                } else if (!downloadOnUnknown) {
+                    passed = false;
+                }
 
-            try {
-                // GET fallback
-                let response = await fetch(task.url, { headers: { 'Referer': task.referer || '' } });
+                if (passed) {
+                    downloadQueue.push(task);
+                    processDownloadQueue();
+                } else {
+                    updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                }
+            } catch (error) {
+                clearTimeout(timeoutId);
                 if (!scanInProgress) {
                     activeFilters--;
                     continue;
                 }
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-                const contentType = response.headers.get('Content-Type') || '';
-                if (contentType.startsWith('text/html')) {
-                    updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
-                } else {
-                    const blob = await response.blob();
-                    const size = blob.size;
-                    const type = blob.type;
-                    const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
+                try {
+                    // GET fallback
+                    let response = await fetch(task.url, { headers: { 'Referer': task.referer || '' } });
+                    if (!scanInProgress) {
+                        activeFilters--;
+                        continue;
+                    }
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-                    if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
-                        updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                    const contentType = response.headers.get('Content-Type') || '';
+                    if (contentType.startsWith('text/html')) {
+                        updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
                     } else {
-                        let passed = true;
-                        if (type.startsWith('image/')) {
-                            if (minImageSize > 0 && size < minImageSize) passed = false;
-                        } else if (type.startsWith('video/')) {
-                            if (minVideoSize > 0 && size < minVideoSize) passed = false;
-                        } else if (!downloadOnUnknown) {
-                            passed = false;
-                        }
+                        const blob = await response.blob();
+                        const size = blob.size;
+                        const type = blob.type;
+                        const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
 
-                        if (passed) {
-                            downloadQueue.push(task);
-                            processDownloadQueue();
+                        if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
+                            updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
                         } else {
-                            updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                            let passed = true;
+                            if (type.startsWith('image/')) {
+                                if (minImageSize > 0 && size < minImageSize) passed = false;
+                            } else if (type.startsWith('video/')) {
+                                if (minVideoSize > 0 && size < minVideoSize) passed = false;
+                            } else if (!downloadOnUnknown) {
+                                passed = false;
+                            }
+
+                            if (passed) {
+                                downloadQueue.push(task);
+                                processDownloadQueue();
+                            } else {
+                                updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                            }
                         }
                     }
+                } catch (getError) {
+                    if (getError.name !== 'AbortError' && scanInProgress) {
+                        updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
+                    }
                 }
-            } catch (getError) {
-                if (getError.name !== 'AbortError' && scanInProgress) {
-                    updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
-                }
-            }
-        } finally {
-            activeFilters--;
-            processFilterQueue();
-            setTimeout(checkAllQueuesEmpty, 100);
-        }
-    }
-}
-
-function processDownloadQueue() {
-    let maxConcurrentDownloads = (cachedPrefs.da && cachedPrefs.da.maxConcurrentDownloads) || 3;
-    if (maxConcurrentDownloads === 0) maxConcurrentDownloads = Infinity;
-
-    while (activeDownloads < maxConcurrentDownloads && downloadQueue.length > 0) {
-        const task = downloadQueue.shift();
-        activeDownloads++;
-
-        updateDownloadProgress(task.url, 'downloading', 0, null, null, task);
-
-        chrome.downloads.download({
-            url: task.url,
-            filename: task.filename || (task.ext ? undefined : task.priorityExt),
-            conflictAction: "uniquify"
-        }, function (downloadId) {
-            if (chrome.runtime.lastError) {
-                updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
-                activeDownloads--;
-                processDownloadQueue();
-                setTimeout(checkAllQueuesEmpty, 100);
-            } else {
-                updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
-            }
-        });
-    }
-}
-
-chrome.downloads.onChanged.addListener(function (delta) {
-    chrome.downloads.search({ id: delta.id }, function (results) {
-        if (!results || !results[0]) return;
-        const download = results[0];
-        const url = download.url;
-        const existingTask = downloadProgress[url] ? downloadProgress[url].task : null;
-
-        if (delta.state) {
-            if (delta.state.current === 'complete') {
-                updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
-                downloadStats.downloaded++;
-                if (downloadProgressTabId) {
-                    chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
-                        console.warn(manifest.name + ': Failed to send stats to progress tab');
-                    });
-                }
-                activeDownloads--;
-                processDownloadQueue();
-                setTimeout(checkAllQueuesEmpty, 100);
-            } else if (delta.state.current === 'interrupted') {
-                updateDownloadProgress(url, 'failed', 0, 'Download interrupted', delta.id, existingTask);
-                activeDownloads--;
-                processDownloadQueue();
-                setTimeout(checkAllQueuesEmpty, 100);
-            }
-        } else if (download.totalBytes > 0) {
-            const progress = Math.round((download.bytesReceived / download.totalBytes) * 100);
-            updateDownloadProgress(url, 'downloading', progress, null, delta.id, existingTask);
-        }
-    });
-});
-
-function calculateUrlHeuristicScore(url) {
-    let score = 0;
-    if (/\.(jpg|jpeg|png|gif|webp|mp4|webm|avi|mov)$/i.test(url)) score += 50;
-    const dimensionMatch = url.match(/(\d{3,4})[x×](\d{3,4})/);
-    if (dimensionMatch) {
-        const width = parseInt(dimensionMatch[1]);
-        const height = parseInt(dimensionMatch[2]);
-        score += Math.min(width * height / 10000, 30);
-    }
-    if (/(?:original|full|large|master|raw|hd|high)/i.test(url)) score += 20;
-    if (/(?:thumb|small|preview|mini|tiny)/i.test(url)) score -= 20;
-    if (url.startsWith('https://')) score += 5;
-    if (!url.includes('?')) score += 10;
-    if (/\.(php|asp|jsp|cgi|do)/.test(url)) score -= 15;
-    return score;
-}
-
-async function validateSingleUrlContent(url, referer, timeout = 3000) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-    try {
-        const response = await fetch(url, {
-            signal: controller.signal,
-            headers: { 'Referer': referer }
-        });
-        clearTimeout(timeoutId);
-        if (!response.ok) return { url, isValid: false, reason: `HTTP ${response.status}` };
-        const contentType = response.headers.get('Content-Type') || '';
-        const contentLength = parseInt(response.headers.get('Content-Length')) || 0;
-        if (contentType.startsWith('text/html')) return { url, isValid: false, reason: 'HTML page' };
-        const isValidMedia = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/');
-        if (!isValidMedia && contentLength < 1024) return { url, isValid: false, reason: 'too small' };
-        return { url, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
-    } catch (error) {
-        clearTimeout(timeoutId);
-        return { url, isValid: false, reason: error.name === 'AbortError' ? 'timeout' : 'network-error' };
-    }
-}
-
-async function findBestUrlWithValidation(urlArray, referer) {
-    const cleanUrlArray = urlArray.filter(url => typeof url === 'string' && url);
-    if (cleanUrlArray.length === 0) return null;
-    const recentFailureRate = urlValidationStats.recentFailures.length / 10;
-    if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
-        const scored = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
-        return scored[0].url;
-    }
-    const scoredUrls = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
-    const candidatesToValidate = scoredUrls.slice(0, Math.min(5, scoredUrls.length));
-    try {
-        const results = await Promise.allSettled(candidatesToValidate.map(({ url }) => validateSingleUrlContent(url, referer, 1500)));
-        const validUrls = results.filter(r => r.status === 'fulfilled' && r.value.isValid).map(r => r.value).sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
-        urlValidationStats.totalValidations++;
-        if (validUrls.length > 0) {
-            urlValidationStats.successfulValidations++;
-            urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
-            urlValidationStats.circuitBreakerOpen = false;
-            return validUrls[0].url;
-        }
-        urlValidationStats.recentFailures.push(Date.now());
-        urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
-        return scoredUrls[0].url;
-    } catch (error) {
-        urlValidationStats.recentFailures.push(Date.now());
-        urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
-        if (urlValidationStats.recentFailures.length >= 8) {
-            urlValidationStats.circuitBreakerOpen = true;
-            setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
-        }
-        return scoredUrls[0].url;
-    }
-}
-
-async function processUrlGroupsWithValidation(groups, referer) {
-    let processedGroups = 0;
-    let foundUrls = 0;
-    for (const group of groups) {
-        if (!scanInProgress) break;
-        try {
-            const bestUrl = await findBestUrlWithValidation(group.urls, referer);
-            if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
-                globalProcessedUrls.add(bestUrl);
-                foundUrls++;
-                const task = {
-                    url: bestUrl,
-                    referer: referer,
-                    priorityExt: (bestUrl.match(/#([\da-z]{3,4})$/) || [])[1],
-                    ext: { img: 'jpg', video: 'mp4', audio: 'mp3' }[((/.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(bestUrl)) ? 'video' : 'img')],
-                    isFromArray: true,
-                    originalArraySize: group.urls.length
-                };
-                filterQueue.push(task);
+            } finally {
+                activeFilters--;
                 processFilterQueue();
+                setTimeout(checkAllQueuesEmpty, 100);
             }
-        } catch (error) { }
-        processedGroups++;
-        if (downloadProgressTabId) {
-            chrome.tabs.sendMessage(downloadProgressTabId, {
-                cmd: 'updateStatus',
-                status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
-                done: false
-            }).catch(() => {
-                console.warn(manifest.name + ': Failed to send message to progress tab');
+        }
+}
+
+    function processDownloadQueue() {
+        let maxConcurrentDownloads = (cachedPrefs.da && cachedPrefs.da.maxConcurrentDownloads) || 3;
+        if (maxConcurrentDownloads === 0) maxConcurrentDownloads = Infinity;
+
+        while (activeDownloads < maxConcurrentDownloads && downloadQueue.length > 0) {
+            const task = downloadQueue.shift();
+            activeDownloads++;
+
+            updateDownloadProgress(task.url, 'downloading', 0, null, null, task);
+
+            chrome.downloads.download({
+                url: task.url,
+                filename: task.filename || (task.ext ? undefined : task.priorityExt),
+                conflictAction: "uniquify"
+            }, function (downloadId) {
+                if (chrome.runtime.lastError) {
+                    updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
+                    activeDownloads--;
+                    processDownloadQueue();
+                    setTimeout(checkAllQueuesEmpty, 100);
+                } else {
+                    updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
+                }
             });
         }
     }
-    if (downloadInitiatorTabId) {
-        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls }).catch(() => { downloadInitiatorTabId = null; });
+
+    chrome.downloads.onChanged.addListener(function (delta) {
+        chrome.downloads.search({ id: delta.id }, function (results) {
+            if (!results || !results[0]) return;
+            const download = results[0];
+            const url = download.url;
+            const existingTask = downloadProgress[url] ? downloadProgress[url].task : null;
+
+            if (delta.state) {
+                if (delta.state.current === 'complete') {
+                    updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
+                    downloadStats.downloaded++;
+                    activeDownloads--;
+
+                    // Only send updateStats if there are still active downloads
+                    // This prevents triggering startAutoRefresh when downloads are actually complete
+                    if (downloadProgressTabId && activeDownloads > 0) {
+                        chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
+                            console.warn(manifest.name + ': Failed to send stats to progress tab');
+                        });
+                    }
+
+                    processDownloadQueue();
+                    setTimeout(checkAllQueuesEmpty, 100);
+                } else if (delta.state.current === 'interrupted') {
+                    updateDownloadProgress(url, 'failed', 0, 'Download interrupted', delta.id, existingTask);
+                    activeDownloads--;
+                    processDownloadQueue();
+                    setTimeout(checkAllQueuesEmpty, 100);
+                }
+            } else if (download.totalBytes > 0) {
+                const progress = Math.round((download.bytesReceived / download.totalBytes) * 100);
+                updateDownloadProgress(url, 'downloading', progress, null, delta.id, existingTask);
+            }
+        });
+    });
+
+    function calculateUrlHeuristicScore(url) {
+        let score = 0;
+        if (/\.(jpg|jpeg|png|gif|webp|mp4|webm|avi|mov)$/i.test(url)) score += 50;
+        const dimensionMatch = url.match(/(\d{3,4})[x×](\d{3,4})/);
+        if (dimensionMatch) {
+            const width = parseInt(dimensionMatch[1]);
+            const height = parseInt(dimensionMatch[2]);
+            score += Math.min(width * height / 10000, 30);
+        }
+        if (/(?:original|full|large|master|raw|hd|high)/i.test(url)) score += 20;
+        if (/(?:thumb|small|preview|mini|tiny)/i.test(url)) score -= 20;
+        if (url.startsWith('https://')) score += 5;
+        if (!url.includes('?')) score += 10;
+        if (/\.(php|asp|jsp|cgi|do)/.test(url)) score -= 15;
+        return score;
     }
-}
+
+    async function validateSingleUrlContent(url, referer, timeout = 3000) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        try {
+            const response = await fetch(url, {
+                signal: controller.signal,
+                headers: { 'Referer': referer }
+            });
+            clearTimeout(timeoutId);
+            if (!response.ok) return { url, isValid: false, reason: `HTTP ${response.status}` };
+            const contentType = response.headers.get('Content-Type') || '';
+            const contentLength = parseInt(response.headers.get('Content-Length')) || 0;
+            if (contentType.startsWith('text/html')) return { url, isValid: false, reason: 'HTML page' };
+            const isValidMedia = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/');
+            if (!isValidMedia && contentLength < 1024) return { url, isValid: false, reason: 'too small' };
+            return { url, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
+        } catch (error) {
+            clearTimeout(timeoutId);
+            return { url, isValid: false, reason: error.name === 'AbortError' ? 'timeout' : 'network-error' };
+        }
+    }
+
+    async function findBestUrlWithValidation(urlArray, referer) {
+        const cleanUrlArray = urlArray.filter(url => typeof url === 'string' && url);
+        if (cleanUrlArray.length === 0) return null;
+        const recentFailureRate = urlValidationStats.recentFailures.length / 10;
+        if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
+            const scored = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
+            return scored[0].url;
+        }
+        const scoredUrls = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
+        const candidatesToValidate = scoredUrls.slice(0, Math.min(5, scoredUrls.length));
+        try {
+            const results = await Promise.allSettled(candidatesToValidate.map(({ url }) => validateSingleUrlContent(url, referer, 1500)));
+            const validUrls = results.filter(r => r.status === 'fulfilled' && r.value.isValid).map(r => r.value).sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
+            urlValidationStats.totalValidations++;
+            if (validUrls.length > 0) {
+                urlValidationStats.successfulValidations++;
+                urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
+                urlValidationStats.circuitBreakerOpen = false;
+                return validUrls[0].url;
+            }
+            urlValidationStats.recentFailures.push(Date.now());
+            urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
+            return scoredUrls[0].url;
+        } catch (error) {
+            urlValidationStats.recentFailures.push(Date.now());
+            urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
+            if (urlValidationStats.recentFailures.length >= 8) {
+                urlValidationStats.circuitBreakerOpen = true;
+                setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
+            }
+            return scoredUrls[0].url;
+        }
+    }
+
+    async function processUrlGroupsWithValidation(groups, referer) {
+        let processedGroups = 0;
+        let foundUrls = 0;
+        for (const group of groups) {
+            if (!scanInProgress) break;
+            try {
+                const bestUrl = await findBestUrlWithValidation(group.urls, referer);
+                if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
+                    globalProcessedUrls.add(bestUrl);
+                    foundUrls++;
+                    const task = {
+                        url: bestUrl,
+                        referer: referer,
+                        priorityExt: (bestUrl.match(/#([\da-z]{3,4})$/) || [])[1],
+                        ext: { img: 'jpg', video: 'mp4', audio: 'mp3' }[((/.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(bestUrl)) ? 'video' : 'img')],
+                        isFromArray: true,
+                        originalArraySize: group.urls.length
+                    };
+                    filterQueue.push(task);
+                    processFilterQueue();
+                }
+            } catch (error) { }
+            processedGroups++;
+            if (downloadProgressTabId) {
+                chrome.tabs.sendMessage(downloadProgressTabId, {
+                    cmd: 'updateStatus',
+                    status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
+                    done: false
+                }).catch(() => {
+                    console.warn(manifest.name + ': Failed to send message to progress tab');
+                });
+            }
+        }
+        if (downloadInitiatorTabId) {
+            chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls }).catch(() => { downloadInitiatorTabId = null; });
+        }
+    }
