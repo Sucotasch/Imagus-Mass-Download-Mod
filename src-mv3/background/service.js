@@ -581,9 +581,15 @@ function onMessage(message, sender, sendResponse) {
             break;
 
         case 'registerProgressTab':
-            downloadProgressTabId = sender.tab?.id;
+            // Only set ID if not already set (prevent overwriting during reuse)
+            if (!downloadProgressTabId) {
+                downloadProgressTabId = sender.tab?.id;
+                console.info(manifest.name + ': Progress tab registered with ID:', downloadProgressTabId);
+            } else {
+                console.info(manifest.name + ': Progress tab already registered, ignoring duplicate registration');
+            }
             // Send current state immediately
-            chrome.tabs.sendMessage(downloadProgressTabId, {
+            chrome.tabs.sendMessage(sender.tab?.id, {
                 cmd: 'updateStatus',
                 status: scanInProgress ? 'Scanning...' : '',
                 items: downloadProgress,
@@ -622,7 +628,10 @@ function onMessage(message, sender, sendResponse) {
             downloadStats.found += (msg.found || 0);
             downloadStats.filtered += (msg.filtered || 0);
             if (downloadProgressTabId) {
-                chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => { downloadProgressTabId = null; });
+                chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
+                    // Tab might just be loading, don't reset ID immediately
+                    console.warn(manifest.name + ': Failed to send stats to progress tab');
+                });
             }
             break;
 
@@ -1095,7 +1104,9 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 if (downloadProgressTabId) {
-                    chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => { downloadProgressTabId = null; });
+                    chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
+                        console.warn(manifest.name + ': Failed to send stats to progress tab');
+                    });
                 }
                 activeDownloads--;
                 processDownloadQueue();
@@ -1214,7 +1225,9 @@ async function processUrlGroupsWithValidation(groups, referer) {
                 cmd: 'updateStatus',
                 status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
                 done: false
-            }).catch(() => { downloadProgressTabId = null; });
+            }).catch(() => {
+                console.warn(manifest.name + ': Failed to send message to progress tab');
+            });
         }
     }
     if (downloadInitiatorTabId) {
