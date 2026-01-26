@@ -1,0 +1,111 @@
+{
+	"hz": {
+		"deactivate": 1,
+		"actTrigger": "ctrl",
+		"delay": 300,
+		"delayOnIdle": true,
+		"zoomresized": 25,
+		"markOnHovered": "styled",
+		"preload": 0,
+		"placement": 0,
+		"fullspace": true,
+		"hiRes": true,
+		"hiResOnFZ": 3,
+		"thumbAsBG": false,
+		"thumbAsBGColor": "#c3c3c3",
+		"thumbAsBGOpacity": 0.3,
+		"hideIdleCursor": 500,
+		"history": true,
+		"mediaVolume": 40,
+		"scrollDelay": 0,
+		"pileWheel": 1,
+		"pileCycle": false,
+		"capStyle": 0,
+		"capPos": 0,
+		"capWrapByDef": true,
+		"capWH": false,
+		"capText": true,
+		"capLinkText": true,
+		"capFlashCount": 1,
+		"fzDefault": false,
+		"fzMode": 1,
+		"fzOnPress": 2,
+		"resizeModeType": "memory",
+		"follow": true,
+		"move": true,
+		"waitHide": false,
+		"minPopupDistance": 20,
+		"popupCss": "margin: 3px;\nbackground: #f8f8ff padding-box;\nborder: 3px solid hsla(0, 0%, 95%, 0.6);\nborder-radius: 2px;\nbox-shadow: 0 0 2px #666;\ntransition: opacity 0.2s;",
+		"hoverCss": "padding: 1px;\ntranslate: -1px -1px;\noutline: rgb(255, 120, 120) dashed 2px;\nbox-shadow: white 0px 0px 0px 2px;",
+		"scOffInInput": true,
+		"scrollVideoWithCtrl": false,
+		"LDRsrc": "",
+		"LDRcss": "",
+		"LDRdelay": 300,
+		"LDRbgOpacity": 100,
+		"LDRanimate": true
+	},
+	"tls": {
+		"advanced": false,
+		"autoUpdateSieve": true,
+		"opzoom": true,
+		"sendToHosts": [
+			[
+				"+TinEye",
+				"https://www.tineye.com/search?sort=size&order=desc&url=%url"
+			],
+			[
+				"Google",
+				"https://lens.google.com/uploadbyurl?url=%url"
+			],
+			[
+				"Bing",
+				"https://www.bing.com/images/searchbyimage?cbir=sbi&imgurl=%url"
+			],
+			[
+				"Yandex",
+				"https://yandex.com/images/search?rpt=imageview&url=%url"
+			],
+			[
+				"ZXing QRCode",
+				"https://zxing.org/w/decode?full=true&u=%url"
+			],
+			[
+				"ImgOps",
+				"https://imgops.com/%raw_url"
+			]
+		]
+	},
+	"keys": {
+		"mOrig": "1",
+		"mFit": "2",
+		"mFitW": "3",
+		"mFitH": "4",
+		"rotL": "E",
+		"rotR": "R",
+		"flipH": "Q",
+		"flipV": "W",
+		"prefs": "P",
+		"send": "S",
+		"hz_toggle": "D",
+		"hz_massDownload": "D",
+		"hz_preload": "L",
+		"hz_fullZm": "Z",
+		"hz_fullSpace": "F",
+		"hz_caption": "C",
+		"hz_open": "O",
+		"hz_history": "H"
+	},
+	"da": {
+		"maxConcurrentFilters": 5,
+		"maxConcurrentDownloads": 3,
+		"minImageSize": 45,
+		"minVideoSize": 2,
+		"excludedExtensions": ".png, .svg, .ico, .gif",
+		"excludedKeywords": "ad, banner, icon, logo, avatar, profile, user",
+		"downloadOnUnknown": true,
+		"resolutionTimeout": 8
+	},
+	"grants": [],
+	"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt"
+}
