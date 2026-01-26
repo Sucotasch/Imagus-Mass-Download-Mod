@@ -105,7 +105,9 @@
 		"excludedExtensions": ".png, .svg, .ico, .gif",
 		"excludedKeywords": "ad, banner, icon, logo, avatar, profile, user",
 		"downloadOnUnknown": true,
-		"resolutionTimeout": 8
+		"resolutionTimeout": 8,
+		"showProgressTab": false,
+		"maxProgressRecords": 100
 	},
 	"grants": [],
 	"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt",

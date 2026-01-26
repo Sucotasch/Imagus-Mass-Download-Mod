@@ -502,16 +502,87 @@ function onMessage(message, sender, sendResponse) {
             return true;
         }
 
+            // Improvement #9: Smart Progress Tab Management
+            async function getOrCreateProgressTab(initiatorTabId) {
+                // Check if existing tab is still valid
+                if (downloadProgressTabId) {
+                    try {
+                        const existingTab = await chrome.tabs.get(downloadProgressTabId);
+                        if (existingTab && existingTab.url.includes('download-progress.html')) {
+                            console.info(manifest.name + ': Reusing existing progress tab');
+
+                            // Reset stats for new download
+                            downloadStats = { found: 0, filtered: 0, downloaded: 0 };
+
+                            // Limit progress records to prevent memory bloat
+                            const maxRecords = cachedPrefs?.da?.maxProgressRecords || 100;
+                            const recordKeys = Object.keys(downloadProgress);
+                            if (recordKeys.length > maxRecords) {
+                                // Keep only most recent records
+                                const toRemove = recordKeys.slice(0, recordKeys.length - maxRecords);
+                                toRemove.forEach(key => delete downloadProgress[key]);
+                                console.info(manifest.name + ': Trimmed progress records to ' + maxRecords);
+                            }
+
+                            return downloadProgressTabId;
+                        }
+                    } catch (e) {
+                        console.info(manifest.name + ': Progress tab no longer exists');
+                    }
+                }
+
+                // Create new tab next to initiator
+                let createOptions = {
+                    url: chrome.runtime.getURL('options/download-progress.html'),
+                    active: false  // Never focus (per user request)
+                };
+
+                // Position next to initiator tab
+                if (initiatorTabId) {
+                    try {
+                        const initiatorTab = await chrome.tabs.get(initiatorTabId);
+                        createOptions.index = initiatorTab.index + 1;
+                        createOptions.openerTabId = initiatorTabId;
+                    } catch (e) {
+                        console.warn(manifest.name + ': Could not get initiator tab position');
+                    }
+                }
+
+                const newTab = await chrome.tabs.create(createOptions);
+                downloadProgressTabId = newTab.id;
+                downloadProgress = {};  // Clear old records
+
+                console.info(manifest.name + ': Created new progress tab at index ' + createOptions.index);
+                return downloadProgressTabId;
+            }
+
         case 'openDownloadProgress':
             downloadInitiatorTabId = sender.tab?.id;
-            downloadStats = { found: 0, filtered: 0, downloaded: 0 };
             scanInProgress = true;
-            chrome.tabs.create({
-                url: chrome.runtime.getURL('options/download-progress.html'),
-                active: false
-            }, function (tab) {
-                downloadProgressTabId = tab.id;
-            });
+
+            // Improvement #9: Optional progress tab opening
+            const showProgressTab = cachedPrefs?.da?.showProgressTab ?? false;
+
+            if (showProgressTab) {
+                getOrCreateProgressTab(downloadInitiatorTabId).then(tabId => {
+                    // Send initial state when tab is ready
+                    setTimeout(() => {
+                        chrome.tabs.sendMessage(tabId, {
+                            cmd: 'updateStatus',
+                            status: 'Starting scan...',
+                            items: downloadProgress,
+                            stats: downloadStats
+                        }).catch(() => {
+                            console.warn(manifest.name + ': Progress tab not ready yet');
+                        });
+                    }, 100);
+                }).catch(err => {
+                    console.error(manifest.name + ': Failed to create progress tab:', err);
+                });
+            } else {
+                console.info(manifest.name + ': Progress tab disabled in settings');
+                downloadProgressTabId = null;
+            }
             break;
 
         case 'registerProgressTab':
@@ -817,6 +888,15 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
 // update badge on tab activation
 chrome.tabs.onActivated.addListener(async function (info) {
     updateBadge(info.tabId, (await chrome.tabs.get(info.tabId)).url);
+});
+
+// Improvement #9: Clean up when progress tab is closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+    if (tabId === downloadProgressTabId) {
+        console.info(manifest.name + ': Progress tab closed by user');
+        downloadProgressTabId = null;
+        // Note: We don't stop scanning, just lose the UI
+    }
 });
 
 
