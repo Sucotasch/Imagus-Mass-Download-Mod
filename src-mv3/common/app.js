@@ -77,7 +77,7 @@ window.addEventListener(
 
 // Port handling
 const Port = {
-    setMessageListener: function (callback) {
+    listen: function (callback) {
         if (this.listener) {
             // Check if chrome.runtime exists before accessing onMessage
             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
