@@ -321,9 +321,14 @@ async function getOrCreateProgressTab(initiatorTabId) {
         try {
             const existingTab = await chrome.tabs.get(downloadProgressTabId);
             if (existingTab && existingTab.url.includes('download-progress.html')) {
-                // Verify tab is actually responsive by sending a ping
+                // Verify tab is actually responsive by sending a ping with timeout
                 try {
-                    await chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'ping' });
+                    const pingPromise = chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'ping' });
+                    const timeoutPromise = new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('Ping timeout')), 500)
+                    );
+
+                    await Promise.race([pingPromise, timeoutPromise]);
                     console.info(manifest.name + ': Reusing existing progress tab (ID: ' + downloadProgressTabId + ')');
 
                     // Reset stats for new download
@@ -341,8 +346,11 @@ async function getOrCreateProgressTab(initiatorTabId) {
 
                     return downloadProgressTabId;
                 } catch (pingError) {
-                    console.warn(manifest.name + ': Progress tab exists but not responsive, creating new one');
-                    downloadProgressTabId = null;
+                    // Tab exists but didn't respond - it might be loading or busy
+                    // We'll create a new tab, but DON'T reset the ID yet
+                    // Let registerProgressTab handle it when the new tab loads
+                    console.warn(manifest.name + ': Progress tab not responding (' + pingError.message + '), will create new tab');
+                    // Fall through to create new tab
                 }
             }
         } catch (e) {
@@ -589,15 +597,31 @@ function onMessage(message, sender, sendResponse) {
             break;
 
         case 'registerProgressTab':
-            // Only set ID if not already set (prevent overwriting during reuse)
-            if (!downloadProgressTabId) {
-                downloadProgressTabId = sender.tab?.id;
+            const newTabId = sender.tab?.id;
+
+            // If we don't have a progress tab ID yet, or the new tab is different, update it
+            if (!downloadProgressTabId || downloadProgressTabId !== newTabId) {
+                // Check if old tab still exists
+                if (downloadProgressTabId && downloadProgressTabId !== newTabId) {
+                    chrome.tabs.get(downloadProgressTabId).then(oldTab => {
+                        if (oldTab) {
+                            // Old tab exists, close it to prevent duplicates
+                            console.info(manifest.name + ': Closing old progress tab (ID: ' + downloadProgressTabId + ')');
+                            chrome.tabs.remove(downloadProgressTabId).catch(() => { });
+                        }
+                    }).catch(() => {
+                        // Old tab doesn't exist, that's fine
+                    });
+                }
+
+                downloadProgressTabId = newTabId;
                 console.info(manifest.name + ': Progress tab registered with ID:', downloadProgressTabId);
             } else {
                 console.info(manifest.name + ': Progress tab already registered, ignoring duplicate registration');
             }
+
             // Send current state immediately
-            chrome.tabs.sendMessage(sender.tab?.id, {
+            chrome.tabs.sendMessage(newTabId, {
                 cmd: 'updateStatus',
                 status: scanInProgress ? 'Scanning...' : '',
                 items: downloadProgress,
