@@ -63,23 +63,23 @@ var sieve_sec,
 
                         if (rname) {
                             rname = rname.replace(/[\s,\r\n]+/g, "_").substring(0, 50);
-                        if (t.parentNode.rule !== rname) {
-                            if (SieveUI.sieve[rname]) {
-                                color_trans(t, "red");
-                                return;
+                            if (t.parentNode.rule !== rname) {
+                                if (SieveUI.sieve[rname]) {
+                                    color_trans(t, "red");
+                                    return;
+                                }
+                                if (t.parentNode.rule && SieveUI.sieve[t.parentNode.rule]) {
+                                    SieveUI.sieve[rname] = SieveUI.sieve[t.parentNode.rule];
+                                    delete SieveUI.sieve[t.parentNode.rule];
+                                }
+                                $("save_button").classList.add("alert");
                             }
-                            if (t.parentNode.rule && SieveUI.sieve[t.parentNode.rule]) {
-                                SieveUI.sieve[rname] = SieveUI.sieve[t.parentNode.rule];
-                                delete SieveUI.sieve[t.parentNode.rule];
-                            }
-                            $("save_button").classList.add("alert");
-                        }
-                        t.textContent = t.parentNode.rule = rname;
-                        t.contentEditable = false;
-                        t.className = "";
-                        if (e.key === "Enter") {
-                            t = t.parentNode.querySelector('input[type="text"]');
-                            if (t) t.focus();
+                            t.textContent = t.parentNode.rule = rname;
+                            t.contentEditable = false;
+                            t.className = "";
+                            if (e.key === "Enter") {
+                                t = t.parentNode.querySelector('input[type="text"]');
+                                if (t) t.focus();
                             }
                         }
                     }
@@ -297,12 +297,12 @@ var sieve_sec,
                 {
                     tag: "div", attrs: { class: "action_buttons" },
                     nodes: [
-                        { tag: "span", attrs: { title: _("SIV_REN_RULE"), "data-action": "rename" },  nodes: ["✏️"] },
-                        { tag: "span", attrs: { title: _("SIV_TOG_RULE"), "data-action": "toggle", class: "bold" },  nodes: ["Ø"] },
-                        { tag: "span", attrs: { title: _("SIV_DEL_RULE"), "data-action": "delete", class: "bold" },  nodes: ["-"] },
-                        { tag: "span", attrs: { title: _("SIV_EXP_RULE"), "data-action": "export", class: "bold" },  nodes: ["↑"] },
-                        { tag: "span", attrs: { title: _("SIV_COPY_RULE"), "data-action": "copy" },  nodes: ["📋"] },
-                        { tag: "span", attrs: { title: _("SIV_FORMAT_JS"), "data-action": "format" },  nodes: ["{}"] },
+                        { tag: "span", attrs: { title: _("SIV_REN_RULE"), "data-action": "rename" }, nodes: ["✏️"] },
+                        { tag: "span", attrs: { title: _("SIV_TOG_RULE"), "data-action": "toggle", class: "bold" }, nodes: ["Ø"] },
+                        { tag: "span", attrs: { title: _("SIV_DEL_RULE"), "data-action": "delete", class: "bold" }, nodes: ["-"] },
+                        { tag: "span", attrs: { title: _("SIV_EXP_RULE"), "data-action": "export", class: "bold" }, nodes: ["↑"] },
+                        { tag: "span", attrs: { title: _("SIV_COPY_RULE"), "data-action": "copy" }, nodes: ["📋"] },
+                        { tag: "span", attrs: { title: _("SIV_FORMAT_JS"), "data-action": "format" }, nodes: ["{}"] },
                     ]
                 }
             ]);
@@ -456,7 +456,7 @@ var sieve_sec,
         add: function () {
             sieve_container.insertBefore(this.genEntry(), sieve_container.firstElementChild);
             var rd = sieve_container.firstElementChild,
-            rd_fc = rd.querySelector(':scope > [data-action="rule"]');
+                rd_fc = rd.querySelector(':scope > [data-action="rule"]');
             rd_fc.click();
             rd.querySelector('[data-action="rename"]').click();
             this.countRules();
@@ -571,10 +571,10 @@ var sieve_sec,
             if (exp !== "{}") {
                 if (copy) {
                     navigator.clipboard.writeText(exp)
-                    .catch(err => {
-                        console.error("Failed to copy to clipboard:", err);
-                        alert("Failed to copy to clipboard.");
-                    });
+                        .catch(err => {
+                            console.error("Failed to copy to clipboard:", err);
+                            alert("Failed to copy to clipboard.");
+                        });
                 } else {
                     download(exp, `Imagus_${name}.json`, e?.ctrlKey || e?.metaKey);
                 }
@@ -707,21 +707,26 @@ var sieve_sec,
             if (!user || !repo) return;
             const lastCheck = new Date(cfg.sieveUpdateLast || 0);
 
-            // get date of last commit
-            const res = await fetch(`https://api.github.com/repos/${user}/${repo}/commits?per_page=1`);
-            if (!res.ok) return;
-            const data = await res.json();
-            const commitDate = new Date(data[0]?.commit?.committer?.date);
+            try {
+                // get date of last commit
+                const res = await fetch(`https://api.github.com/repos/${user}/${repo}/commits?per_page=1`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const commitDate = new Date(data[0]?.commit?.committer?.date);
 
-            const updBtn = sieve_sec.querySelector("[data-action='update-rules']");
-            updBtn.title = updBtn.title.split("\n")[0];
-            if (commitDate > lastCheck) {
-                updBtn.style.outline = "#ffaaaa solid 2px";
-                updBtn.style.filter = "none";
-                updBtn.title += "\nSieve update is available";
-            } else {
-                updBtn.style.outline = "";
-                updBtn.title += "\nSieve is up to date";
+                const updBtn = sieve_sec.querySelector("[data-action='update-rules']");
+                updBtn.title = updBtn.title.split("\n")[0];
+                if (commitDate > lastCheck) {
+                    updBtn.style.outline = "#ffaaaa solid 2px";
+                    updBtn.style.filter = "none";
+                    updBtn.title += "\nSieve update is available";
+                } else {
+                    updBtn.style.outline = "";
+                    updBtn.title += "\nSieve is up to date";
+                }
+            } catch (err) {
+                // Silencing logging for expected network issues or rate limiting
+                // console.debug('Sieve update check failed:', err);
             }
         }
     };

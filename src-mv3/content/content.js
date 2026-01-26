@@ -865,9 +865,9 @@
                     if (n.childElementCount && n.querySelector("iframe, object, embed")) break;
                     if (typeof x === "number" && typeof y === "number") {
                         tmp_el = doc.elementsFromPoint(x, y);
-                        for (i = 0; i < 5; ++i) {
+                        for (i = 0; i < tmp_el.length && i < 5; ++i) {
                             if (tmp_el[i] === doc.body) break;
-                            if (!tmp_el[i].currentSrc && tmp_el[i].style.backgroundImage.lastIndexOf("url(", 0) !== 0) continue;
+                            if (tmp_el[i] && !tmp_el[i].currentSrc && tmp_el[i].style.backgroundImage.lastIndexOf("url(", 0) !== 0) continue;
                             var elRect = tmp_el[i].getBoundingClientRect();
                             if (x >= elRect.left && x < elRect.right && y >= elRect.top && y < elRect.bottom) {
                                 var trgRect = trg.getBoundingClientRect();
@@ -2076,14 +2076,11 @@
                 } else if (key === "M" && PVI.CNT === PVI.VID) {
                     PVI.VID.muted = !PVI.VID.muted;
 
-                } else if (key === cfg.keys.hz_massDownload || key === cfg.keys.downloadAll || key === "D" || key === "Q") {
-                    if (e.shiftKey || e.ctrlKey) {
-                        PVI.downloadAll(doc);
-                        pv = true;
-                    } else {
-                        pv = false;
-                    }
-
+                } else pv = false;
+            } else if (key === cfg.keys.hz_massDownload || key === cfg.keys.downloadAll || key === "D" || key === "Q") {
+                if (e.shiftKey || e.ctrlKey) {
+                    PVI.downloadAll(doc);
+                    pv = true;
                 } else pv = false;
             } else pv = false;
             if (pv) pdsp(e);
@@ -3085,7 +3082,7 @@
 
                 for (let i = index; i < chunkEnd; i++) {
                     const el = elementsToFilter[i];
-                    if (_isElementVisible(el) && !_hasStopWords(el, keywords)) {
+                    if (!_hasStopWords(el, keywords)) {
                         filteredElements.push(el);
                     } else {
                         PVI.downloadAllFiltered++;
@@ -3135,6 +3132,9 @@
             PVI._startKeepAwake();
 
             Port.send({ cmd: 'openDownloadProgress', tab: sender ? sender.tab : null });
+            setTimeout(() => {
+                Port.send({ cmd: 'registerProgressTab' });
+            }, 1000);
 
             PVI.filterQueueAsynchronously(allElements);
         },
@@ -3169,6 +3169,12 @@
             }
 
             const el = PVI.downloadAllQueue.shift();
+            if (!el) {
+                if (PVI.downloadAllQueue.length > 0 || PVI.downloadAllActive) {
+                    setTimeout(PVI.processNextInQueue, 10);
+                }
+                return;
+            }
             const itemsLeft = PVI.downloadAllQueue.length;
             const itemsScanned = PVI.downloadAllTotal - itemsLeft;
 
@@ -3239,7 +3245,7 @@
                         return;
                     }
                 }
-                PVI.processNextInQueue();
+                setTimeout(PVI.processNextInQueue, 10);
             };
 
             PVI.set = (src) => onResolved(src);
@@ -3250,19 +3256,24 @@
             };
 
             PVI.TRG = el;
-            const rect = el.getBoundingClientRect();
+            const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
             PVI.x = x;
             PVI.y = y;
 
-            const src = PVI.find(el, x, y);
+            try {
+                const src = PVI.find(el, x, y);
 
-            if (src === false) {
+                if (src === false) {
+                    onResolved(null);
+                } else {
+                    PVI.load(src);
+                    timeout = setTimeout(() => onResolved(null), ((cfg.da && cfg.da.resolutionTimeout) || 8) * 1000);
+                }
+            } catch (err) {
+                console.error('Error during Mass Download scan:', err);
                 onResolved(null);
-            } else {
-                PVI.load(src);
-                timeout = setTimeout(() => onResolved(null), ((cfg.da && cfg.da.resolutionTimeout) || 8) * 1000);
             }
         },
 

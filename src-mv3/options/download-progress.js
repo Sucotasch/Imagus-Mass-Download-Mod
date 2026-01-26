@@ -52,7 +52,8 @@
         // Listen for messages from background script
         chrome.runtime.onMessage.addListener(handleMessage);
 
-        // Request initial download status
+        // Register with background and request status
+        chrome.runtime.sendMessage({ cmd: 'registerProgressTab' });
         refreshDisplay();
 
         // Set up auto-refresh
@@ -68,6 +69,15 @@
                 if (request.done) {
                     setTimeout(() => { scanStatusEl.textContent = '' }, 10000);
                 }
+            }
+            if (request.items) {
+                for (const url in request.items) {
+                    updateDownloadItem(request.items[url]);
+                }
+                updateDisplay();
+            }
+            if (request.stats) {
+                updateGlobalStats(request.stats);
             }
         } else if (request.cmd === 'allDownloadsComplete') {
             // We can stop auto-refreshing if we want, but usually better to keep it

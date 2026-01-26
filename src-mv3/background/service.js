@@ -265,7 +265,7 @@ function onMessage(message, sender, sendResponse) {
             cfg.get(msg.keys, function (data) {
                 context.postMessage({ cfg: data });
             });
-            break;
+            return true;
         case "cfg_del":
             if (!Array.isArray(msg.keys)) {
                 msg.keys = [msg.keys];
@@ -278,29 +278,33 @@ function onMessage(message, sender, sendResponse) {
                 .then(function (resp) {
                     context.postMessage(resp);
                 });
-            break;
+            return true;
         case "savePrefs":
-            updatePrefs(msg.prefs, context.postMessage);
-            break;
+            updatePrefs(msg.prefs, function () {
+                context.postMessage({});
+            });
+            return true;
         case "update_sieve":
             updateSieve(msg.local).then(context.postMessage);
-            break;
+            return true;
         case "loadScripts":
             registerContentScripts();
             break;
         case "download":
             download(msg, sender.tab?.incognito, sendResponse);
-            break;
+            return true;
         case "history":
             if (chrome.extension?.inIncognitoContext || sender.tab?.incognito) break;
             if (msg.manual) {
                 chrome.history.getVisits({ url: msg.url }, function (hv) {
                     chrome.history[(hv.length ? "delete" : "add") + "Url"]({ url: msg.url });
+                    context.postMessage({});
                 });
             } else {
                 chrome.history.addUrl({ url: msg.url });
+                context.postMessage({});
             }
-            break;
+            return true;
         case "options":
             chrome.runtime.openOptionsPage();
             break;
@@ -415,16 +419,30 @@ function onMessage(message, sender, sendResponse) {
                     }
                     context.postMessage(data);
                 });
-            break;
+            return true;
         }
+
         case 'openDownloadProgress':
             downloadInitiatorTabId = sender.tab?.id;
+            downloadStats = { found: 0, filtered: 0, downloaded: 0 };
+            scanInProgress = true;
             chrome.tabs.create({
                 url: chrome.runtime.getURL('options/download-progress.html'),
-                active: true
+                active: false
             }, function (tab) {
                 downloadProgressTabId = tab.id;
             });
+            break;
+
+        case 'registerProgressTab':
+            downloadProgressTabId = sender.tab?.id;
+            // Send current state immediately
+            chrome.tabs.sendMessage(downloadProgressTabId, {
+                cmd: 'updateStatus',
+                status: scanInProgress ? 'Scanning...' : '',
+                items: downloadProgress,
+                stats: downloadStats
+            }).catch(() => { });
             break;
 
         case 'downloadMass':
@@ -446,7 +464,10 @@ function onMessage(message, sender, sendResponse) {
 
         case 'updateStatus':
             if (downloadProgressTabId) {
-                chrome.tabs.sendMessage(downloadProgressTabId, msg).catch(() => { downloadProgressTabId = null; });
+                chrome.tabs.sendMessage(downloadProgressTabId, msg).catch((err) => {
+                    console.warn('Failed to send status to progress tab:', err);
+                    // Don't clear downloadProgressTabId here, it might just be loading
+                });
             }
             if (msg.done) scanInProgress = false;
             break;
@@ -493,7 +514,6 @@ function onMessage(message, sender, sendResponse) {
             }
             break;
     }
-    return true;
 }
 
 async function download(msg, incognito, sendResponse) {
@@ -534,7 +554,11 @@ async function download(msg, incognito, sendResponse) {
         params.incognito = incognito;
     }
 
-    chrome.downloads.download(params)
+    chrome.downloads.download(params, (downloadId) => {
+        if (typeof sendResponse === 'function') {
+            sendResponse({ downloadId: downloadId, error: chrome.runtime.lastError?.message });
+        }
+    });
 }
 
 /* chrome.downloads.onChanged.addListener(change => {
@@ -753,7 +777,7 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
     }
 
     // Also store locally for UI refresh if needed
-    downloadProgress[url] = { status: status, progress: progress, error: error, downloadId: downloadId, task: task };
+    downloadProgress[url] = { url: url, status: status, progress: progress, error: error, downloadId: downloadId, task: task };
 }
 
 async function processFilterQueue() {
