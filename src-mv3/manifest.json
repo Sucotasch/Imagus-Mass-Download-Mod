@@ -1,19 +1,16 @@
 {
 	"manifest_version": 3,
-
-	"name": "Imagus Reborn",
+	"name": "Imagus Reborn MD",
 	"version": "2026.1.25",
 	"description": "__MSG_APP_DESCRIPTION__",
 	"default_locale": "en",
 	"homepage_url": "https://www.reddit.com/r/Imagus",
-
 	"icons": {
 		"128": "common/img/icon.png"
 	},
-
 	"action": {
+		"default_popup": "options/popup.html"
 	},
-
 	"permissions": [
 		"alarms",
 		"downloads",
@@ -24,13 +21,10 @@
 	"host_permissions": [
 		"<all_urls>"
 	],
-
 	"incognito": "split",
-
 	"background": {
 		"service_worker": "background/service.js"
 	},
-
 	"options_ui": {
 		"page": "options/options.html",
 		"open_in_tab": true

@@ -83,7 +83,7 @@
 		"mFitH": "4",
 		"rotL": "E",
 		"rotR": "R",
-		"flipH": "Q",
+		"flipH": "shift Q",
 		"flipV": "W",
 		"prefs": "P",
 		"send": "S",
@@ -94,7 +94,8 @@
 		"hz_fullSpace": "F",
 		"hz_caption": "C",
 		"hz_open": "O",
-		"hz_history": "H"
+		"hz_history": "H",
+		"downloadAll": "Q"
 	},
 	"da": {
 		"maxConcurrentFilters": 5,
@@ -107,5 +108,6 @@
 		"resolutionTimeout": 8
 	},
 	"grants": [],
-	"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt"
+	"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt",
+	"downloadAll_ctrl": true
 }
