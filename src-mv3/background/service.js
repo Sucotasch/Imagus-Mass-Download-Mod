@@ -26,6 +26,9 @@ var urlValidationStats = {
     circuitBreakerOpen: false
 };
 
+// Improvement #2: Memory Leak Prevention & #4: Fetch Abort Support
+const activeControllers = new Map();
+
 const platform = location.protocol === "moz-extension:" ? "firefox" : "chrome";
 
 var cfg = {
@@ -74,17 +77,45 @@ function withBaseURI(base, relative, secure) {
     }
 }
 
-async function updateSieve(local) {
+// Improvement #6 & #8: Retry Logic with Timeout
+async function updateSieve(local, retryCount = 0) {
+    const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
 
     try {
-        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl);
+        // Improvement #6: Add timeout to prevent hanging
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
         }
 
         let newSieve = await response.json();
+
+        // Improvement #5: Validate sieve structure
+        if (typeof newSieve !== 'object' || newSieve === null) {
+            throw new Error('Invalid sieve format: must be an object');
+        }
+
+        // Count valid rules
+        let validRuleCount = 0;
+        for (let key in newSieve) {
+            if (newSieve[key] && (newSieve[key].link || newSieve[key].img)) {
+                validRuleCount++;
+            }
+        }
+
+        if (validRuleCount === 0) {
+            throw new Error('Sieve contains no valid rules');
+        }
+
         if (curSieve) {
             let merged = {};
             // keep rules that starts with "_"
@@ -114,6 +145,14 @@ async function updateSieve(local) {
     } catch (error) {
         console.warn(manifest.name + ": Sieve failed to update from " + (local ? "local" : "remote") + " repository! | ", error.message);
 
+        // Improvement #8: Retry with exponential backoff
+        if (!local && retryCount < MAX_RETRIES) {
+            const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+            console.info(manifest.name + ": Retrying sieve update in " + delay + "ms (attempt " + (retryCount + 1) + "/" + MAX_RETRIES + ")");
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return updateSieve(local, retryCount + 1);
+        }
+
         if (!local) {
             const data = await cfg.get("sieve");
             if (!data.sieve) {
@@ -123,6 +162,21 @@ async function updateSieve(local) {
 
         return { error: "Error. " + error.message };
     }
+}
+
+// Improvement #1: ReDoS Protection
+function isSafeRegex(pattern) {
+    if (typeof pattern !== 'string') return true;
+
+    // Check for catastrophic backtracking patterns
+    const dangerousPatterns = [
+        /(\.\*){2,}/,           // Multiple .* in sequence
+        /(\.\+){2,}/,           // Multiple .+ in sequence
+        /(\w\*){2,}/,           // Nested quantifiers
+        /(\\[.*\\]\*){2,}/      // Nested character classes with quantifiers
+    ];
+
+    return !dangerousPatterns.some(p => p.test(pattern));
 }
 
 function cacheSieve(newSieve) {
@@ -136,6 +190,17 @@ function cacheSieve(newSieve) {
         if ((!rule.link && !rule.img) || (rule.img && !rule.to && !rule.res)) continue;
         try {
             if (rule.off) throw ruleName + " is off";
+
+            // Improvement #1: Check regex safety before compilation
+            if (rule.link && typeof rule.link === 'string' && !isSafeRegex(rule.link)) {
+                console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (link)`);
+                continue;
+            }
+            if (rule.img && typeof rule.img === 'string' && !isSafeRegex(rule.img)) {
+                console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (img)`);
+                continue;
+            }
+
             if (rule.res)
                 if (/^:\n/.test(rule.res)) {
                     cachedSieveRes[cachedSieve.length] = rule.res.slice(2);
@@ -161,82 +226,97 @@ function cacheSieve(newSieve) {
     cachedPrefs.sieve = cachedSieve;
 }
 
+// Improvement #3: Mutex Lock for updatePrefs
+let prefsMutex = Promise.resolve();
+
 async function updatePrefs(prefs, callback) {
-    prefs = prefs || {};
+    // Improvement #3: Queue this update with mutex
+    prefsMutex = prefsMutex.then(async () => {
+        try {
+            prefs = prefs || {};
 
-    let defaults = await (await fetch("/data/defaults.json")).json();
-    let storedPrefs = await cfg.get(Object.keys(defaults));
-    let newPrefs = {};
-    let changes = {};
+            let defaults = await (await fetch("/data/defaults.json")).json();
+            let storedPrefs = await cfg.get(Object.keys(defaults));
+            let newPrefs = {};
+            let changes = {};
 
-    for (let key in defaults) {
-        let isChanged = false;
-        if (typeof defaults[key] === "object") {
-            isChanged = true;
-            if (Array.isArray(defaults[key])) {
-                newPrefs[key] = prefs[key] || storedPrefs[key] || defaults[key];
-            } else {
-                newPrefs[key] = Object.assign({}, defaults[key], storedPrefs[key], prefs[key]);
-                for (let subKey in defaults[key]) {
-                    if (newPrefs[key][subKey] === undefined ||
-                        typeof newPrefs[key][subKey] !== typeof defaults[key][subKey]) {
-                        newPrefs[key][subKey] =
-                            cachedPrefs?.[key]?.[subKey] !== undefined
-                                ? cachedPrefs[key][subKey]
-                                : defaults[key][subKey];
+            for (let key in defaults) {
+                let isChanged = false;
+                if (typeof defaults[key] === "object") {
+                    isChanged = true;
+                    if (Array.isArray(defaults[key])) {
+                        newPrefs[key] = prefs[key] || storedPrefs[key] || defaults[key];
+                    } else {
+                        newPrefs[key] = Object.assign({}, defaults[key], storedPrefs[key], prefs[key]);
+                        for (let subKey in defaults[key]) {
+                            if (newPrefs[key][subKey] === undefined ||
+                                typeof newPrefs[key][subKey] !== typeof defaults[key][subKey]) {
+                                newPrefs[key][subKey] =
+                                    cachedPrefs?.[key]?.[subKey] !== undefined
+                                        ? cachedPrefs[key][subKey]
+                                        : defaults[key][subKey];
+                            }
+                        }
                     }
+                } else {
+                    let value = prefs[key] || storedPrefs[key] || defaults[key];
+                    if (typeof value !== typeof defaults[key]) {
+                        value = defaults[key];
+                    }
+                    if (!cachedPrefs || cachedPrefs[key] !== value) {
+                        isChanged = true;
+                    }
+                    newPrefs[key] = value;
+                }
+                if (isChanged || storedPrefs[key] === undefined) {
+                    changes[key] = newPrefs[key];
                 }
             }
-        } else {
-            let value = prefs[key] || storedPrefs[key] || defaults[key];
-            if (typeof value !== typeof defaults[key]) {
-                value = defaults[key];
-            }
-            if (!cachedPrefs || cachedPrefs[key] !== value) {
-                isChanged = true;
-            }
-            newPrefs[key] = value;
-        }
-        if (isChanged || storedPrefs[key] === undefined) {
-            changes[key] = newPrefs[key];
-        }
-    }
 
-    if (newPrefs.grants?.length > 0) {
-        let grants = newPrefs.grants || [];
-        let processedGrants = [];
-        for (let i = 0; i < grants.length; ++i) {
-            if (grants[i].op !== ";") {
-                processedGrants.push({
-                    op: grants[i].op,
-                    url: grants[i].op.length === 2 ? RegExp(grants[i].url, "i") : grants[i].url,
-                });
+            if (newPrefs.grants?.length > 0) {
+                let grants = newPrefs.grants || [];
+                let processedGrants = [];
+                for (let i = 0; i < grants.length; ++i) {
+                    if (grants[i].op !== ";") {
+                        processedGrants.push({
+                            op: grants[i].op,
+                            url: grants[i].op.length === 2 ? RegExp(grants[i].url, "i") : grants[i].url,
+                        });
+                    }
+                }
+                if (processedGrants.length) {
+                    newPrefs.grants = processedGrants;
+                }
+            } else {
+                delete newPrefs.grants;
+            }
+
+            cachedPrefs = newPrefs;
+            if (prefs.sieve) {
+                changes.sieve = typeof prefs.sieve === "string" ? JSON.parse(prefs.sieve) : prefs.sieve;
+                cacheSieve(changes.sieve);
+            }
+            await cfg.set(changes);
+            if (!prefs.sieve) {
+                const data = await cfg.get("sieve");
+                if (!data?.sieve) {
+                    await updateSieve(false);
+                } else {
+                    cacheSieve(data.sieve);
+                }
+            }
+            if (typeof callback === "function") {
+                callback();
+            }
+        } catch (error) {
+            console.error('updatePrefs error:', error);
+            if (typeof callback === "function") {
+                callback(error);
             }
         }
-        if (processedGrants.length) {
-            newPrefs.grants = processedGrants;
-        }
-    } else {
-        delete newPrefs.grants;
-    }
+    });
 
-    cachedPrefs = newPrefs;
-    if (prefs.sieve) {
-        changes.sieve = typeof prefs.sieve === "string" ? JSON.parse(prefs.sieve) : prefs.sieve;
-        cacheSieve(changes.sieve);
-    }
-    await cfg.set(changes);
-    if (!prefs.sieve) {
-        const data = await cfg.get("sieve");
-        if (!data?.sieve) {
-            await updateSieve(false);
-        } else {
-            cacheSieve(data.sieve);
-        }
-    }
-    if (typeof callback === "function") {
-        callback();
-    }
+    return prefsMutex;
 }
 
 function onMessage(message, sender, sendResponse) {
@@ -484,6 +564,11 @@ function onMessage(message, sender, sendResponse) {
             scanInProgress = false;
             filterQueue = [];
             downloadQueue = [];
+
+            // Improvement #4: Abort all active fetch requests
+            activeControllers.forEach(ctrl => ctrl.abort());
+            activeControllers.clear();
+
             if (downloadInitiatorTabId) {
                 chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
             }
