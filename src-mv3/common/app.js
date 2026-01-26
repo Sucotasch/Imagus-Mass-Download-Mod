@@ -92,7 +92,10 @@ const Port = {
             } else {
                 this.listener = callback;
             }
-            chrome.runtime.onMessage?.addListener(this.listener);
+            // Check if chrome.runtime exists before accessing onMessage
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+                chrome.runtime.onMessage.addListener(this.listener);
+            }
         } else {
             this.listener = null;
         }
