@@ -339,7 +339,8 @@ async function getOrCreateProgressTab(initiatorTabId) {
                 return downloadProgressTabId;
             }
         } catch (e) {
-            console.info(manifest.name + ': Progress tab no longer exists');
+            console.info(manifest.name + ': Progress tab no longer exists, will create new one');
+            downloadProgressTabId = null;  // Reset so we can create new tab
         }
     }
 
