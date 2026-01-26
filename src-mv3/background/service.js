@@ -230,93 +230,88 @@ function cacheSieve(newSieve) {
 let prefsMutex = Promise.resolve();
 
 async function updatePrefs(prefs, callback) {
-    // Improvement #3: Queue this update with mutex
-    prefsMutex = prefsMutex.then(async () => {
-        try {
-            prefs = prefs || {};
+    prefs = prefs || {};
 
-            let defaults = await (await fetch("/data/defaults.json")).json();
-            let storedPrefs = await cfg.get(Object.keys(defaults));
-            let newPrefs = {};
-            let changes = {};
+    let defaults = await (await fetch("/data/defaults.json")).json();
+    let storedPrefs = await cfg.get(Object.keys(defaults));
+    let newPrefs = {};
+    let changes = {};
 
-            for (let key in defaults) {
-                let isChanged = false;
-                if (typeof defaults[key] === "object") {
-                    isChanged = true;
-                    if (Array.isArray(defaults[key])) {
-                        newPrefs[key] = prefs[key] || storedPrefs[key] || defaults[key];
-                    } else {
-                        newPrefs[key] = Object.assign({}, defaults[key], storedPrefs[key], prefs[key]);
-                        for (let subKey in defaults[key]) {
-                            if (newPrefs[key][subKey] === undefined ||
-                                typeof newPrefs[key][subKey] !== typeof defaults[key][subKey]) {
-                                newPrefs[key][subKey] =
-                                    cachedPrefs?.[key]?.[subKey] !== undefined
-                                        ? cachedPrefs[key][subKey]
-                                        : defaults[key][subKey];
-                            }
-                        }
-                    }
-                } else {
-                    let value = prefs[key] || storedPrefs[key] || defaults[key];
-                    if (typeof value !== typeof defaults[key]) {
-                        value = defaults[key];
-                    }
-                    if (!cachedPrefs || cachedPrefs[key] !== value) {
-                        isChanged = true;
-                    }
-                    newPrefs[key] = value;
-                }
-                if (isChanged || storedPrefs[key] === undefined) {
-                    changes[key] = newPrefs[key];
-                }
-            }
-
-            if (newPrefs.grants?.length > 0) {
-                let grants = newPrefs.grants || [];
-                let processedGrants = [];
-                for (let i = 0; i < grants.length; ++i) {
-                    if (grants[i].op !== ";") {
-                        processedGrants.push({
-                            op: grants[i].op,
-                            url: grants[i].op.length === 2 ? RegExp(grants[i].url, "i") : grants[i].url,
-                        });
-                    }
-                }
-                if (processedGrants.length) {
-                    newPrefs.grants = processedGrants;
-                }
+    for (let key in defaults) {
+        let isChanged = false;
+        if (typeof defaults[key] === "object") {
+            isChanged = true;
+            if (Array.isArray(defaults[key])) {
+                newPrefs[key] = prefs[key] || storedPrefs[key] || defaults[key];
             } else {
-                delete newPrefs.grants;
-            }
-
-            cachedPrefs = newPrefs;
-            if (prefs.sieve) {
-                changes.sieve = typeof prefs.sieve === "string" ? JSON.parse(prefs.sieve) : prefs.sieve;
-                cacheSieve(changes.sieve);
-            }
-            await cfg.set(changes);
-            if (!prefs.sieve) {
-                const data = await cfg.get("sieve");
-                if (!data?.sieve) {
-                    await updateSieve(false);
-                } else {
-                    cacheSieve(data.sieve);
+                newPrefs[key] = Object.assign({}, defaults[key], storedPrefs[key], prefs[key]);
+                for (let subKey in defaults[key]) {
+                    if (newPrefs[key][subKey] === undefined ||
+                        typeof newPrefs[key][subKey] !== typeof defaults[key][subKey]) {
+                        newPrefs[key][subKey] =
+                            cachedPrefs?.[key]?.[subKey] !== undefined
+                                ? cachedPrefs[key][subKey]
+                                : defaults[key][subKey];
+                    }
                 }
             }
-            if (typeof callback === "function") {
-                callback();
+        } else {
+            let value = prefs[key] || storedPrefs[key] || defaults[key];
+            if (typeof value !== typeof defaults[key]) {
+                value = defaults[key];
             }
-        } catch (error) {
-            console.error('updatePrefs error:', error);
-            if (typeof callback === "function") {
-                callback(error);
+            if (!cachedPrefs || cachedPrefs[key] !== value) {
+                isChanged = true;
+            }
+            newPrefs[key] = value;
+        }
+        if (isChanged || storedPrefs[key] === undefined) {
+            changes[key] = newPrefs[key];
+        }
+    }
+
+    if (newPrefs.grants?.length > 0) {
+        let grants = newPrefs.grants || [];
+        let processedGrants = [];
+        for (let i = 0; i < grants.length; ++i) {
+            if (grants[i].op !== ";") {
+                processedGrants.push({
+                    op: grants[i].op,
+                    url: grants[i].op.length === 2 ? RegExp(grants[i].url, "i") : grants[i].url,
+                });
             }
         }
-    });
+        if (processedGrants.length) {
+            newPrefs.grants = processedGrants;
+        }
+    } else {
+        delete newPrefs.grants;
+    }
 
-    return prefsMutex;
+    cachedPrefs = newPrefs;
+    if (prefs.sieve) {
+        changes.sieve = typeof prefs.sieve === "string" ? JSON.parse(prefs.sieve) : prefs.sieve;
+        cacheSieve(changes.sieve);  // Cache immediately, BEFORE mutex
+    }
+
+    // Improvement #3: Only mutex-protect the storage write
+    await (prefsMutex = prefsMutex.then(async () => {
+        await cfg.set(changes);
+    }).catch(err => {
+        console.error('updatePrefs storage error:', err);
+    }));
+
+    if (!prefs.sieve) {
+        const data = await cfg.get("sieve");
+        if (!data?.sieve) {
+            await updateSieve(false);
+        } else {
+            cacheSieve(data.sieve);
+        }
+    }
+    if (typeof callback === "function") {
+        callback();
+    }
 }
 
 // Improvement #9: Smart Progress Tab Management
