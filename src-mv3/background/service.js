@@ -316,27 +316,34 @@ async function updatePrefs(prefs, callback) {
 
 // Improvement #9: Smart Progress Tab Management
 async function getOrCreateProgressTab(initiatorTabId) {
-    // Check if existing tab is still valid
+    // Check if existing tab is still valid AND responsive
     if (downloadProgressTabId) {
         try {
             const existingTab = await chrome.tabs.get(downloadProgressTabId);
             if (existingTab && existingTab.url.includes('download-progress.html')) {
-                console.info(manifest.name + ': Reusing existing progress tab');
+                // Verify tab is actually responsive by sending a ping
+                try {
+                    await chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'ping' });
+                    console.info(manifest.name + ': Reusing existing progress tab (ID: ' + downloadProgressTabId + ')');
 
-                // Reset stats for new download
-                downloadStats = { found: 0, filtered: 0, downloaded: 0 };
+                    // Reset stats for new download
+                    downloadStats = { found: 0, filtered: 0, downloaded: 0 };
 
-                // Limit progress records to prevent memory bloat
-                const maxRecords = cachedPrefs?.da?.maxProgressRecords || 100;
-                const recordKeys = Object.keys(downloadProgress);
-                if (recordKeys.length > maxRecords) {
-                    // Keep only most recent records
-                    const toRemove = recordKeys.slice(0, recordKeys.length - maxRecords);
-                    toRemove.forEach(key => delete downloadProgress[key]);
-                    console.info(manifest.name + ': Trimmed progress records to ' + maxRecords);
+                    // Limit progress records to prevent memory bloat
+                    const maxRecords = cachedPrefs?.da?.maxProgressRecords || 100;
+                    const recordKeys = Object.keys(downloadProgress);
+                    if (recordKeys.length > maxRecords) {
+                        // Keep only most recent records
+                        const toRemove = recordKeys.slice(0, recordKeys.length - maxRecords);
+                        toRemove.forEach(key => delete downloadProgress[key]);
+                        console.info(manifest.name + ': Trimmed progress records to ' + maxRecords);
+                    }
+
+                    return downloadProgressTabId;
+                } catch (pingError) {
+                    console.warn(manifest.name + ': Progress tab exists but not responsive, creating new one');
+                    downloadProgressTabId = null;
                 }
-
-                return downloadProgressTabId;
             }
         } catch (e) {
             console.info(manifest.name + ': Progress tab no longer exists, will create new one');

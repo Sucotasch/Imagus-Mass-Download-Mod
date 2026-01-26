@@ -62,7 +62,11 @@
 
     // Handle messages from background script
     function handleMessage(request, sender, sendResponse) {
-        if (request.cmd === 'updateStatus') {
+        if (request.cmd === 'ping') {
+            // Respond to ping for tab validation
+            sendResponse({ pong: true });
+            return true;
+        } else if (request.cmd === 'updateStatus') {
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
                 scanStatusEl.textContent = request.status;
