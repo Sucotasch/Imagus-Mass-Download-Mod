@@ -3131,10 +3131,8 @@
             PVI._updateDownloadAllStatus(`Found ${PVI.downloadAllTotal} potential items. Starting filtering...`);
             PVI._startKeepAwake();
 
+
             Port.send({ cmd: 'openDownloadProgress', tab: sender ? sender.tab : null });
-            setTimeout(() => {
-                Port.send({ cmd: 'registerProgressTab' });
-            }, 1000);
 
             PVI.filterQueueAsynchronously(allElements);
         },

@@ -26,7 +26,7 @@ var urlValidationStats = {
     circuitBreakerOpen: false
 };
 
-// Improvement #2: Memory Leak Prevention & #4: Fetch Abort Support
+// Track active fetch controllers to prevent memory leaks and enable request cancellation
 const activeControllers = new Map();
 
 const platform = location.protocol === "moz-extension:" ? "firefox" : "chrome";
@@ -77,7 +77,7 @@ function withBaseURI(base, relative, secure) {
     }
 }
 
-// Improvement #6 & #8: Retry Logic with Timeout
+// Sieve update with retry logic, timeout protection, and validation
 async function updateSieve(local, retryCount = 0) {
     const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
@@ -164,7 +164,7 @@ async function updateSieve(local, retryCount = 0) {
     }
 }
 
-// Improvement #1: ReDoS Protection
+// ReDoS (Regular Expression Denial of Service) protection
 function isSafeRegex(pattern) {
     if (typeof pattern !== 'string') return true;
 
@@ -314,47 +314,22 @@ async function updatePrefs(prefs, callback) {
     }
 }
 
-// Improvement #9: Smart Progress Tab Management
+// Simple progress tab management - close old tab by ID, create new one
 async function getOrCreateProgressTab(initiatorTabId) {
-    // Check if existing tab is still valid AND responsive
+    // Close old progress tab if exists (by stored ID)
     if (downloadProgressTabId) {
-        try {
-            const existingTab = await chrome.tabs.get(downloadProgressTabId);
-            if (existingTab && existingTab.url.includes('download-progress.html')) {
-                // Verify tab is actually responsive by sending a ping
-                try {
-                    await chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'ping' });
-                    console.info(manifest.name + ': Reusing existing progress tab (ID: ' + downloadProgressTabId + ')');
-
-                    // Reset stats for new download
-                    downloadStats = { found: 0, filtered: 0, downloaded: 0 };
-
-                    // Limit progress records to prevent memory bloat
-                    const maxRecords = cachedPrefs?.da?.maxProgressRecords || 100;
-                    const recordKeys = Object.keys(downloadProgress);
-                    if (recordKeys.length > maxRecords) {
-                        // Keep only most recent records
-                        const toRemove = recordKeys.slice(0, recordKeys.length - maxRecords);
-                        toRemove.forEach(key => delete downloadProgress[key]);
-                        console.info(manifest.name + ': Trimmed progress records to ' + maxRecords);
-                    }
-
-                    return downloadProgressTabId;
-                } catch (pingError) {
-                    console.warn(manifest.name + ': Progress tab exists but not responsive, creating new one');
-                    downloadProgressTabId = null;
-                }
-            }
-        } catch (e) {
-            console.info(manifest.name + ': Progress tab no longer exists, will create new one');
-            downloadProgressTabId = null;  // Reset so we can create new tab
-        }
+        console.info(manifest.name + ': Closing old progress tab (ID: ' + downloadProgressTabId + ')');
+        chrome.tabs.remove(downloadProgressTabId).catch(() => {
+            // Tab may already be closed, ignore error
+        });
+        downloadProgressTabId = null;
     }
 
     // Create new tab next to initiator
+    const progressUrl = chrome.runtime.getURL('options/download-progress.html');
     let createOptions = {
-        url: chrome.runtime.getURL('options/download-progress.html'),
-        active: false  // Never focus (per user request)
+        url: progressUrl,
+        active: false  // Always in background (per user request)
     };
 
     // Position next to initiator tab
@@ -369,11 +344,10 @@ async function getOrCreateProgressTab(initiatorTabId) {
     }
 
     const newTab = await chrome.tabs.create(createOptions);
-    downloadProgressTabId = newTab.id;
-    downloadProgress = {};  // Clear old records
+    downloadProgressTabId = newTab.id;  // Store for messaging
 
-    console.info(manifest.name + ': Created new progress tab at index ' + createOptions.index);
-    return downloadProgressTabId;
+    console.info(manifest.name + ': Created new progress tab (ID: ' + newTab.id + ')');
+    return newTab.id;
 }
 
 function onMessage(message, sender, sendResponse) {
@@ -589,15 +563,12 @@ function onMessage(message, sender, sendResponse) {
             break;
 
         case 'registerProgressTab':
-            // Only set ID if not already set (prevent overwriting during reuse)
-            if (!downloadProgressTabId) {
-                downloadProgressTabId = sender.tab?.id;
-                console.info(manifest.name + ': Progress tab registered with ID:', downloadProgressTabId);
-            } else {
-                console.info(manifest.name + ': Progress tab already registered, ignoring duplicate registration');
-            }
+            // Register the tab ID and provide immediate feedback
+            downloadProgressTabId = sender.tab?.id;
+            console.info(manifest.name + ': Progress tab registered with ID:', downloadProgressTabId);
+
             // Send current state immediately
-            chrome.tabs.sendMessage(sender.tab?.id, {
+            chrome.tabs.sendMessage(downloadProgressTabId, {
                 cmd: 'updateStatus',
                 status: scanInProgress ? 'Scanning...' : '',
                 items: downloadProgress,

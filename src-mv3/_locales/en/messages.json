@@ -413,9 +413,6 @@
   "HZ_ENDIS_RIGHT_BUTTON": {
     "message": "right button"
   },
-  "SIV_AUTOUPDATE": {
-    "message": "Automatically update Sieve"
-  },
   "ADVANCED": {
     "message": "Advanced"
   },

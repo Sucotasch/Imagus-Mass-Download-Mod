@@ -100,6 +100,15 @@
             updateDisplay();
             // Ensure refresh is running during active downloads
             startAutoRefresh();
+        } else if (request.cmd === 'resetForNewDownload') {
+            // Clear UI for tab reuse
+            downloadItems = {};
+            globalStats = { found: 0, filtered: 0, downloaded: 0, failed: 0, skipped: 0 };
+            updateDisplay();
+            const scanStatusEl = document.getElementById('scanStatus');
+            if (scanStatusEl) {
+                scanStatusEl.textContent = '';
+            }
         }
     }
 
