@@ -1,6 +1,11 @@
-# Imagus Mass Downloader Mod
+# 🚀 Imagus Mass Download Mod (MV3 Version)
 
-This is a community-modified version of the Imagus extension for Google Chrome, based on https://github.com/Zren/chrome-extension-imagus and enhanced with powerful features for bulk downloading of media from web pages.
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-green.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+This is a deeply modified version of the **Imagus** extension, rebuilt for the modern **Chrome Manifest V3** standard. Beyond the core "hover-to-enlarge" functionality, this mod introduces a powerful toolkit for bulk media downloading.
+
+> **Note:** The `mv3-version` branch is the current stable development line, fully rewritten to comply with Google Chrome's latest security and performance requirements.
 
 ## Key Features
 Core:
@@ -18,15 +23,23 @@ Mod:
   - **Filter by Type & Size:** Automatically skips common UI image types and checks file sizes before downloading to avoid tiny images or videos. These values are configurable.
 - **Operation Control:** The download process can be fully canceled at any time. Failed or canceled downloads can be retried individually from the progress page.
 
-## Installation
+## 🛠 Installation (Developer Mode)
 
-1. Download the latest version by cloning this repository or downloading the `src` folder.
-2. Open Google Chrome and navigate to `chrome://extensions`.
-3. Enable "Developer mode" using the toggle in the top-right corner.
-4. Click the "Load unpacked" button.
-5. Select the `src` folder from the downloaded project files.
+Since this mod uses custom enhancements, it must be installed manually via Developer Mode:
+
+1. Clone this repository or download the ZIP for the `mv3-version` branch.
+2. Navigate to `chrome://extensions/` in your browser.
+3. Enable **"Developer mode"** in the top-right corner.
+4. Click the **"Load unpacked"** button.
+5. Select the **`src-mv3`** folder from the downloaded project directory.
 
 The extension is now installed and ready to use.
 
 ## Usage
 Pin the extension button on the Chrome toolbar, go to a page with a video or image gallery, click the button and follow the instructions that appear below it. After starting the bulk download, a new tab with progress, statistics and controls will open. Filtering options can be changed in the main extension settings, section Download All Settings.
+
+---
+
+### 👨‍💻 About
+Based on the original [Imagus](https://github.com/Zren/chrome-extension-imagus) core and [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) manifest v3 version.  
+This community-driven modification focuses on feature expansion and long-term compatibility with the Chrome Extension SDK.
