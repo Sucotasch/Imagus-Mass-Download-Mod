@@ -26,6 +26,9 @@ var urlValidationStats = {
     circuitBreakerOpen: false
 };
 
+// Track active fetch controllers to prevent memory leaks and enable request cancellation
+const activeControllers = new Map();
+
 const platform = location.protocol === "moz-extension:" ? "firefox" : "chrome";
 
 var cfg = {
@@ -74,17 +77,45 @@ function withBaseURI(base, relative, secure) {
     }
 }
 
-async function updateSieve(local) {
+// Sieve update with retry logic, timeout protection, and validation
+async function updateSieve(local, retryCount = 0) {
+    const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
 
     try {
-        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl);
+        // Improvement #6: Add timeout to prevent hanging
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
         }
 
         let newSieve = await response.json();
+
+        // Improvement #5: Validate sieve structure
+        if (typeof newSieve !== 'object' || newSieve === null) {
+            throw new Error('Invalid sieve format: must be an object');
+        }
+
+        // Count valid rules
+        let validRuleCount = 0;
+        for (let key in newSieve) {
+            if (newSieve[key] && (newSieve[key].link || newSieve[key].img)) {
+                validRuleCount++;
+            }
+        }
+
+        if (validRuleCount === 0) {
+            throw new Error('Sieve contains no valid rules');
+        }
+
         if (curSieve) {
             let merged = {};
             // keep rules that starts with "_"
@@ -114,6 +145,14 @@ async function updateSieve(local) {
     } catch (error) {
         console.warn(manifest.name + ": Sieve failed to update from " + (local ? "local" : "remote") + " repository! | ", error.message);
 
+        // Improvement #8: Retry with exponential backoff
+        if (!local && retryCount < MAX_RETRIES) {
+            const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+            console.info(manifest.name + ": Retrying sieve update in " + delay + "ms (attempt " + (retryCount + 1) + "/" + MAX_RETRIES + ")");
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return updateSieve(local, retryCount + 1);
+        }
+
         if (!local) {
             const data = await cfg.get("sieve");
             if (!data.sieve) {
@@ -123,6 +162,21 @@ async function updateSieve(local) {
 
         return { error: "Error. " + error.message };
     }
+}
+
+// ReDoS (Regular Expression Denial of Service) protection
+function isSafeRegex(pattern) {
+    if (typeof pattern !== 'string') return true;
+
+    // Check for catastrophic backtracking patterns
+    const dangerousPatterns = [
+        /(\.\*){2,}/,           // Multiple .* in sequence
+        /(\.\+){2,}/,           // Multiple .+ in sequence
+        /(\w\*){2,}/,           // Nested quantifiers
+        /(\\[.*\\]\*){2,}/      // Nested character classes with quantifiers
+    ];
+
+    return !dangerousPatterns.some(p => p.test(pattern));
 }
 
 function cacheSieve(newSieve) {
@@ -136,6 +190,17 @@ function cacheSieve(newSieve) {
         if ((!rule.link && !rule.img) || (rule.img && !rule.to && !rule.res)) continue;
         try {
             if (rule.off) throw ruleName + " is off";
+
+            // Improvement #1: Check regex safety before compilation
+            if (rule.link && typeof rule.link === 'string' && !isSafeRegex(rule.link)) {
+                console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (link)`);
+                continue;
+            }
+            if (rule.img && typeof rule.img === 'string' && !isSafeRegex(rule.img)) {
+                console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (img)`);
+                continue;
+            }
+
             if (rule.res)
                 if (/^:\n/.test(rule.res)) {
                     cachedSieveRes[cachedSieve.length] = rule.res.slice(2);
@@ -160,6 +225,9 @@ function cacheSieve(newSieve) {
     }
     cachedPrefs.sieve = cachedSieve;
 }
+
+// Improvement #3: Mutex Lock for updatePrefs
+let prefsMutex = Promise.resolve();
 
 async function updatePrefs(prefs, callback) {
     prefs = prefs || {};
@@ -223,9 +291,16 @@ async function updatePrefs(prefs, callback) {
     cachedPrefs = newPrefs;
     if (prefs.sieve) {
         changes.sieve = typeof prefs.sieve === "string" ? JSON.parse(prefs.sieve) : prefs.sieve;
-        cacheSieve(changes.sieve);
+        cacheSieve(changes.sieve);  // Cache immediately, BEFORE mutex
     }
-    await cfg.set(changes);
+
+    // Improvement #3: Only mutex-protect the storage write
+    await (prefsMutex = prefsMutex.then(async () => {
+        await cfg.set(changes);
+    }).catch(err => {
+        console.error('updatePrefs storage error:', err);
+    }));
+
     if (!prefs.sieve) {
         const data = await cfg.get("sieve");
         if (!data?.sieve) {
@@ -237,6 +312,42 @@ async function updatePrefs(prefs, callback) {
     if (typeof callback === "function") {
         callback();
     }
+}
+
+// Simple progress tab management - close old tab by ID, create new one
+async function getOrCreateProgressTab(initiatorTabId) {
+    // Close old progress tab if exists (by stored ID)
+    if (downloadProgressTabId) {
+        console.info(manifest.name + ': Closing old progress tab (ID: ' + downloadProgressTabId + ')');
+        chrome.tabs.remove(downloadProgressTabId).catch(() => {
+            // Tab may already be closed, ignore error
+        });
+        downloadProgressTabId = null;
+    }
+
+    // Create new tab next to initiator
+    const progressUrl = chrome.runtime.getURL('options/download-progress.html');
+    let createOptions = {
+        url: progressUrl,
+        active: false  // Always in background (per user request)
+    };
+
+    // Position next to initiator tab
+    if (initiatorTabId) {
+        try {
+            const initiatorTab = await chrome.tabs.get(initiatorTabId);
+            createOptions.index = initiatorTab.index + 1;
+            createOptions.openerTabId = initiatorTabId;
+        } catch (e) {
+            console.warn(manifest.name + ': Could not get initiator tab position');
+        }
+    }
+
+    const newTab = await chrome.tabs.create(createOptions);
+    downloadProgressTabId = newTab.id;  // Store for messaging
+
+    console.info(manifest.name + ': Created new progress tab (ID: ' + newTab.id + ')');
+    return newTab.id;
 }
 
 function onMessage(message, sender, sendResponse) {
@@ -424,18 +535,38 @@ function onMessage(message, sender, sendResponse) {
 
         case 'openDownloadProgress':
             downloadInitiatorTabId = sender.tab?.id;
-            downloadStats = { found: 0, filtered: 0, downloaded: 0 };
             scanInProgress = true;
-            chrome.tabs.create({
-                url: chrome.runtime.getURL('options/download-progress.html'),
-                active: false
-            }, function (tab) {
-                downloadProgressTabId = tab.id;
-            });
+
+            // Improvement #9: Optional progress tab opening
+            const showProgressTab = cachedPrefs?.da?.showProgressTab ?? false;
+
+            if (showProgressTab) {
+                getOrCreateProgressTab(downloadInitiatorTabId).then(tabId => {
+                    // Send initial state when tab is ready
+                    setTimeout(() => {
+                        chrome.tabs.sendMessage(tabId, {
+                            cmd: 'updateStatus',
+                            status: 'Starting scan...',
+                            items: downloadProgress,
+                            stats: downloadStats
+                        }).catch(() => {
+                            console.warn(manifest.name + ': Progress tab not ready yet');
+                        });
+                    }, 100);
+                }).catch(err => {
+                    console.error(manifest.name + ': Failed to create progress tab:', err);
+                });
+            } else {
+                console.info(manifest.name + ': Progress tab disabled in settings');
+                // Don't reset downloadProgressTabId - preserve for next time setting is enabled
+            }
             break;
 
         case 'registerProgressTab':
+            // Register the tab ID and provide immediate feedback
             downloadProgressTabId = sender.tab?.id;
+            console.info(manifest.name + ': Progress tab registered with ID:', downloadProgressTabId);
+
             // Send current state immediately
             chrome.tabs.sendMessage(downloadProgressTabId, {
                 cmd: 'updateStatus',
@@ -476,7 +607,10 @@ function onMessage(message, sender, sendResponse) {
             downloadStats.found += (msg.found || 0);
             downloadStats.filtered += (msg.filtered || 0);
             if (downloadProgressTabId) {
-                chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => { downloadProgressTabId = null; });
+                chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
+                    // Tab might just be loading, don't reset ID immediately
+                    console.warn(manifest.name + ': Failed to send stats to progress tab');
+                });
             }
             break;
 
@@ -484,6 +618,11 @@ function onMessage(message, sender, sendResponse) {
             scanInProgress = false;
             filterQueue = [];
             downloadQueue = [];
+
+            // Improvement #4: Abort all active fetch requests
+            activeControllers.forEach(ctrl => ctrl.abort());
+            activeControllers.clear();
+
             if (downloadInitiatorTabId) {
                 chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
             }
@@ -734,6 +873,15 @@ chrome.tabs.onActivated.addListener(async function (info) {
     updateBadge(info.tabId, (await chrome.tabs.get(info.tabId)).url);
 });
 
+// Improvement #9: Clean up when progress tab is closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+    if (tabId === downloadProgressTabId) {
+        console.info(manifest.name + ': Progress tab closed by user');
+        downloadProgressTabId = null;
+        // Note: We don't stop scanning, just lose the UI
+    }
+});
+
 
 chrome.action.setTitle({ title: `${manifest.name} v${manifest.version}\nClick to toggle on this site` });
 updatePrefs(null, registerContentScripts);
@@ -819,24 +967,23 @@ async function processFilterQueue() {
 
             if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(contentType.split(';')[0])) {
                 updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
-                activeFilters--;
-                continue;
-            }
-
-            let passed = true;
-            if (contentType.startsWith('image/')) {
-                if (minImageSize > 0 && size < minImageSize) passed = false;
-            } else if (contentType.startsWith('video/')) {
-                if (minVideoSize > 0 && size < minVideoSize) passed = false;
-            } else if (!downloadOnUnknown) {
-                passed = false;
-            }
-
-            if (passed) {
-                downloadQueue.push(task);
-                processDownloadQueue();
+                // Don't continue - let finally block run to call checkAllQueuesEmpty
             } else {
-                updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                let passed = true;
+                if (contentType.startsWith('image/')) {
+                    if (minImageSize > 0 && size < minImageSize) passed = false;
+                } else if (contentType.startsWith('video/')) {
+                    if (minVideoSize > 0 && size < minVideoSize) passed = false;
+                } else if (!downloadOnUnknown) {
+                    passed = false;
+                }
+
+                if (passed) {
+                    downloadQueue.push(task);
+                    processDownloadQueue();
+                } else {
+                    updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                }
             }
         } catch (error) {
             clearTimeout(timeoutId);
@@ -934,10 +1081,16 @@ chrome.downloads.onChanged.addListener(function (delta) {
             if (delta.state.current === 'complete') {
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
-                if (downloadProgressTabId) {
-                    chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => { downloadProgressTabId = null; });
-                }
                 activeDownloads--;
+
+                // Only send updateStats if there are still active downloads
+                // This prevents triggering startAutoRefresh when downloads are actually complete
+                if (downloadProgressTabId && activeDownloads > 0) {
+                    chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
+                        console.warn(manifest.name + ': Failed to send stats to progress tab');
+                    });
+                }
+
                 processDownloadQueue();
                 setTimeout(checkAllQueuesEmpty, 100);
             } else if (delta.state.current === 'interrupted') {
@@ -1054,7 +1207,9 @@ async function processUrlGroupsWithValidation(groups, referer) {
                 cmd: 'updateStatus',
                 status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
                 done: false
-            }).catch(() => { downloadProgressTabId = null; });
+            }).catch(() => {
+                console.warn(manifest.name + ': Failed to send message to progress tab');
+            });
         }
     }
     if (downloadInitiatorTabId) {

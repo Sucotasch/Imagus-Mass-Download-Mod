@@ -79,7 +79,10 @@ window.addEventListener(
 const Port = {
     listen: function (callback) {
         if (this.listener) {
-            chrome.runtime.onMessage?.removeListener(this.listener);
+            // Check if chrome.runtime exists before accessing onMessage
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+                chrome.runtime.onMessage.removeListener(this.listener);
+            }
         }
 
         if (typeof callback === "function") {
@@ -92,7 +95,10 @@ const Port = {
             } else {
                 this.listener = callback;
             }
-            chrome.runtime.onMessage?.addListener(this.listener);
+            // Check if chrome.runtime exists before accessing onMessage
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+                chrome.runtime.onMessage.addListener(this.listener);
+            }
         } else {
             this.listener = null;
         }

@@ -50,8 +50,8 @@ minifiers = {
         'url': 'https://dl.google.com/closure-compiler/compiler-20200224.zip',
     },
     'yuicompressor': {
-        'file': 'yuicompressor-2.4.7/build/yuicompressor-2.4.7.jar',
-        'url': 'https://github.com/downloads/yui/yuicompressor/yuicompressor-2.4.7.zip',
+        'file': 'yuicompressor-2.4.7.jar',
+        'url': 'https://repo1.maven.org/maven2/com/yahoo/platform/yui/yuicompressor/2.4.7/yuicompressor-2.4.7.jar',
     },
     'htmlcompressor': {
         'file': 'htmlcompressor-1.5.3.jar',

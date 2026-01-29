@@ -392,9 +392,6 @@
   "HZ_ENDIS_RIGHT_BUTTON": {
     "message": "правая кнопка"
   },
-  "SIV_AUTOUPDATE": {
-    "message": "Автоматическое обновление фильтров"
-  },
   "ADVANCED": {
     "message": "Расширенные"
   },

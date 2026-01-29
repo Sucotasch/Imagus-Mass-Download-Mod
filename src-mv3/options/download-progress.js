@@ -56,13 +56,17 @@
         chrome.runtime.sendMessage({ cmd: 'registerProgressTab' });
         refreshDisplay();
 
-        // Set up auto-refresh
-        refreshIntervalId = setInterval(refreshDisplay, 2000);
+        // Don't start auto-refresh immediately - let background push updates
+        // Only refresh if we detect stale data
     }
 
     // Handle messages from background script
     function handleMessage(request, sender, sendResponse) {
-        if (request.cmd === 'updateStatus') {
+        if (request.cmd === 'ping') {
+            // Respond to ping for tab validation
+            sendResponse({ pong: true });
+            return true;
+        } else if (request.cmd === 'updateStatus') {
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
                 scanStatusEl.textContent = request.status;
@@ -80,12 +84,31 @@
                 updateGlobalStats(request.stats);
             }
         } else if (request.cmd === 'allDownloadsComplete') {
-            // We can stop auto-refreshing if we want, but usually better to keep it
+            // Stop auto-refresh when all downloads complete
+            stopAutoRefresh();
+            const scanStatusEl = document.getElementById('scanStatus');
+            if (scanStatusEl) {
+                scanStatusEl.textContent = 'All downloads completed';
+                setTimeout(() => { scanStatusEl.textContent = ''; }, 5000);
+            }
         } else if (request.cmd === 'updateStats') {
             updateGlobalStats(request.stats);
+            // Start auto-refresh if not already running (downloads active)
+            startAutoRefresh();
         } else if (request.cmd === 'updateDownloadStatus') {
             updateDownloadItem(request);
             updateDisplay();
+            // Ensure refresh is running during active downloads
+            startAutoRefresh();
+        } else if (request.cmd === 'resetForNewDownload') {
+            // Clear UI for tab reuse
+            downloadItems = {};
+            globalStats = { found: 0, filtered: 0, downloaded: 0, failed: 0, skipped: 0 };
+            updateDisplay();
+            const scanStatusEl = document.getElementById('scanStatus');
+            if (scanStatusEl) {
+                scanStatusEl.textContent = '';
+            }
         }
     }
 
@@ -228,6 +251,21 @@
             'canceled': 'Canceled'
         };
         return statusMap[status] || status;
+    }
+
+    function startAutoRefresh() {
+        if (!refreshIntervalId) {
+            console.log('Starting auto-refresh (active downloads detected)');
+            refreshIntervalId = setInterval(refreshDisplay, 2000);
+        }
+    }
+
+    function stopAutoRefresh() {
+        if (refreshIntervalId) {
+            console.log('Stopping auto-refresh (no active downloads)');
+            clearInterval(refreshIntervalId);
+            refreshIntervalId = null;
+        }
     }
 
     function refreshDisplay() {
