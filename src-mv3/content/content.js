@@ -2077,7 +2077,7 @@
                     PVI.VID.muted = !PVI.VID.muted;
 
                 } else pv = false;
-            } else if (key === cfg.keys.hz_massDownload || key === cfg.keys.downloadAll || key === "D" || key === "Q") {
+            } else if (key === cfg.keys.downloadAll) {
                 if (e.shiftKey || e.ctrlKey) {
                     PVI.downloadAll(doc);
                     pv = true;

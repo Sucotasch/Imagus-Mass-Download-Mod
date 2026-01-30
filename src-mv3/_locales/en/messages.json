@@ -191,6 +191,9 @@
   "HZ_SC_RESET": {
     "message": "hide the pop-up and stop loading its content"
   },
+  "HZ_SC_MASS_DOWNLOAD": {
+    "message": "mass-download from the current page"
+  },
   "SC_ZOOMINOUT": {
     "message": "Zoom in / out"
   },

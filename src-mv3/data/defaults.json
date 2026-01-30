@@ -88,7 +88,7 @@
 		"prefs": "P",
 		"send": "S",
 		"hz_toggle": "D",
-		"hz_massDownload": "D",
+		"hz_massDownload": "",
 		"hz_preload": "L",
 		"hz_fullZm": "Z",
 		"hz_fullSpace": "F",
