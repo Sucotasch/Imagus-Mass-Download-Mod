@@ -687,29 +687,9 @@ document.addEventListener("keydown", function (e) {
 }, true);
 
 async function checkUserScripts() {
+    // Firefox MV3: Content scripts are registered statically via manifest.json
+    // No userScripts API check needed - just show ready state
     const msg = $("allow_scripts_message");
-    try {
-        const scripts = await chrome.userScripts.getScripts();
-        if (scripts?.length > 0) {
-            msg.innerHTML = _("APP_READY").replace('"Imagus"', app.name);
-            msg.style.backgroundColor = "#dcfad7";
-            return;
-        } else {
-            Port.send({ cmd: "loadScripts" });
-        }
-    } catch (e) {
-        if (platform === "firefox") {
-            msg.dataset.type = "firefox";
-            msg.innerHTML = _("ALLOW_USER_SCRIPTS_FF");
-        } else if (e.message?.includes("API is only available for users in developer mode")) {
-            msg.dataset.type = "devmode";
-            msg.innerHTML = _("ALLOW_DEV_MODE");
-        } else {
-            msg.dataset.type = "scripts";
-            msg.innerHTML = _("ALLOW_USER_SCRIPTS");
-        }
-        msg.style.display = "block";
-    }
-
-    setTimeout(checkUserScripts, 2000);
+    msg.innerHTML = _("APP_READY").replace('"Imagus"', app.name);
+    msg.style.backgroundColor = "#dcfad7";
 }
