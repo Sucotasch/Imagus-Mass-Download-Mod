@@ -1,0 +1,122 @@
+{
+    "_": "en",
+    "cs": {
+        "name": "Czech (čeština)",
+        "translators": [
+            {
+                "email": "jaramat@email.cz",
+                "fullname": "Jaroslav Matura",
+                "name": "jaramat"
+            }
+        ]
+    },
+    "de": {
+        "name": "German (Deutsch)",
+        "translators": [
+            {
+                "name": "deus-ex"
+            }
+        ]
+    },
+    "el": {
+        "name": "Greek (Ελληνικά)",
+        "translators": [
+            {
+                "email": "farow.the.time.traveler@gmail.com",
+                "name": "Farow"
+            }
+        ]
+    },
+    "en": {
+        "name": "English",
+        "translators": [
+            {
+                "email": "deathamns@gmail.com",
+                "name": "Deathamns"
+            }
+        ]
+    },
+    "es": {
+        "name": "Spanish (español)",
+        "translators": [
+            {
+                "email": "nightroad@mail.com",
+                "fullname": "Javier Vera",
+                "name": "DurianZheitk"
+            }
+        ]
+    },
+    "fr": {
+        "name": "French (français)",
+        "translators": [
+            {
+                "email": "tmnath2@gmail.com",
+                "name": "Tmnath"
+            }
+        ]
+    },
+    "hu": {
+        "name": "Hungarian (magyar)",
+        "translators": [
+            {
+                "email": "deathamns@gmail.com",
+                "name": "Deathamns"
+            }
+        ]
+    },
+    "nl": {
+        "name": "Dutch (Nederlands)",
+        "translators": [
+            {
+                "email": "kackar@outlook.com",
+                "name": "Kaçkar"
+            }
+        ]
+    },
+    "pl": {
+        "name": "Polish (polski)",
+        "translators": [
+            {
+                "fullname": "Paweł Pawlak",
+                "name": "pafflick",
+                "web": "http://www.pafflick.com/"
+            }
+        ]
+    },
+    "pt-BR": {
+        "name": "Portuguese (Brazil) (português (Brasil))",
+        "translators": [
+            {
+                "email": "romulo@brazilmail.com",
+                "fullname": "Rômulo Godoi"
+            }
+        ]
+    },
+    "ru": {
+        "name": "Russian (русский)",
+        "translators": [
+            {
+                "email": "rodny0@gmail.com",
+                "name": "Rodny"
+            }
+        ]
+    },
+    "uk": {
+        "name": "Ukrainian (українська)",
+        "translators": [
+            {
+                "email": "simofon@yandex.ru",
+                "name": "Simofon"
+            }
+        ]
+    },
+    "zh-CN": {
+        "name": "Chinese (Simplified Han) (中文（简体中文）)",
+        "translators": [
+            {
+                "email": "wlq105556@gmail.com",
+                "name": "fang5566"
+            }
+        ]
+    }
+}
