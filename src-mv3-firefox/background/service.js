@@ -596,6 +596,24 @@ function onMessage(message, sender, sendResponse) {
             if (typeof sendResponse === 'function') sendResponse({});
             break;
 
+        case 'downloadAll':
+            // Bridge: Popup -> Background -> Injection (Signal Flare) -> UserScript
+            chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+                if (tab) {
+                    chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        world: 'MAIN', // Target MAIN world to ensure event is visible across worlds via DOM
+                        func: () => {
+                            window.dispatchEvent(new CustomEvent('imagus-mass-download-trigger'));
+                        }
+                    }).catch((err) => {
+                        console.warn(manifest.name + ': Failed to inject signal flare:', err);
+                    });
+                }
+            });
+            if (typeof sendResponse === 'function') sendResponse({});
+            break;
+
         case 'resolveAndDownloadGroups':
             downloadInitiatorTabId = sender.tab?.id;
             if (!scanInProgress) scanInProgress = true;

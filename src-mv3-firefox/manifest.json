@@ -15,7 +15,8 @@
 		"alarms",
 		"downloads",
 		"history",
-		"storage"
+		"storage",
+		"scripting"
 	],
 	"optional_permissions": [
 		"userScripts"

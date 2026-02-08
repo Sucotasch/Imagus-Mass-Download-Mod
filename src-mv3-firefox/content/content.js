@@ -3310,4 +3310,12 @@
     // Connect listener kept for potential future port needs
     chrome.runtime.onConnect?.addListener(PVI.onConnect);
 
+    // Mass Download trigger (via injection nudge from popup/background)
+    // We listen on window for a custom event dispatched by the background injection
+    win.addEventListener('imagus-mass-download-trigger', () => {
+        if (typeof PVI.downloadAll === 'function') {
+            PVI.downloadAll(doc);
+        }
+    });
+
 })(window, document);
