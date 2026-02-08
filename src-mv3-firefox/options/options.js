@@ -15,7 +15,7 @@ const _ = function (msg) {
 
 let insertHTML = function (element, html) {
     var allowedTags =
-        /^([apbiusq]|d(iv|el)|em|h[1-6]|i(mg|ns)|s((pan|mall)|u[bp])|[bh]r|pre|code|blockquote|[ou]l|li|d[ltd]|t([rhd]|able|head|body|foot)|svg|symbol|line|path)$/i,
+            /^([apbiusq]|d(iv|el)|em|h[1-6]|i(mg|ns)|s((pan|mall)|u[bp])|[bh]r|pre|code|blockquote|[ou]l|li|d[ltd]|t([rhd]|able|head|body|foot)|svg|symbol|line|path)$/i,
         allowedAttrs = /^(data-|stroke-|(class|style|xmlns|viewBox|i?d|fill|line(cap|join)|transform|[xy][12])$)/i,
         tempBody = document.implementation.createHTMLDocument("").body;
     var cleanNode = function (node) {
@@ -245,7 +245,7 @@ var setDefault = function (query) {
     [].forEach.call(typeof query === "string" ? document.querySelectorAll(query) : [query], function (el) {
         if (el.type === "checkbox") el.checked = el.defaultChecked;
         else if (/^SELECT/i.test(el.type))
-            for (var i = el.length; i--;) {
+            for (var i = el.length; i--; ) {
                 if (el[i].hasAttribute("selected")) {
                     el.selectedIndex = i;
                     break;
@@ -391,7 +391,7 @@ var download = function (data, filename, exportAsText) {
 
 var prefs = function (data, options, ev) {
     var i,
-        pref_keys = ["hz", "keys", "tls", "grants", "da"];
+        pref_keys = ["hz", "keys", "tls", "grants"];
     if (typeof data === "object") {
         if (JSON.stringify(data) === "{}") return false;
         if ((options || {}).clear) Port.send({ cmd: "cfg_del", keys: Object.keys(data) });
@@ -404,7 +404,7 @@ var prefs = function (data, options, ev) {
     download(JSON.stringify(data, null, ev.shiftKey ? 2 : 0), app.name + "-conf.json", ev.ctrlKey);
 };
 
-function onValueChange(e) {
+function onValueChange (e) {
     if (e.stopPropagation) e.stopPropagation();
     var t = e.target;
     if (t.placeholder) return;
@@ -639,7 +639,7 @@ window.addEventListener(
         document.body.style.display = "block";
 
         $('hz_hoverCss').addEventListener('blur', () => $('hz_hoverCss_style').textContent = '');
-        $('hz_hoverCss').addEventListener('keyup', function () {
+        $('hz_hoverCss').addEventListener('keyup', function() {
             $('hz_hoverCss_style').textContent =
                 `.hz_hoverCss:after {
                     content: "";
@@ -687,9 +687,29 @@ document.addEventListener("keydown", function (e) {
 }, true);
 
 async function checkUserScripts() {
-    // Firefox MV3: Content scripts are registered statically via manifest.json
-    // No userScripts API check needed - just show ready state
     const msg = $("allow_scripts_message");
-    msg.innerHTML = _("APP_READY").replace('"Imagus"', app.name);
-    msg.style.backgroundColor = "#dcfad7";
+    try {
+        const scripts = await chrome.userScripts.getScripts();
+        if (scripts?.length > 0) {
+            msg.innerHTML = _("APP_READY").replace('"Imagus"', app.name);
+            msg.style.backgroundColor = "#dcfad7";
+            return;
+        } else {
+            Port.send({ cmd: "loadScripts" });
+        }
+    } catch(e) {
+        if (platform === "firefox") {
+            msg.dataset.type = "firefox";
+            msg.innerHTML = _("ALLOW_USER_SCRIPTS_FF");
+        } else if (e.message?.includes("API is only available for users in developer mode")) {
+            msg.dataset.type = "devmode";
+            msg.innerHTML = _("ALLOW_DEV_MODE");
+        } else {
+            msg.dataset.type = "scripts";
+            msg.innerHTML = _("ALLOW_USER_SCRIPTS");
+        }
+        msg.style.display = "block";
+    }
+
+    setTimeout(checkUserScripts, 2000);
 }

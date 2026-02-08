@@ -191,9 +191,6 @@
   "HZ_SC_RESET": {
     "message": "hide the pop-up and stop loading its content"
   },
-  "HZ_SC_MASS_DOWNLOAD": {
-    "message": "mass-download from the current page"
-  },
   "SC_ZOOMINOUT": {
     "message": "Zoom in / out"
   },
@@ -416,6 +413,9 @@
   "HZ_ENDIS_RIGHT_BUTTON": {
     "message": "right button"
   },
+  "SIV_AUTOUPDATE": {
+    "message": "Automatically update Sieve"
+  },
   "ADVANCED": {
     "message": "Advanced"
   },
@@ -504,7 +504,7 @@
     "message": "To continue you have to enable Developer Mode on <a href=\"#\">Extensions page</a>. Then get back here."
   },
   "APP_READY": {
-    "message": "Great! \"Imagus Reborn MD\" is ready now."
+    "message": "Great! \"Imagus\" is ready now."
   },
   "ALLOW_USER_SCRIPTS_FF": {
     "message": "To continue you have to <a href=\"#\">allow User Scripts</a>."
@@ -535,5 +535,8 @@
   },
   "DA_TIMEOUT": {
     "message": "Resolution Timeout (s)"
+  },
+  "HZ_SC_MASS_DOWNLOAD": {
+    "message": "mass-download from the current page"
   }
 }

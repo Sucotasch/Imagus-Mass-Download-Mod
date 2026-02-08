@@ -1,16 +1,10 @@
 {
 	"manifest_version": 3,
-	"name": "Imagus Reborn MD (Firefox)",
-	"version": "2026.1.31",
+	"name": "Imagus Mass Download Mod (Firefox)",
+	"version": "2026.1.31.2",
 	"description": "__MSG_APP_DESCRIPTION__",
 	"default_locale": "en",
 	"homepage_url": "https://www.reddit.com/r/Imagus",
-	"browser_specific_settings": {
-		"gecko": {
-			"id": "{7653b5cb-d76d-442f-a98f-f3c83a118cf4}",
-			"strict_min_version": "128.0"
-		}
-	},
 	"icons": {
 		"128": "common/img/icon.png"
 	},
@@ -23,28 +17,23 @@
 		"history",
 		"storage"
 	],
+	"optional_permissions": [
+		"userScripts"
+	],
 	"host_permissions": [
 		"<all_urls>"
 	],
-	"incognito": "spanning",
 	"background": {
 		"scripts": [
 			"background/service.js"
 		]
 	},
-	"content_scripts": [
-		{
-			"matches": [
-				"<all_urls>"
-			],
-			"js": [
-				"common/app.js",
-				"content/content.js"
-			],
-			"run_at": "document_idle",
-			"all_frames": true
+	"browser_specific_settings": {
+		"gecko": {
+			"id": "imagus-mass-download-mod@sucot.net",
+			"strict_min_version": "121.0"
 		}
-	],
+	},
 	"options_ui": {
 		"page": "options/options.html",
 		"open_in_tab": true

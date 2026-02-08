@@ -4,31 +4,6 @@
     var imgDoc = doc.images && doc.images.length === 1 && doc.images[0];
     if (imgDoc && imgDoc.parentNode === doc.body && imgDoc.src === win.location.href) return;
 
-    // Helper functions for the mass downloader
-    var _isElementVisible = function (el) {
-        if (!el) return false;
-        if (!el.isConnected) return false;
-        if (el.hidden) return false;
-        if (el.closest('details:not([open])')) return false;
-        if (el.offsetWidth === 0 || el.offsetHeight === 0) {
-            var rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) return false;
-        }
-        var style = window.getComputedStyle(el);
-        if (style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return false;
-        return true;
-    };
-
-    var _hasStopWords = function (el, keywords) {
-        if (!keywords) return false;
-        const text = (el.textContent || el.alt || el.title || '').toLowerCase();
-        const href = (el.href || '').toLowerCase();
-        return keywords.some(word => {
-            const wordBoundary = new RegExp('\\b' + word + '\\b');
-            return wordBoundary.test(text) || href.includes(word);
-        });
-    };
-
     var flip = function (el, ori) {
         if (!el.scale) el.scale = { h: 1, v: 1 };
         el.scale[ori ? "h" : "v"] *= -1;
@@ -41,6 +16,19 @@
         if (!e || !e.preventDefault || !e.stopPropagation) return;
         if (d === undefined || d === true) e.preventDefault();
         if (p !== false) e.stopImmediatePropagation();
+    };
+
+    var _hasStopWords = function (el, keywords) {
+        if (!el || !keywords || keywords.length === 0) return false;
+        const text = (el.textContent || el.alt || el.title || '').toLowerCase();
+        const href = (el.href || el.src || '').toLowerCase();
+        const innerHTML = (el.innerHTML || '').toLowerCase();
+
+        return keywords.some(word =>
+            text.includes(word) ||
+            href.includes(word) ||
+            innerHTML.includes(word)
+        );
     };
 
     var imageSendTo = function (sf) {
@@ -290,17 +278,17 @@
             pile_bg: "rgb(255, 255, 0)",
         },
 
-        // --- Mass Download Properties ---
+        // --- Mass Download State ---
         downloadAllActive: false,
         downloadAllQueue: [],
         downloadAllTotal: 0,
         downloadAllFound: 0,
         downloadAllFiltered: 0,
         downloadAllUniqueUrls: new Set(),
-        downloadAllSendResponse: null,
+        ambiguousUrlGroups: [],
         downloadAllStatusEl: null,
         downloadAllAudioEl: null,
-        ambiguousUrlGroups: [],
+        downloadAllSendResponse: null,
 
         convertSieveRegexes: function () {
             let s = cfg.sieve,
@@ -865,9 +853,9 @@
                     if (n.childElementCount && n.querySelector("iframe, object, embed")) break;
                     if (typeof x === "number" && typeof y === "number") {
                         tmp_el = doc.elementsFromPoint(x, y);
-                        for (i = 0; i < tmp_el.length && i < 5; ++i) {
+                        for (i = 0; i < 5 && i < tmp_el.length; ++i) {
                             if (tmp_el[i] === doc.body) break;
-                            if (tmp_el[i] && !tmp_el[i].currentSrc && tmp_el[i].style.backgroundImage.lastIndexOf("url(", 0) !== 0) continue;
+                            if (!tmp_el[i].currentSrc && tmp_el[i].style.backgroundImage.lastIndexOf("url(", 0) !== 0) continue;
                             var elRect = tmp_el[i].getBoundingClientRect();
                             if (x >= elRect.left && x < elRect.right && y >= elRect.top && y < elRect.bottom) {
                                 var trgRect = trg.getBoundingClientRect();
@@ -2078,7 +2066,7 @@
 
                 } else pv = false;
             } else if (key === cfg.keys.downloadAll) {
-                if (e.shiftKey || e.ctrlKey) {
+                if (cfg.downloadAll_ctrl ? e.ctrlKey : true) {
                     PVI.downloadAll(doc);
                     pv = true;
                 } else pv = false;
@@ -2775,6 +2763,19 @@
 
         onMessage: function (d) {
             if (!d) return;
+            if (d.cmd === 'downloadAll') {
+                PVI.downloadAll(doc);
+                return;
+            }
+            if (d.cmd === 'groupAnalysisComplete') {
+                PVI.handleGroupAnalysisComplete(d.processedCount);
+                return;
+            }
+            if (d.cmd === 'stopScanning') {
+                PVI.downloadAllActive = false;
+                PVI._stopKeepAwake('Scanning stopped by backend.');
+                return;
+            }
             if (d.cmd === "resolved") {
                 var trg = PVI.resolving[d.id] || PVI.TRG;
                 var rule = cfg.sieve[d.params.rule.id];
@@ -2879,16 +2880,28 @@
 
             } else if (d.cmd === "download") {
                 download(d);
-            } else if (d.cmd === 'stopScanning') {
-                if (PVI.downloadAllActive) {
-                    PVI.downloadAllActive = false;
-                }
-            } else if (d.cmd === 'downloadAll') {
-                PVI.downloadAll(doc, null, d.sender);
-            } else if (d.cmd === 'groupAnalysisComplete') {
-                if (PVI.handleGroupAnalysisComplete) {
-                    PVI.handleGroupAnalysisComplete(d.processedCount || 0);
-                }
+            } else if (d.cmd === "groupAnalysisComplete") {
+                PVI.handleGroupAnalysisComplete(d.processedCount);
+            } else if (d.cmd === "updateStatus") {
+                PVI._updateDownloadAllStatus(d.status);
+            } else if (d.cmd === "stopScanning") {
+                PVI.downloadAllActive = false;
+                PVI._stopKeepAwake("Scanning stopped.");
+            }
+            return true; // Keep channel open for Firefox MV3
+        },
+
+        onConnect: function (port) {
+            if (port.name === "imagus-status") {
+                console.info("Imagus content script: Status port connected");
+                PVI.statusPort = port; // Keep reference to prevent GC
+                port.onMessage.addListener(function (msg) {
+                    PVI.onMessage(msg, { id: "status-port" }, () => { });
+                });
+                port.onDisconnect.addListener(() => {
+                    console.info("Imagus content script: Status port disconnected");
+                    PVI.statusPort = null;
+                });
             }
         },
 
@@ -2915,6 +2928,7 @@
                         PVI.init(null, true);
                         return;
                     }
+                    // chrome.runtime.onConnect?.addListener(PVI.onConnect); // Moved to top level
                     PVI.freeze = !cfg.hz.deactivate;
                     cfg._freezeTriggerEventKey = cfg.hz.actTrigger.toLowerCase() + "Key";
                     PVI.convertSieveRegexes();
@@ -3012,280 +3026,296 @@
             delete PVI.capturedMoveEvent;
             PVI.initOnMouseMoveEnd = function () { };
         },
+    };
 
-        // --- Mass Download Methods ---
-        _updateDownloadAllStatus: function (progressText) {
-            if (!PVI.downloadAllStatusEl) {
-                PVI.downloadAllStatusEl = doc.createElement('div');
-                const style = PVI.downloadAllStatusEl.style;
-                style.position = 'fixed';
-                style.top = '20px';
-                style.left = '50%';
-                style.transform = 'translateX(-50%)';
-                style.padding = '15px 25px';
-                style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
-                style.color = 'white';
-                style.borderRadius = '8px';
-                style.zIndex = '2147483647';
-                style.fontSize = '16px';
-                style.fontFamily = 'sans-serif';
-                style.textAlign = 'center';
-                style.minWidth = '400px';
-                style.transition = 'opacity 0.5s';
-                doc.body.appendChild(PVI.downloadAllStatusEl);
-            }
-            const warningText = '<strong>Do not leave this page until scanning is complete!</strong>';
-            PVI.downloadAllStatusEl.innerHTML = `${warningText}<br><span style="font-size: 14px;">${progressText}</span>`;
-        },
+    window.addEventListener("mousemove", PVI.onInitMouseMove, true);
+    catchEvent.onmessage = PVI.winOnMessage;
 
-        _startKeepAwake: function () {
-            if (PVI.downloadAllAudioEl) return;
-            PVI.downloadAllAudioEl = doc.createElement('audio');
-            PVI.downloadAllAudioEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'; // 1-second silent wav
-            PVI.downloadAllAudioEl.loop = true;
-            PVI.downloadAllAudioEl.play().catch(e => { });
-        },
+    // --- Mass Download Methods ---
+    PVI._updateDownloadAllStatus = function (progressText) {
+        if (!PVI.downloadAllStatusEl) {
+            PVI.downloadAllStatusEl = doc.createElement('div');
+            const style = PVI.downloadAllStatusEl.style;
+            style.position = 'fixed';
+            style.top = '20px';
+            style.left = '50%';
+            style.transform = 'translateX(-50%)';
+            style.padding = '15px 25px';
+            style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
+            style.color = 'white';
+            style.borderRadius = '8px';
+            style.zIndex = '2147483647';
+            style.fontSize = '16px';
+            style.fontFamily = 'sans-serif';
+            style.textAlign = 'center';
+            style.minWidth = '400px';
+            style.transition = 'opacity 0.5s';
+            doc.body.appendChild(PVI.downloadAllStatusEl);
+        }
+        const warningText = '<strong>Do not leave this page until scanning is complete!</strong>';
+        PVI.downloadAllStatusEl.innerHTML = `${warningText}<br><span style="font-size: 14px;">${progressText}</span>`;
+    };
 
-        _stopKeepAwake: function (finalMessage) {
-            if (PVI.downloadAllAudioEl) {
-                PVI.downloadAllAudioEl.pause();
-                PVI.downloadAllAudioEl.remove();
-                PVI.downloadAllAudioEl = null;
-            }
-            if (PVI.downloadAllStatusEl) {
-                PVI.downloadAllStatusEl.innerHTML = `<strong style="color: #a5d6a7;">${finalMessage}</strong>`;
-                setTimeout(() => {
-                    if (PVI.downloadAllStatusEl) {
-                        PVI.downloadAllStatusEl.style.opacity = '0';
-                        setTimeout(() => {
-                            if (PVI.downloadAllStatusEl) PVI.downloadAllStatusEl.remove();
-                            PVI.downloadAllStatusEl = null;
-                        }, 500);
-                    }
-                }, 5000);
-            }
-        },
+    PVI._startKeepAwake = function () {
+        if (PVI.downloadAllAudioEl) return;
+        PVI.downloadAllAudioEl = doc.createElement('audio');
+        PVI.downloadAllAudioEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'; // 1-second silent wav
+        PVI.downloadAllAudioEl.loop = true;
+        PVI.downloadAllAudioEl.play().catch(e => { });
+    };
 
-        filterQueueAsynchronously: function (elementsToFilter) {
-            const chunkSize = 100;
-            let index = 0;
-            const filteredElements = [];
-            const keywords = (cfg.da && cfg.da.excludedKeywords) ? cfg.da.excludedKeywords.split(',').map(w => w.trim()).filter(w => w) : [];
-
-            const processChunk = () => {
-                if (!PVI.downloadAllActive) {
-                    PVI._stopKeepAwake('Scanning canceled.');
-                    return;
+    PVI._stopKeepAwake = function (finalMessage) {
+        if (PVI.downloadAllAudioEl) {
+            PVI.downloadAllAudioEl.pause();
+            PVI.downloadAllAudioEl.remove();
+            PVI.downloadAllAudioEl = null;
+        }
+        if (PVI.downloadAllStatusEl) {
+            PVI.downloadAllStatusEl.innerHTML = `<strong style="color: #a5d6a7;">${finalMessage}</strong>`;
+            setTimeout(() => {
+                if (PVI.downloadAllStatusEl) {
+                    PVI.downloadAllStatusEl.style.opacity = '0';
+                    setTimeout(() => {
+                        if (PVI.downloadAllStatusEl) PVI.downloadAllStatusEl.remove();
+                        PVI.downloadAllStatusEl = null;
+                    }, 500);
                 }
+            }, 5000);
+        }
+    };
 
-                let chunkEnd = Math.min(index + chunkSize, elementsToFilter.length);
+    PVI.filterQueueAsynchronously = function (elementsToFilter) {
+        const chunkSize = 100;
+        let index = 0;
+        const filteredElements = [];
+        const keywords = (cfg.da && cfg.da.excludedKeywords) ? cfg.da.excludedKeywords.split(',').map(w => w.trim()).filter(w => w) : [];
 
-                for (let i = index; i < chunkEnd; i++) {
-                    const el = elementsToFilter[i];
-                    if (!_hasStopWords(el, keywords)) {
-                        filteredElements.push(el);
-                    } else {
-                        PVI.downloadAllFiltered++;
-                    }
-                }
-
-                index += chunkSize;
-
-                const progressText = `Filtering ${index > elementsToFilter.length ? elementsToFilter.length : index}/${elementsToFilter.length}... Found ${filteredElements.length} candidates.`;
-                PVI._updateDownloadAllStatus(progressText);
-
-                if (index < elementsToFilter.length) {
-                    setTimeout(processChunk, 50);
-                } else {
-                    PVI.downloadAllQueue = filteredElements;
-                    PVI.downloadAllTotal = filteredElements.length;
-                    PVI.downloadAllFound = 0;
-
-                    Port.send({ cmd: 'updateFilterStats', found: elementsToFilter.length, filtered: PVI.downloadAllFiltered });
-
-                    const finalMessage = `Filtering complete. Found ${PVI.downloadAllTotal} items to process.`;
-                    PVI._updateDownloadAllStatus(finalMessage);
-                    PVI.processNextInQueue();
-                }
-            };
-
-            processChunk();
-        },
-
-        downloadAll: function (doc, sendResponse, sender) {
-            if (PVI.downloadAllActive) {
-                if (sendResponse) sendResponse({ status: 'already running' });
-                return;
-            }
-            PVI.downloadAllActive = true;
-
-            const allElements = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
-
-            PVI.downloadAllTotal = allElements.length;
-            PVI.downloadAllFound = 0;
-            PVI.downloadAllFiltered = 0;
-            PVI.downloadAllUniqueUrls.clear();
-            PVI.ambiguousUrlGroups = [];
-            PVI.downloadAllSendResponse = sendResponse || null;
-
-            PVI._updateDownloadAllStatus(`Found ${PVI.downloadAllTotal} potential items. Starting filtering...`);
-            PVI._startKeepAwake();
-
-
-            Port.send({ cmd: 'openDownloadProgress', tab: sender ? sender.tab : null });
-
-            PVI.filterQueueAsynchronously(allElements);
-        },
-
-        processNextInQueue: function () {
-            PVI.reset(true);
+        const processChunk = () => {
             if (!PVI.downloadAllActive) {
                 PVI._stopKeepAwake('Scanning canceled.');
                 return;
             }
 
-            if (PVI.downloadAllQueue.length === 0) {
-                if (PVI.ambiguousUrlGroups.length > 0) {
-                    const statusMessage = `Scan complete. Found ${PVI.downloadAllFound} direct items. Analyzing ${PVI.ambiguousUrlGroups.length} complex items...`;
-                    PVI._updateDownloadAllStatus(statusMessage);
-                    Port.send({ cmd: 'updateStatus', status: statusMessage, done: false });
+            let chunkEnd = Math.min(index + chunkSize, elementsToFilter.length);
 
-                    Port.send({
-                        cmd: 'resolveAndDownloadGroups',
-                        groups: PVI.ambiguousUrlGroups,
-                        referer: window.location.href
-                    });
+            for (let i = index; i < chunkEnd; i++) {
+                const el = elementsToFilter[i];
+                if (!_hasStopWords(el, keywords)) {
+                    filteredElements.push(el);
                 } else {
-                    const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
-                    PVI._updateDownloadAllStatus(finalMessage);
-                    Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items.`, done: true });
-                    PVI.downloadAllActive = false;
-                    PVI._stopKeepAwake(finalMessage);
-                    if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
+                    PVI.downloadAllFiltered++;
                 }
+            }
+
+            index += chunkSize;
+
+            const progressText = `Filtering ${index > elementsToFilter.length ? elementsToFilter.length : index}/${elementsToFilter.length}... Found ${filteredElements.length} candidates.`;
+            PVI._updateDownloadAllStatus(progressText);
+
+            if (index < elementsToFilter.length) {
+                setTimeout(processChunk, 50);
+            } else {
+                PVI.downloadAllQueue = filteredElements;
+                PVI.downloadAllTotal = filteredElements.length;
+                PVI.downloadAllFound = 0;
+
+                Port.send({ cmd: 'updateFilterStats', found: elementsToFilter.length, filtered: PVI.downloadAllFiltered });
+
+                const finalMessage = `Filtering complete. Found ${PVI.downloadAllTotal} items to process.`;
+                PVI._updateDownloadAllStatus(finalMessage);
+                PVI.processNextInQueue();
+            }
+        };
+
+        processChunk();
+    };
+
+    PVI.downloadAll = function (doc, sendResponse, sender) {
+        if (PVI.downloadAllActive) {
+            if (sendResponse) sendResponse({ status: 'already running' });
+            return;
+        }
+        PVI.downloadAllActive = true;
+
+        const allElements = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
+
+        PVI.downloadAllTotal = allElements.length;
+        PVI.downloadAllFound = 0;
+        PVI.downloadAllFiltered = 0;
+        PVI.downloadAllUniqueUrls.clear();
+        PVI.ambiguousUrlGroups = [];
+        PVI.downloadAllSendResponse = sendResponse || null;
+
+        PVI._updateDownloadAllStatus(`Found ${PVI.downloadAllTotal} potential items. Starting filtering...`);
+        PVI._startKeepAwake();
+
+
+        Port.send({ cmd: 'openDownloadProgress' });
+
+        PVI.filterQueueAsynchronously(allElements);
+    };
+
+    PVI.processNextInQueue = function () {
+        PVI.reset(true);
+        if (!PVI.downloadAllActive) {
+            PVI._stopKeepAwake('Scanning canceled.');
+            return;
+        }
+
+        if (PVI.downloadAllQueue.length === 0) {
+            if (PVI.ambiguousUrlGroups.length > 0) {
+                const statusMessage = `Scan complete. Found ${PVI.downloadAllFound} direct items. Analyzing ${PVI.ambiguousUrlGroups.length} complex items...`;
+                PVI._updateDownloadAllStatus(statusMessage);
+                Port.send({ cmd: 'updateStatus', status: statusMessage, done: false });
+
+                Port.send({
+                    cmd: 'resolveAndDownloadGroups',
+                    groups: PVI.ambiguousUrlGroups,
+                    referer: window.location.href
+                });
+            } else {
+                const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
+                PVI._updateDownloadAllStatus(finalMessage);
+                Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items.`, done: true });
+                PVI.downloadAllActive = false;
+                PVI._stopKeepAwake(finalMessage);
+                if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
+            }
+            return;
+        }
+
+        let el;
+        while (PVI.downloadAllQueue.length > 0) {
+            el = PVI.downloadAllQueue.shift();
+            if (el) break;
+        }
+
+        if (!el) {
+            if (PVI.downloadAllActive) {
+                // If we reach here and queue is empty, final processing happens at top of next call
+                setTimeout(PVI.processNextInQueue, 0);
+            }
+            return;
+        }
+        const itemsLeft = PVI.downloadAllQueue.length;
+        const itemsScanned = PVI.downloadAllTotal - itemsLeft;
+
+        if (itemsScanned % 20 === 0) {
+            const statusText = `Scanned ${itemsScanned}/${PVI.downloadAllTotal}... Found ${PVI.downloadAllFound} files.`;
+            PVI._updateDownloadAllStatus(statusText);
+            Port.send({ cmd: 'updateStatus', status: `Scanned ${itemsScanned}/${PVI.downloadAllTotal}...`, done: false });
+        }
+
+        const original_set = PVI.set;
+        const original_show = PVI.show;
+        const original_TRG = PVI.TRG;
+        let resolved = false;
+        let timeout;
+
+        const cleanup = () => {
+            PVI.set = original_set;
+            PVI.show = original_show;
+            PVI.TRG = original_TRG;
+            clearTimeout(timeout);
+        };
+
+        const onResolved = (result) => {
+            if (resolved) return;
+            resolved = true;
+            cleanup();
+
+            if (!PVI.downloadAllActive) {
+                PVI._stopKeepAwake('Scanning canceled.');
                 return;
             }
 
-            const el = PVI.downloadAllQueue.shift();
-            if (!el) {
-                if (PVI.downloadAllQueue.length > 0 || PVI.downloadAllActive) {
-                    setTimeout(PVI.processNextInQueue, 10);
-                }
-                return;
-            }
-            const itemsLeft = PVI.downloadAllQueue.length;
-            const itemsScanned = PVI.downloadAllTotal - itemsLeft;
-
-            if (itemsScanned % 20 === 0) {
-                const statusText = `Scanned ${itemsScanned}/${PVI.downloadAllTotal}... Found ${PVI.downloadAllFound} files.`;
-                PVI._updateDownloadAllStatus(statusText);
-                Port.send({ cmd: 'updateStatus', status: `Scanned ${itemsScanned}/${PVI.downloadAllTotal}...`, done: false });
-            }
-
-            const original_set = PVI.set;
-            const original_show = PVI.show;
-            const original_TRG = PVI.TRG;
-            let resolved = false;
-            let timeout;
-
-            const cleanup = () => {
-                PVI.set = original_set;
-                PVI.show = original_show;
-                PVI.TRG = original_TRG;
-                clearTimeout(timeout);
-            };
-
-            const onResolved = (result) => {
-                if (resolved) return;
-                resolved = true;
-                cleanup();
-
-                if (!PVI.downloadAllActive) {
-                    PVI._stopKeepAwake('Scanning canceled.');
+            if (result) {
+                if (Array.isArray(result) && result.length > 1) {
+                    PVI.ambiguousUrlGroups.push({
+                        urls: result,
+                        referer: window.location.href,
+                        elementInfo: {
+                            tagName: (PVI.TRG && PVI.TRG.tagName) || 'unknown',
+                            className: (PVI.TRG && PVI.TRG.className) || '',
+                            src: (PVI.TRG && (PVI.TRG.src || PVI.TRG.href)) || ''
+                        }
+                    });
+                    setTimeout(PVI.processNextInQueue, 100);
                     return;
                 }
 
-                if (result) {
-                    if (Array.isArray(result) && result.length > 1) {
-                        PVI.ambiguousUrlGroups.push({
-                            urls: result,
-                            referer: window.location.href,
-                            elementInfo: {
-                                tagName: (PVI.TRG && PVI.TRG.tagName) || 'unknown',
-                                className: (PVI.TRG && PVI.TRG.className) || '',
-                                src: (PVI.TRG && (PVI.TRG.src || PVI.TRG.href)) || ''
-                            }
-                        });
-                        setTimeout(PVI.processNextInQueue, 100);
-                        return;
-                    }
+                let url = Array.isArray(result) ? (result.find(u => u[0] === '#') || result[0]) : result;
+                url = url.replace(/^#/, '');
 
-                    let url = Array.isArray(result) ? (result.find(u => u[0] === '#') || result[0]) : result;
-                    url = url.replace(/^#/, '');
-
-                    if (url && !PVI.downloadAllUniqueUrls.has(url)) {
-                        PVI.downloadAllUniqueUrls.add(url);
-                        PVI.downloadAllFound++;
-                        Port.send({
-                            cmd: 'downloadMass',
-                            url: url,
-                            referer: window.location.href,
-                            priorityExt: (url.match(/#([\da-z]{3,4})$/) || [])[1],
-                            ext: {
-                                img: 'jpg',
-                                video: 'mp4',
-                                audio: 'mp3'
-                            }[((/\\.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(url)) ? 'video' : 'img')],
-                            isSingle: true
-                        });
-                        Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
-                        setTimeout(PVI.processNextInQueue, 500);
-                        return;
-                    }
+                if (url && !PVI.downloadAllUniqueUrls.has(url)) {
+                    PVI.downloadAllUniqueUrls.add(url);
+                    PVI.downloadAllFound++;
+                    Port.send({
+                        cmd: 'downloadMass',
+                        url: url,
+                        referer: window.location.href,
+                        priorityExt: (url.match(/#([\da-z]{3,4})$/) || [])[1],
+                        ext: {
+                            img: 'jpg',
+                            video: 'mp4',
+                            audio: 'mp3'
+                        }[((/\\.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(url)) ? 'video' : 'img')],
+                        isSingle: true
+                    });
+                    Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
+                    setTimeout(PVI.processNextInQueue, 500);
+                    return;
                 }
-                setTimeout(PVI.processNextInQueue, 10);
-            };
+            }
+            setTimeout(PVI.processNextInQueue, 10);
+        };
 
-            PVI.set = (src) => onResolved(src);
-            PVI.show = (msg) => {
-                if (typeof msg === 'string' && msg.startsWith('R_')) {
-                    onResolved(null);
-                }
-            };
-
-            PVI.TRG = el;
-            const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            PVI.x = x;
-            PVI.y = y;
-
-            try {
-                const src = PVI.find(el, x, y);
-
-                if (src === false) {
-                    onResolved(null);
-                } else {
-                    PVI.load(src);
-                    timeout = setTimeout(() => onResolved(null), ((cfg.da && cfg.da.resolutionTimeout) || 8) * 1000);
-                }
-            } catch (err) {
-                console.error('Error during Mass Download scan:', err);
+        PVI.set = (src) => onResolved(src);
+        PVI.show = (msg) => {
+            if (typeof msg === 'string' && msg.startsWith('R_')) {
                 onResolved(null);
             }
-        },
+        };
 
-        handleGroupAnalysisComplete: function (processedCount) {
-            const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
-            PVI._updateDownloadAllStatus(finalMessage);
-            Port.send({ cmd: 'updateStatus', status: finalMessage, done: true });
+        PVI.TRG = el;
+        const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        PVI.x = x;
+        PVI.y = y;
 
-            PVI.downloadAllActive = false;
-            PVI._stopKeepAwake(finalMessage);
-            if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
-        },
+        try {
+            const src = PVI.find(el, x, y);
+
+            if (src === false) {
+                onResolved(null);
+            } else {
+                PVI.load(src);
+                timeout = setTimeout(() => onResolved(null), ((cfg.da && cfg.da.resolutionTimeout) || 8) * 1000);
+            }
+        } catch (err) {
+            console.error('Error during Mass Download scan:', err);
+            onResolved(null);
+        }
     };
 
-    window.addEventListener("mousemove", PVI.onInitMouseMove, true);
-    catchEvent.onmessage = PVI.winOnMessage;
+    PVI.handleGroupAnalysisComplete = function (processedCount) {
+        const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
+        PVI._updateDownloadAllStatus(finalMessage);
+
+        // Send completion status back to background via port if available, or just close local state
+        if (PVI.statusPort) {
+            try {
+                PVI.statusPort.postMessage({ cmd: 'updateStatus', status: finalMessage, done: true });
+            } catch (e) { }
+        }
+
+        PVI.downloadAllActive = false;
+        PVI._stopKeepAwake(finalMessage);
+        if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
+    };
+
+    // Register connect listener immediately at top level to avoid race conditions
+    chrome.runtime.onConnect?.addListener(PVI.onConnect);
+
 })(window, document);

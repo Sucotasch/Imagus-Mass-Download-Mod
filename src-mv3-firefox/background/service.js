@@ -33,13 +33,16 @@ const platform = location.protocol === "moz-extension:" ? "firefox" : "chrome";
 
 var cfg = {
     sessionGet: (keys, callback) => {
-        return callback ? chrome.storage.session.get(keys, callback) : chrome.storage.session.get(keys);
+        const storage = chrome.storage.session || chrome.storage.local;
+        return callback ? storage.get(keys, callback) : storage.get(keys);
     },
     sessionSet: (items) => {
-        return chrome.storage.session.set(items);
+        const storage = chrome.storage.session || chrome.storage.local;
+        return storage.set(items);
     },
     sessionRemove: (keys) => {
-        return chrome.storage.session.remove(keys);
+        const storage = chrome.storage.session || chrome.storage.local;
+        return storage.remove(keys);
     },
     async get(keys, callback) {
         const items = await chrome.storage.local.get(keys);
@@ -291,15 +294,13 @@ async function updatePrefs(prefs, callback) {
     cachedPrefs = newPrefs;
     if (prefs.sieve) {
         changes.sieve = typeof prefs.sieve === "string" ? JSON.parse(prefs.sieve) : prefs.sieve;
-        cacheSieve(changes.sieve);  // Cache immediately, BEFORE mutex
+        cacheSieve(changes.sieve); // Cache immediately, BEFORE mutex
     }
 
-    // Improvement #3: Only mutex-protect the storage write
-    await (prefsMutex = prefsMutex.then(async () => {
-        await cfg.set(changes);
-    }).catch(err => {
+    // Simplified: Only protect the storage write
+    await cfg.set(changes).catch(err => {
         console.error('updatePrefs storage error:', err);
-    }));
+    });
 
     if (!prefs.sieve) {
         const data = await cfg.get("sieve");
@@ -329,7 +330,7 @@ async function getOrCreateProgressTab(initiatorTabId) {
     const progressUrl = chrome.runtime.getURL('options/download-progress.html');
     let createOptions = {
         url: progressUrl,
-        active: false  // Always in background (per user request)
+        active: false // Always in background (per user request)
     };
 
     // Position next to initiator tab
@@ -344,7 +345,7 @@ async function getOrCreateProgressTab(initiatorTabId) {
     }
 
     const newTab = await chrome.tabs.create(createOptions);
-    downloadProgressTabId = newTab.id;  // Store for messaging
+    downloadProgressTabId = newTab.id; // Store for messaging
 
     console.info(manifest.name + ': Created new progress tab (ID: ' + newTab.id + ')');
     return newTab.id;
@@ -389,7 +390,7 @@ function onMessage(message, sender, sendResponse) {
                 .then(function (resp) {
                     context.postMessage(resp);
                 });
-            return true;
+            break;
         case "savePrefs":
             updatePrefs(msg.prefs, function () {
                 context.postMessage({});
@@ -431,9 +432,11 @@ function onMessage(message, sender, sendResponse) {
                     }
                     try {
                         chrome.tabs.create(tabOptions);
+                        console.info(manifest.name + ': Opened new tab:', url);
                     } catch (error) {
                         delete tabOptions.openerTabId;
                         chrome.tabs.create(tabOptions);
+                        console.warn(manifest.name + ': Failed to open tab with openerTabId, retrying without:', url, error);
                     }
                 }
             });
@@ -530,9 +533,11 @@ function onMessage(message, sender, sendResponse) {
                     }
                     context.postMessage(data);
                 });
-            return true;
+            break;
         }
+    }
 
+    switch (msg.cmd) {
         case 'openDownloadProgress':
             downloadInitiatorTabId = sender.tab?.id;
             scanInProgress = true;
@@ -574,9 +579,11 @@ function onMessage(message, sender, sendResponse) {
                 items: downloadProgress,
                 stats: downloadStats
             }).catch(() => { });
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
 
         case 'downloadMass':
+            downloadInitiatorTabId = sender.tab?.id;
             if (!scanInProgress) scanInProgress = true;
             filterQueue.push({
                 url: msg.url,
@@ -586,21 +593,26 @@ function onMessage(message, sender, sendResponse) {
                 isPrivate: sender.tab?.incognito
             });
             processFilterQueue();
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
 
         case 'resolveAndDownloadGroups':
+            downloadInitiatorTabId = sender.tab?.id;
             if (!scanInProgress) scanInProgress = true;
+            if (typeof sendResponse === 'function') sendResponse({});
             processUrlGroupsWithValidation(msg.groups, msg.referer);
             break;
 
         case 'updateStatus':
+            if (sender.tab?.id) downloadInitiatorTabId = sender.tab.id;
             if (downloadProgressTabId) {
                 chrome.tabs.sendMessage(downloadProgressTabId, msg).catch((err) => {
                     console.warn('Failed to send status to progress tab:', err);
-                    // Don't clear downloadProgressTabId here, it might just be loading
                 });
             }
             if (msg.done) scanInProgress = false;
+            // updateStatus is usually fire-and-forget, but for safety:
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
 
         case 'updateFilterStats':
@@ -608,10 +620,10 @@ function onMessage(message, sender, sendResponse) {
             downloadStats.filtered += (msg.filtered || 0);
             if (downloadProgressTabId) {
                 chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
-                    // Tab might just be loading, don't reset ID immediately
                     console.warn(manifest.name + ': Failed to send stats to progress tab');
                 });
             }
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
 
         case 'stopScanning':
@@ -626,22 +638,29 @@ function onMessage(message, sender, sendResponse) {
             if (downloadInitiatorTabId) {
                 chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
             }
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
+
         case 'getDownloadStatus':
             sendResponse({ items: downloadProgress, stats: downloadStats });
             break;
+
         case 'clearCompletedDownloads':
             for (let url in downloadProgress) {
                 if (downloadProgress[url].status === 'completed') {
                     delete downloadProgress[url];
                 }
             }
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
+
         case 'clearAllDownloads':
             downloadProgress = {};
             downloadStats = { found: 0, filtered: 0, downloaded: 0 };
             globalProcessedUrls.clear();
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
+
         case 'retryDownload':
             if (msg.url) {
                 filterQueue.push({
@@ -651,38 +670,22 @@ function onMessage(message, sender, sendResponse) {
                 });
                 processFilterQueue();
             }
+            if (typeof sendResponse === 'function') sendResponse({});
+            break;
+
+        default:
+            // Ensure we always safeguard the async response if expected
+            if (typeof sendResponse === 'function') sendResponse({});
             break;
     }
+    return true;
 }
+
 
 async function download(msg, incognito, sendResponse) {
     if (!msg.url) return;
 
-    if (!msg.alterDownload) {
-        /* await chrome.notifications.create(
-            "imagus_download",
-            {
-                title: manifest.name,
-                message: "Download started...",
-                type: "basic",
-                iconUrl: "/common/img/icon.png",
-            },
-        ); */
-
-        let resp = await fetch(msg.url, {
-            method: "get",
-            headers: {
-                "Range": "bytes=0-0"
-            }
-        });
-        if (!resp.ok) {
-            msg.alterDownload = true;
-            sendResponse(msg);
-
-            return;
-        }
-    }
-
+    // Simplified: directly skip the check and use downloads API
     const params = {
         url: msg.blob ? URL.createObjectURL(msg.blob) : msg.url,
         filename: msg.filename && (msg.ext || msg.priorityExt) ? `${msg.filename}.${msg.priorityExt || msg.ext}` : (msg.urlName || undefined),
@@ -711,9 +714,33 @@ function keepAlive() {
 }
 
 async function registerContentScripts() {
-    // Firefox MV3: Uses static content_scripts from manifest.json
-    // No dynamic userScripts registration needed (or available)
-    console.info(manifest.name + ": Content scripts registered via manifest.json");
+    try {
+        await chrome.userScripts.configureWorld({ csp: "script-src 'self' 'unsafe-eval'", messaging: true });
+    } catch (error) {
+        chrome.runtime.openOptionsPage();
+        return;
+    }
+
+    await chrome.runtime.onUserScriptMessage?.addListener(onMessage);
+    await chrome.userScripts.unregister();
+    await chrome.userScripts.register([
+        {
+            id: "app.js",
+            allFrames: true,
+            matches: ["<all_urls>"],
+            world: "USER_SCRIPT",
+            runAt: "document_start",
+            js: [{ file: "common/app.js" }],
+        },
+        {
+            id: "content.js",
+            allFrames: true,
+            matches: ["<all_urls>"],
+            runAt: "document_idle",
+            world: "USER_SCRIPT",
+            js: [{ file: "content/content.js" }],
+        },
+    ]);
 }
 
 // Sieve auto update once a week
@@ -849,16 +876,6 @@ chrome.tabs.onActivated.addListener(async function (info) {
     updateBadge(info.tabId, (await chrome.tabs.get(info.tabId)).url);
 });
 
-// Improvement #9: Clean up when progress tab is closed
-chrome.tabs.onRemoved.addListener((tabId) => {
-    if (tabId === downloadProgressTabId) {
-        console.info(manifest.name + ': Progress tab closed by user');
-        downloadProgressTabId = null;
-        // Note: We don't stop scanning, just lose the UI
-    }
-});
-
-
 chrome.action.setTitle({ title: `${manifest.name} v${manifest.version}\nClick to toggle on this site` });
 updatePrefs(null, registerContentScripts);
 chrome.runtime.onStartup.addListener(updatePrefs);
@@ -869,14 +886,21 @@ chrome.runtime.onInstalled.addListener(function (e) {
         chrome.runtime.openOptionsPage();
     }
 });
-chrome.runtime.onMessage?.addListener(onMessage);
+chrome.runtime.onMessage?.addListener((msg, sender, sendResponse) => {
+    // Keep channel open for async response if onMessage returns a promise, 
+    // but in this specific case, we just return true to be safe for Firefox/Chrome diffs
+    onMessage(msg, sender, sendResponse);
+    return true;
+});
+
+// Removed complex port logic to match Chrome behavior and stability
 
 keepAlive();
 
 // --- Mass Download Logic Functions ---
 
 function checkAllQueuesEmpty() {
-    if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
+    if (!scanInProgress && filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
         if (downloadProgressTabId) {
             chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }).catch(() => {
                 downloadProgressTabId = null;
@@ -927,7 +951,7 @@ async function processFilterQueue() {
             let response = await fetch(task.url, {
                 method: 'HEAD',
                 signal: controller.signal,
-                headers: { 'Referer': task.referer || '' }
+                credentials: 'omit'
             });
             clearTimeout(timeoutId);
 
@@ -970,7 +994,7 @@ async function processFilterQueue() {
 
             try {
                 // GET fallback
-                let response = await fetch(task.url, { headers: { 'Referer': task.referer || '' } });
+                let response = await fetch(task.url, { credentials: 'omit' });
                 if (!scanInProgress) {
                     activeFilters--;
                     continue;
@@ -1099,13 +1123,45 @@ function calculateUrlHeuristicScore(url) {
     return score;
 }
 
-async function validateSingleUrlContent(url, referer, timeout = 3000) {
+async function validateSingleUrlContent(url, referer, timeout = 2500) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     try {
         const response = await fetch(url, {
             signal: controller.signal,
-            headers: { 'Referer': referer }
+            method: 'HEAD',
+            headers: referer ? { 'Referer': referer } : {}
+        });
+        clearTimeout(timeoutId);
+        if (response.status === 405 || response.status === 403 || response.status === 0) {
+            // 405 Method Not Allowed, 403 Forbidden (sometimes works with GET), 0 (Opaque/CORS issue) -> retry with GET
+            return validateSingleUrlContentGet(url, referer, timeout);
+        }
+        if (!response.ok) return { url, isValid: false, reason: `HTTP ${response.status}` };
+        const contentType = response.headers.get('Content-Type') || '';
+        const contentLength = parseInt(response.headers.get('Content-Length')) || 0;
+        if (contentType.startsWith('text/html')) return { url, isValid: false, reason: 'HTML page' };
+        const isValidMedia = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/');
+
+        // If content-length is missing but type is valid, assume valid (common for some CDNs)
+        if (isValidMedia && !contentLength) return { url, isValid: true, contentType, contentLength, reason: 'valid-no-length' };
+
+        if (!isValidMedia && contentLength < 1024) return { url, isValid: false, reason: 'too small' };
+        return { url, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
+    } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') return { url, isValid: false, reason: 'timeout' };
+        return validateSingleUrlContentGet(url, referer, timeout); // Fallback to GET on network error too
+    }
+}
+
+async function validateSingleUrlContentGet(url, referer, timeout = 3000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    try {
+        const response = await fetch(url, {
+            signal: controller.signal,
+            headers: referer ? { 'Referer': referer } : {}
         });
         clearTimeout(timeoutId);
         if (!response.ok) return { url, isValid: false, reason: `HTTP ${response.status}` };
@@ -1117,7 +1173,7 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
         return { url, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
     } catch (error) {
         clearTimeout(timeoutId);
-        return { url, isValid: false, reason: error.name === 'AbortError' ? 'timeout' : 'network-error' };
+        return { url, isValid: false, reason: 'network-error' };
     }
 }
 
@@ -1130,9 +1186,14 @@ async function findBestUrlWithValidation(urlArray, referer) {
         return scored[0].url;
     }
     const scoredUrls = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
-    const candidatesToValidate = scoredUrls.slice(0, Math.min(5, scoredUrls.length));
+
+    // Heuristic: if only one candidate, or top candidate is exceptionally good, skip validation
+    if (scoredUrls.length === 1 || scoredUrls[0].score >= 70) return scoredUrls[0].url;
+
+    // Limit candidates to validate to avoid long waits
+    const candidatesToValidate = scoredUrls.slice(0, Math.min(3, scoredUrls.length));
     try {
-        const results = await Promise.allSettled(candidatesToValidate.map(({ url }) => validateSingleUrlContent(url, referer, 1500)));
+        const results = await Promise.allSettled(candidatesToValidate.map(({ url }) => validateSingleUrlContent(url, referer, 2500)));
         const validUrls = results.filter(r => r.status === 'fulfilled' && r.value.isValid).map(r => r.value).sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
         urlValidationStats.totalValidations++;
         if (validUrls.length > 0) {
@@ -1156,39 +1217,67 @@ async function findBestUrlWithValidation(urlArray, referer) {
 }
 
 async function processUrlGroupsWithValidation(groups, referer) {
+    console.info(manifest.name + ': Starting complex item analysis for ' + groups.length + ' groups');
     let processedGroups = 0;
     let foundUrls = 0;
-    for (const group of groups) {
-        if (!scanInProgress) break;
-        try {
-            const bestUrl = await findBestUrlWithValidation(group.urls, referer);
-            if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
-                globalProcessedUrls.add(bestUrl);
-                foundUrls++;
-                const task = {
-                    url: bestUrl,
-                    referer: referer,
-                    priorityExt: (bestUrl.match(/#([\da-z]{3,4})$/) || [])[1],
-                    ext: { img: 'jpg', video: 'mp4', audio: 'mp3' }[((/.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(bestUrl)) ? 'video' : 'img')],
-                    isFromArray: true,
-                    originalArraySize: group.urls.length
-                };
-                filterQueue.push(task);
-                processFilterQueue();
+
+    try {
+        for (const group of groups) {
+            if (!scanInProgress) break;
+
+            processedGroups++;
+
+            // Use sendMessage to update progress tab, fire-and-forget
+            if (downloadProgressTabId) {
+                chrome.tabs.sendMessage(downloadProgressTabId, {
+                    cmd: 'updateStatus',
+                    status: `Analyzing complex items (Phase 2): ${processedGroups}/${groups.length}...`,
+                    done: false
+                }).catch(() => { });
             }
-        } catch (error) { }
-        processedGroups++;
-        if (downloadProgressTabId) {
-            chrome.tabs.sendMessage(downloadProgressTabId, {
-                cmd: 'updateStatus',
-                status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
-                done: false
-            }).catch(() => {
-                console.warn(manifest.name + ': Failed to send message to progress tab');
-            });
+
+            try {
+                let timeoutId;
+                const timeoutPromise = new Promise((resolve) => {
+                    timeoutId = setTimeout(() => {
+                        console.warn(manifest.name + ': Validation timed out for group:', group);
+                        resolve(null);
+                    }, 12000);
+                });
+
+                const validationPromise = findBestUrlWithValidation(group.urls, referer).finally(() => {
+                    clearTimeout(timeoutId);
+                });
+
+                const bestUrl = await Promise.race([validationPromise, timeoutPromise]);
+
+                console.info(manifest.name + `: Group processed. Best URL: ${bestUrl ? bestUrl : 'None'}. Group size: ${group.urls.length}`);
+                if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
+                    globalProcessedUrls.add(bestUrl);
+                    foundUrls++;
+                    const task = {
+                        url: bestUrl,
+                        referer: referer,
+                        priorityExt: (bestUrl.match(/#([\da-z]{3,4})$/) || [])[1],
+                        ext: { img: 'jpg', video: 'mp4', audio: 'mp3' }[((/.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(bestUrl)) ? 'video' : 'img')],
+                        isFromArray: true,
+                        originalArraySize: group.urls.length
+                    };
+                    filterQueue.push(task);
+                    processFilterQueue();
+                }
+            } catch (error) {
+                console.warn(manifest.name + ': Error during group validation:', error);
+            }
         }
-    }
-    if (downloadInitiatorTabId) {
-        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls }).catch(() => { downloadInitiatorTabId = null; });
+    } finally {
+        scanInProgress = false;
+
+        if (downloadInitiatorTabId) {
+            chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls })
+                .catch((err) => console.warn(manifest.name + ': Failed to send completion signal:', err));
+        }
+
+        checkAllQueuesEmpty();
     }
 }

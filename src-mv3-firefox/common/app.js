@@ -25,6 +25,8 @@ function buildNodes(element, nodes) {
         if (typeof node !== "string") {
             const element = doc.createElement(node.tag);
 
+
+
             if (node.attrs) {
                 for (const attr in node.attrs) {
                     if (attr === "style") {
@@ -79,46 +81,27 @@ window.addEventListener(
 const Port = {
     listen: function (callback) {
         if (this.listener) {
-            // Check if chrome.runtime exists before accessing onMessage
-            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-                chrome.runtime.onMessage.removeListener(this.listener);
-            }
+            chrome.runtime.onMessage?.removeListener(this.listener);
         }
 
         if (typeof callback === "function") {
             if (platform === "firefox") {
-                this.listener = function (message, sender) {
-                    if (!sender) {
-                        callback(message);
-                    }
-                };
+                this.listener = callback;
             } else {
                 this.listener = callback;
             }
-            // Check if chrome.runtime exists before accessing onMessage
-            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-                chrome.runtime.onMessage.addListener(this.listener);
-            }
+            chrome.runtime.onMessage?.addListener(this.listener);
         } else {
             this.listener = null;
         }
     },
 
     send: async function (message, callback) {
-        // Firefox: sendMessage with callback doesn't return Promise
-        // Wrap in explicit Promise for consistent async/await behavior
-        return new Promise((resolve, reject) => {
-            chrome.runtime.sendMessage(message, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.warn("Port.send error:", chrome.runtime.lastError.message);
-                    resolve(null); // Don't reject, just return null for graceful degradation
-                } else {
-                    if (callback) callback(response);
-                    if (Port.listener) Port.listener(response);
-                    resolve(response);
-                }
-            });
-        });
+        if (Port.listener || callback) {
+            return chrome.runtime.sendMessage(message, Port.listener || callback);
+        } else {
+            return chrome.runtime.sendMessage(message);
+        }
     },
 };
 
