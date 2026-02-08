@@ -2773,7 +2773,7 @@
             }
         },
 
-        onMessage: function (d) {
+        onMessage: function (d, sender, sendResponse) {
             if (!d) return;
             if (d.cmd === "resolved") {
                 var trg = PVI.resolving[d.id] || PVI.TRG;
@@ -2884,6 +2884,7 @@
                     PVI.downloadAllActive = false;
                 }
             } else if (d.cmd === 'downloadAll') {
+                if (typeof sendResponse === 'function') sendResponse({ status: 'initiated' });
                 PVI.downloadAll(doc, null, d.sender);
             } else if (d.cmd === 'groupAnalysisComplete') {
                 if (PVI.handleGroupAnalysisComplete) {
