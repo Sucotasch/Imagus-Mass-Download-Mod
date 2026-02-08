@@ -2892,17 +2892,7 @@
         },
 
         onConnect: function (port) {
-            if (port.name === "imagus-status") {
-                console.info("Imagus content script: Status port connected");
-                PVI.statusPort = port; // Keep reference to prevent GC
-                port.onMessage.addListener(function (msg) {
-                    PVI.onMessage(msg, { id: "status-port" }, () => { });
-                });
-                port.onDisconnect.addListener(() => {
-                    console.info("Imagus content script: Status port disconnected");
-                    PVI.statusPort = null;
-                });
-            }
+            // No longer used for status updates, unified via Port.send
         },
 
         init: function (e, deinit) {
@@ -3164,15 +3154,21 @@
 
         if (PVI.downloadAllQueue.length === 0) {
             if (PVI.ambiguousUrlGroups.length > 0) {
-                const statusMessage = `Scan complete. Found ${PVI.downloadAllFound} direct items. Analyzing ${PVI.ambiguousUrlGroups.length} complex items...`;
-                PVI._updateDownloadAllStatus(statusMessage);
-                Port.send({ cmd: 'updateStatus', status: statusMessage, done: false });
+                const handoverMessage = `Found ${PVI.downloadAllFound} files. Analyzing ${PVI.ambiguousUrlGroups.length} complex items in background...`;
+                PVI._updateDownloadAllStatus(handoverMessage);
+                Port.send({ cmd: 'updateStatus', status: handoverMessage, done: false });
 
                 Port.send({
                     cmd: 'resolveAndDownloadGroups',
                     groups: PVI.ambiguousUrlGroups,
                     referer: window.location.href
                 });
+
+                // Transition to "completed" locally
+                setTimeout(() => {
+                    PVI.downloadAllActive = false;
+                    PVI._stopKeepAwake(`Analysis continued in background. Found items: ${PVI.downloadAllFound}+`);
+                }, 3000);
             } else {
                 const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
                 PVI._updateDownloadAllStatus(finalMessage);
@@ -3303,19 +3299,15 @@
         const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
         PVI._updateDownloadAllStatus(finalMessage);
 
-        // Send completion status back to background via port if available, or just close local state
-        if (PVI.statusPort) {
-            try {
-                PVI.statusPort.postMessage({ cmd: 'updateStatus', status: finalMessage, done: true });
-            } catch (e) { }
-        }
+        // Send completion status back to background
+        Port.send({ cmd: 'updateStatus', status: finalMessage, done: true });
 
         PVI.downloadAllActive = false;
         PVI._stopKeepAwake(finalMessage);
         if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
     };
 
-    // Register connect listener immediately at top level to avoid race conditions
+    // Connect listener kept for potential future port needs
     chrome.runtime.onConnect?.addListener(PVI.onConnect);
 
 })(window, document);

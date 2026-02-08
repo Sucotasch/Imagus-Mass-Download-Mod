@@ -900,7 +900,7 @@ keepAlive();
 // --- Mass Download Logic Functions ---
 
 function checkAllQueuesEmpty() {
-    if (!scanInProgress && filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
+    if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
         if (downloadProgressTabId) {
             chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }).catch(() => {
                 downloadProgressTabId = null;
@@ -988,7 +988,6 @@ async function processFilterQueue() {
         } catch (error) {
             clearTimeout(timeoutId);
             if (!scanInProgress) {
-                activeFilters--;
                 continue;
             }
 
@@ -996,7 +995,6 @@ async function processFilterQueue() {
                 // GET fallback
                 let response = await fetch(task.url, { credentials: 'omit' });
                 if (!scanInProgress) {
-                    activeFilters--;
                     continue;
                 }
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -1274,8 +1272,9 @@ async function processUrlGroupsWithValidation(groups, referer) {
         scanInProgress = false;
 
         if (downloadInitiatorTabId) {
+            // Optional completion signal (initiator tab might be gone or in finished state)
             chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls })
-                .catch((err) => console.warn(manifest.name + ': Failed to send completion signal:', err));
+                .catch(() => { /* Silent: handover expected */ });
         }
 
         checkAllQueuesEmpty();
