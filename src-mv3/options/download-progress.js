@@ -6,6 +6,7 @@
     const totalFilesEl = document.getElementById('totalFiles');
     const completedFilesEl = document.getElementById('completedFiles');
     const failedFilesEl = document.getElementById('failedFiles');
+    const canceledFilesEl = document.getElementById('canceledFiles');
     const statsFoundEl = document.getElementById('stats-found');
     const statsFilteredEl = document.getElementById('stats-filtered');
     const refreshBtn = document.getElementById('refreshBtn');
@@ -93,17 +94,18 @@
             }
         } else if (request.cmd === 'updateStats') {
             updateGlobalStats(request.stats);
-            // Start auto-refresh if not already running (downloads active)
-            startAutoRefresh();
+            // Auto-refresh logic is now state-dependent in handleMessage/updateDownloadStatus
         } else if (request.cmd === 'updateDownloadStatus') {
             updateDownloadItem(request);
             updateDisplay();
-            // Ensure refresh is running during active downloads
-            startAutoRefresh();
+
+            // Only start refresh if the new status is active
+            if (['pending', 'scanning', 'downloading'].includes(request.status)) {
+                startAutoRefresh();
+            }
         } else if (request.cmd === 'resetForNewDownload') {
             // Clear UI for tab reuse
             downloadItems = {};
-            globalStats = { found: 0, filtered: 0, downloaded: 0, failed: 0, skipped: 0 };
             updateDisplay();
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
@@ -137,19 +139,28 @@
     // Calculate and display summary stats from the items table
     function calculateAndDisplaySummaryStats() {
         const items = Object.values(downloadItems);
+        const skipped = items.filter(item => item.status === 'skipped').length;
         const completed = items.filter(item => item.status === 'completed').length;
-        const failed = items.filter(item => item.status === 'failed' || item.status === 'canceled').length;
+        const failed = items.filter(item => item.status === 'failed').length;
+        const canceled = items.filter(item => item.status === 'canceled').length;
 
-        totalFilesEl.textContent = items.length;
+        // "To Download" total should not include skipped files
+        totalFilesEl.textContent = items.length - skipped;
         completedFilesEl.textContent = completed;
         failedFilesEl.textContent = failed;
+        canceledFilesEl.textContent = canceled;
+
+        // Final terminal state check: if nothing is active, stop refresh
+        const activeCount = items.filter(item => ['pending', 'scanning', 'downloading'].includes(item.status)).length;
+        if (activeCount === 0) {
+            stopAutoRefresh();
+        }
     }
 
     // Update the global stats display (found, filtered)
     function updateGlobalStats(stats) {
         if (stats.found !== undefined) statsFoundEl.textContent = stats.found;
         if (stats.filtered !== undefined) statsFilteredEl.textContent = stats.filtered;
-        if (stats.downloaded !== undefined) completedFilesEl.textContent = stats.downloaded;
     }
 
     // Update the entire display

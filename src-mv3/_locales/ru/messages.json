@@ -535,5 +535,11 @@
   },
   "DA_TIMEOUT": {
     "message": "Тайм-аут разрешения (с)"
+  },
+  "DA_SHOW_PROGRESS_TAB": {
+    "message": "Показывать вкладку прогресса"
+  },
+  "DA_MAX_PROGRESS_RECORDS": {
+    "message": "Макс. записей прогресса"
   }
 }

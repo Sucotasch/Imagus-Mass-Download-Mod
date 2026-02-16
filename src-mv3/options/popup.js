@@ -9,15 +9,10 @@ document.addEventListener('DOMContentLoaded', function () {
         statusDiv.textContent = 'Initializing mass download...';
 
         try {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (!tab) {
-                statusDiv.textContent = 'Error: No active tab found.';
-                downloadBtn.disabled = false;
-                return;
-            }
-
-            // We use chrome.tabs.sendMessage to trigger the scan in the content script
-            chrome.tabs.sendMessage(tab.id, { cmd: 'downloadAll' }, function (response) {
+            // Send to background script, which proxies to the content script.
+            // Direct chrome.tabs.sendMessage from popup fails in Chrome MV3 because
+            // content.js onMessage doesn't call sendResponse, closing the channel.
+            chrome.runtime.sendMessage({ cmd: 'downloadAll' }, function (response) {
                 if (chrome.runtime.lastError) {
                     statusDiv.textContent = 'Error: Could not connect to the page. Please refresh the page and ensure Developer Mode is on.';
                     downloadBtn.disabled = false;

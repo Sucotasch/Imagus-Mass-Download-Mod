@@ -438,6 +438,21 @@ function onMessage(message, sender, sendResponse) {
                 }
             });
             break;
+        // Proxy downloadAll from popup to the active tab's content script.
+        // The popup cannot reliably send messages directly to USER_SCRIPT world in Chrome MV3
+        // because content.js onMessage doesn't call sendResponse, closing the channel.
+        case 'downloadAll':
+            chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+                if (tabs[0]) {
+                    chrome.tabs.sendMessage(tabs[0].id, { cmd: 'downloadAll' }).catch(() => {
+                        console.warn(manifest.name + ': Failed to send downloadAll to content script');
+                    });
+                    sendResponse({ status: 'initiated' });
+                } else {
+                    sendResponse({ status: 'error', message: 'No active tab' });
+                }
+            });
+            return true; // Keep message channel open for async sendResponse
         case "resolve": {
             const data = {
                 cmd: "resolved",
@@ -626,6 +641,9 @@ function onMessage(message, sender, sendResponse) {
             if (downloadInitiatorTabId) {
                 chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
             }
+
+            // Force check for completion after clearing everything
+            setTimeout(checkAllQueuesEmpty, 500);
             break;
         case 'getDownloadStatus':
             sendResponse({ items: downloadProgress, stats: downloadStats });
@@ -967,6 +985,7 @@ async function processFilterQueue() {
 
             if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(contentType.split(';')[0])) {
                 updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                downloadStats.filtered++;
                 // Don't continue - let finally block run to call checkAllQueuesEmpty
             } else {
                 let passed = true;
@@ -983,12 +1002,12 @@ async function processFilterQueue() {
                     processDownloadQueue();
                 } else {
                     updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                    downloadStats.filtered++;
                 }
             }
         } catch (error) {
             clearTimeout(timeoutId);
             if (!scanInProgress) {
-                activeFilters--;
                 continue;
             }
 
@@ -996,7 +1015,6 @@ async function processFilterQueue() {
                 // GET fallback
                 let response = await fetch(task.url, { headers: { 'Referer': task.referer || '' } });
                 if (!scanInProgress) {
-                    activeFilters--;
                     continue;
                 }
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -1012,6 +1030,7 @@ async function processFilterQueue() {
 
                     if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
                         updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                        downloadStats.filtered++;
                     } else {
                         let passed = true;
                         if (type.startsWith('image/')) {
@@ -1027,11 +1046,14 @@ async function processFilterQueue() {
                             processDownloadQueue();
                         } else {
                             updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                            downloadStats.filtered++;
                         }
                     }
                 }
             } catch (getError) {
-                if (getError.name !== 'AbortError' && scanInProgress) {
+                if (getError.name === 'AbortError' || !scanInProgress) {
+                    updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                } else {
                     updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
                 }
             }
@@ -1215,4 +1237,7 @@ async function processUrlGroupsWithValidation(groups, referer) {
     if (downloadInitiatorTabId) {
         chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls }).catch(() => { downloadInitiatorTabId = null; });
     }
+
+    // Check if everything is zero and send completion signal
+    setTimeout(checkAllQueuesEmpty, 1000);
 }
