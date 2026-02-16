@@ -29,6 +29,13 @@ var urlValidationStats = {
 // Track active fetch controllers to prevent memory leaks and enable request cancellation
 const activeControllers = new Map();
 
+function keepAlive() {
+    // keep the service worker alive
+    setInterval(chrome.runtime.getPlatformInfo, 25000);
+}
+
+keepAlive();
+
 const platform = location.protocol === "moz-extension:" ? "firefox" : "chrome";
 
 var cfg = {
@@ -314,43 +321,57 @@ async function updatePrefs(prefs, callback) {
     }
 }
 
+let progressTabPromise = null;
+
 // Simple progress tab management - close old tab by ID, create new one
 async function getOrCreateProgressTab(initiatorTabId) {
-    // Close old progress tab if exists (by stored ID)
-    if (downloadProgressTabId) {
-        console.info(manifest.name + ': Closing old progress tab (ID: ' + downloadProgressTabId + ')');
-        chrome.tabs.remove(downloadProgressTabId).catch(() => {
-            // Tab may already be closed, ignore error
-        });
-        downloadProgressTabId = null;
-    }
+    if (progressTabPromise) return progressTabPromise;
 
-    // Create new tab next to initiator
-    const progressUrl = chrome.runtime.getURL('options/download-progress.html');
-    let createOptions = {
-        url: progressUrl,
-        active: false  // Always in background (per user request)
-    };
-
-    // Position next to initiator tab
-    if (initiatorTabId) {
-        try {
-            const initiatorTab = await chrome.tabs.get(initiatorTabId);
-            createOptions.index = initiatorTab.index + 1;
-            createOptions.openerTabId = initiatorTabId;
-        } catch (e) {
-            console.warn(manifest.name + ': Could not get initiator tab position');
+    progressTabPromise = (async () => {
+        // Close old progress tab if exists (by stored ID)
+        if (downloadProgressTabId) {
+            console.info(manifest.name + ': Closing old progress tab (ID: ' + downloadProgressTabId + ')');
+            await chrome.tabs.remove(downloadProgressTabId).catch(() => {
+                // Tab may already be closed, ignore error
+            });
+            downloadProgressTabId = null;
         }
-    }
 
-    const newTab = await chrome.tabs.create(createOptions);
-    downloadProgressTabId = newTab.id;  // Store for messaging
+        // Create new tab next to initiator
+        const progressUrl = chrome.runtime.getURL('options/download-progress.html');
+        let createOptions = {
+            url: progressUrl,
+            active: false  // Always in background (per user request)
+        };
 
-    console.info(manifest.name + ': Created new progress tab (ID: ' + newTab.id + ')');
-    return newTab.id;
+        // Position next to initiator tab
+        if (initiatorTabId) {
+            try {
+                const initiatorTab = await chrome.tabs.get(initiatorTabId);
+                createOptions.index = initiatorTab.index + 1;
+                createOptions.openerTabId = initiatorTabId;
+            } catch (e) {
+                console.warn(manifest.name + ': Could not get initiator tab position');
+            }
+        }
+
+        const newTab = await chrome.tabs.create(createOptions);
+        downloadProgressTabId = newTab.id;  // Store for messaging
+
+        console.info(manifest.name + ': Created new progress tab (ID: ' + newTab.id + ')');
+        return newTab.id;
+    })().finally(() => {
+        progressTabPromise = null;
+    });
+
+    return progressTabPromise;
 }
 
 function onMessage(message, sender, sendResponse) {
+    return handleMessage(message, sender, sendResponse);
+}
+
+function handleMessage(message, sender, sendResponse) {
     let msg, context;
     if (sender === null) {
         msg = message;
@@ -444,6 +465,7 @@ function onMessage(message, sender, sendResponse) {
         case 'downloadAll':
             chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
                 if (tabs[0]) {
+                    downloadInitiatorTabId = tabs[0].id;
                     chrome.tabs.sendMessage(tabs[0].id, { cmd: 'downloadAll' }).catch(() => {
                         console.warn(manifest.name + ': Failed to send downloadAll to content script');
                     });
@@ -556,19 +578,7 @@ function onMessage(message, sender, sendResponse) {
             const showProgressTab = cachedPrefs?.da?.showProgressTab ?? false;
 
             if (showProgressTab) {
-                getOrCreateProgressTab(downloadInitiatorTabId).then(tabId => {
-                    // Send initial state when tab is ready
-                    setTimeout(() => {
-                        chrome.tabs.sendMessage(tabId, {
-                            cmd: 'updateStatus',
-                            status: 'Starting scan...',
-                            items: downloadProgress,
-                            stats: downloadStats
-                        }).catch(() => {
-                            console.warn(manifest.name + ': Progress tab not ready yet');
-                        });
-                    }, 100);
-                }).catch(err => {
+                getOrCreateProgressTab(downloadInitiatorTabId).catch(err => {
                     console.error(manifest.name + ': Failed to create progress tab:', err);
                 });
             } else {
@@ -615,7 +625,9 @@ function onMessage(message, sender, sendResponse) {
                     // Don't clear downloadProgressTabId here, it might just be loading
                 });
             }
-            if (msg.done) scanInProgress = false;
+            if (msg.done) {
+                scanInProgress = false;
+            }
             break;
 
         case 'updateFilterStats':
@@ -633,6 +645,7 @@ function onMessage(message, sender, sendResponse) {
             scanInProgress = false;
             filterQueue = [];
             downloadQueue = [];
+            persistState();
 
             // Improvement #4: Abort all active fetch requests
             activeControllers.forEach(ctrl => ctrl.abort());
@@ -1051,11 +1064,11 @@ async function processFilterQueue() {
                     }
                 }
             } catch (getError) {
-                if (getError.name === 'AbortError' || !scanInProgress) {
+                if (platform === 'chrome' && (getError.name === 'AbortError' || !scanInProgress)) {
                     updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                } else {
-                    updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
+                    return;
                 }
+                updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
             }
         } finally {
             activeFilters--;
@@ -1202,6 +1215,11 @@ async function findBestUrlWithValidation(urlArray, referer) {
 }
 
 async function processUrlGroupsWithValidation(groups, referer) {
+    if (!groups || groups.length === 0) {
+        // Just check if we're done overall
+        setTimeout(checkAllQueuesEmpty, 500);
+        return;
+    }
     let processedGroups = 0;
     let foundUrls = 0;
     for (const group of groups) {
