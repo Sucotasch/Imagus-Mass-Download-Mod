@@ -297,10 +297,12 @@ async function updatePrefs(prefs, callback) {
         cacheSieve(changes.sieve); // Cache immediately, BEFORE mutex
     }
 
-    // Simplified: Only protect the storage write
-    await cfg.set(changes).catch(err => {
+    // Improvement #3: Only mutex-protect the storage write
+    await (prefsMutex = prefsMutex.then(async () => {
+        await cfg.set(changes);
+    }).catch(err => {
         console.error('updatePrefs storage error:', err);
-    });
+    }));
 
     if (!prefs.sieve) {
         const data = await cfg.get("sieve");
@@ -657,6 +659,9 @@ function onMessage(message, sender, sendResponse) {
                 chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
             }
             if (typeof sendResponse === 'function') sendResponse({});
+
+            // Force check for completion after clearing everything
+            setTimeout(checkAllQueuesEmpty, 500);
             break;
 
         case 'getDownloadStatus':
@@ -985,6 +990,7 @@ async function processFilterQueue() {
 
             if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(contentType.split(';')[0])) {
                 updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                downloadStats.filtered++;
                 // Don't continue - let finally block run to call checkAllQueuesEmpty
             } else {
                 let passed = true;
@@ -1001,6 +1007,7 @@ async function processFilterQueue() {
                     processDownloadQueue();
                 } else {
                     updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                    downloadStats.filtered++;
                 }
             }
         } catch (error) {
@@ -1028,6 +1035,7 @@ async function processFilterQueue() {
 
                     if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
                         updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                        downloadStats.filtered++;
                     } else {
                         let passed = true;
                         if (type.startsWith('image/')) {
@@ -1043,11 +1051,14 @@ async function processFilterQueue() {
                             processDownloadQueue();
                         } else {
                             updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                            downloadStats.filtered++;
                         }
                     }
                 }
             } catch (getError) {
-                if (getError.name !== 'AbortError' && scanInProgress) {
+                if (getError.name === 'AbortError' || !scanInProgress) {
+                    updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                } else {
                     updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
                 }
             }
