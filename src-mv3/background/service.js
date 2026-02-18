@@ -643,11 +643,23 @@ function handleMessage(message, sender, sendResponse) {
 
         case 'stopScanning':
             scanInProgress = false;
+
+            // Mark all items in queues as canceled before clearing
+            filterQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
+            downloadQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
+            
             filterQueue = [];
             downloadQueue = [];
-            persistState();
 
-            // Improvement #4: Abort all active fetch requests
+            // Cancel active Chrome downloads
+            for (let url in downloadProgress) {
+                if (downloadProgress[url].status === 'downloading' && downloadProgress[url].downloadId) {
+                    chrome.downloads.cancel(downloadProgress[url].downloadId);
+                    updateDownloadProgress(url, 'canceled', 0, 'Download canceled', downloadProgress[url].downloadId, downloadProgress[url].task);
+                }
+            }
+
+            // Improvement #4: Abort all active fetch requests (active filters)
             activeControllers.forEach(ctrl => ctrl.abort());
             activeControllers.clear();
 

@@ -1,45 +1,36 @@
-# 🚀 Imagus Mass Download Mod (MV3 Version)
+# Imagus Reborn MD (Massive Download Mod)
 
-[![Manifest V3](https://img.shields.io/badge/Manifest-V3-green.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+Это модификация популярного расширения **Imagus Reborn**, предназначенная для массовой загрузки изображений и видео высокого качества с веб-страниц.
 
-This is a deeply modified version of the **Imagus** extension, rebuilt for the modern **Chrome Manifest V3** standard. Beyond the core "hover-to-enlarge" functionality, this mod introduces a powerful toolkit for bulk media downloading.
+## 🚀 Основные возможности
 
-> **Note:** The `mv3-version` branch is the current stable development line, fully rewritten to comply with Google Chrome's latest security and performance requirements.
+*   **Массовая загрузка (Ctrl+Q)**: Сканирование страницы и автоматическая отправка всех медиафайлов в очередь загрузки.
+*   **Интеллектуальный выбор URL**: Двухфазная система выбора лучшего разрешения (эвристика + активная валидация типа и размера файла).
+*   **Панель управления (Progress Tab)**: Мониторинг процесса в реальном времени, статистика, возможность отмены и повторной загрузки.
+*   **Гибкие фильтры**: Настройка минимальных размеров изображений/видео и исключение определенных типов файлов.
+*   **Автообновление правил (Sieve)**: Поддержка загрузки актуальных сит с GitHub и слияние с локальными правилами.
 
-## Key Features
-Core:
-Enlarges thumbnails and shows images/videos when hovering over links.
-▪ An extensible set of rules for getting images, media or other content with higher resolution.
-▪ A list of user-defined rules to block/allow the extension to work on specific sites.
+## 🛠 Установка
 
-Mod:
-- **Advanced Mass Download:** A completely redesigned two-phase algorithm scans the page, validates URLs in the background, and uses heuristics to find the best quality media, ensuring more accurate and reliable downloads.
-- **Quick Start Hotkey:** Press `Ctrl+Q` to instantly start the mass download process on the current page.
-- **Persistent Progress UI:** A dedicated tab opens to show the real-time progress of all downloads. It provides detailed stats on completed, pending, failed, and skipped files.
-- **Powerful Pre-download Filtering:** To avoid downloading unwanted content, the mod includes a robust filtering system:
-  - **Pre-scan Filtering:** In-page filtering of invisible elements and elements matching stop-words *before* the main scan, significantly improving performance on large pages.
-  - **Stop-Words:** Configure a list of keywords in the settings to exclude links containing them (e.g., "avatar", "profile").
-  - **Filter by Type & Size:** Automatically skips common UI image types and checks file sizes before downloading to avoid tiny images or videos. These values are configurable.
-- **Operation Control:** The download process can be fully canceled at any time. Failed or canceled downloads can be retried individually from the progress page.
+1.  Клонируйте репозиторий: `git clone https://github.com/Sucotasch/Imagus-Mass-Download-Mod.git`
+2.  Откройте Chrome и перейдите в `chrome://extensions`.
+3.  Включите **Developer mode** (режим разработчика).
+4.  Нажмите **Load unpacked** и выберите папку `src-mv3`.
 
-## 🛠 Installation (Developer Mode)
+## 📖 Документация для разработчиков
 
-Since this mod uses custom enhancements, it must be installed manually via Developer Mode:
+Для глубокого погружения в проект изучите следующие файлы:
 
-1. Clone this repository or download the ZIP for the `mv3-version` branch.
-2. Navigate to `chrome://extensions/` in your browser.
-3. Enable **"Developer mode"** in the top-right corner.
-4. Click the **"Load unpacked"** button.
-5. Select the **`src-mv3`** folder from the downloaded project directory.
+*   [**PROJECT_STRUCTURE.md**](./PROJECT_STRUCTURE.md) — Общая архитектура, система сообщений и карта файлов.
+*   [**MASS_DOWNLOAD_ALGORITHM.md**](./MASS_DOWNLOAD_ALGORITHM.md) — Детальное описание алгоритмов сканирования и выбора URL.
+*   [**DEVELOPMENT_GUIDE.md**](./DEVELOPMENT_GUIDE.md) — Инструкции по поддержке, обновлению правил и список известных проблем.
 
-The extension is now installed and ready to use.
+## ⚠️ Текущее состояние (Manifest V3)
 
-## Usage
-Pin the extension button on the Chrome toolbar, go to a page with a video or image gallery, click the button and follow the instructions that appear below it. After starting the bulk download, a new tab with progress, statistics and controls will open. Filtering options can be changed in the main extension settings, section Download All Settings.
+Проект активно портируется на MV3. Основные функции работают, но имеются известные ограничения:
+*   Очереди загрузки хранятся в памяти Service Worker (прогресс может сброситься при его остановке).
+*   Критический баг в функции `stopScanning` (ожидает исправления).
 
----
+## 📄 Лицензия
 
-### 👨‍💻 About
-Based on the original [Imagus](https://github.com/Zren/chrome-extension-imagus) core and [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) manifest v3 version.  
-This community-driven modification focuses on feature expansion and long-term compatibility with the Chrome Extension SDK.
+Оригинальный Imagus распространяется под лицензией автора. Данная модификация предоставляется как есть для сообщества.
