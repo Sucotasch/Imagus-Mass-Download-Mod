@@ -1232,7 +1232,7 @@
                     if (n.childElementCount && n.querySelector("iframe, object, embed")) break;
                     if (typeof x === "number" && typeof y === "number") {
                         tmp_el = getElementsFromPoint(x, y);
-                        for (i = 0; i < 5; ++i) {
+                        for (i = 0; i < tmp_el.length && i < 5; ++i) {
                             if (tmp_el[i] === doc.body) break;
                             if (!tmp_el[i].currentSrc && tmp_el[i].style.backgroundImage.lastIndexOf("url(", 0) !== 0) continue;
                             var elRect = tmp_el[i].getBoundingClientRect();
