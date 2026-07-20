@@ -515,6 +515,7 @@ function handleMessage(message, sender, sendResponse) {
             handleRetryDownload(msg, sender);
             break;
     }
+    return true;
 }
 
 async function deinitTabs() {
