@@ -524,86 +524,6 @@
 				<label data-lng="TLS_SENDIMGTO" for="tls_sendToHosts" class="advanced"></label>
 				<textarea id="tls_sendToHosts" name="tls_sendToHosts" rows="8" class="advanced expand" style="min-height: 95px;"></textarea>
 			</div>
-
-			<h4 data-lng="DA_MASS_DOWNLOAD">Mass Download</h4>
-
-			<div class="prow">
-				<label for="da_maxConcurrentFilters" data-lng="DA_MAX_FILTERS">Max Concurrent Filters</label>
-				<span>
-					<input id="da_maxConcurrentFilters" name="da_maxConcurrentFilters" type="number" step="1" min="1"
-						max="20" value="5">
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_maxConcurrentDownloads" data-lng="DA_MAX_DOWNLOADS">Max Concurrent Downloads</label>
-				<span>
-					<input id="da_maxConcurrentDownloads" name="da_maxConcurrentDownloads" type="number" step="1"
-						min="1" max="10" value="3">
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_minImageSize" data-lng="DA_MIN_IMAGE_SIZE">Min Image Size (KB)</label>
-				<span>
-					<input id="da_minImageSize" name="da_minImageSize" type="number" step="5" min="0" value="45">
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_minVideoSize" data-lng="DA_MIN_VIDEO_SIZE">Min Video Size (MB)</label>
-				<span>
-					<input id="da_minVideoSize" name="da_minVideoSize" type="number" step="1" min="0" value="2">
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_excludedExtensions" data-lng="DA_EXCL_EXT">Excluded Extensions</label>
-				<span>
-					<input id="da_excludedExtensions" name="da_excludedExtensions" type="text"
-						value=".png, .svg, .ico, .gif">
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_excludedKeywords" data-lng="DA_EXCL_KEYWORDS">Excluded Keywords (CSS/Text)</label>
-				<span>
-					<input id="da_excludedKeywords" name="da_excludedKeywords" type="text"
-						value="ad, banner, icon, logo, avatar, profile, user">
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_downloadOnUnknown" data-lng="DA_UNKNOWN">Download Unknown Types</label>
-				<span>
-					<input id="da_downloadOnUnknown" name="da_downloadOnUnknown" type="checkbox" checked>
-					<label for="da_downloadOnUnknown" class="checkbox"></label>
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_resolutionTimeout" data-lng="DA_TIMEOUT">Resolution Timeout (s)</label>
-				<span>
-					<input id="da_resolutionTimeout" name="da_resolutionTimeout" type="number" step="1" min="1" max="60"
-						value="8">
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_showProgressTab" data-lng="DA_SHOW_PROGRESS_TAB">Show Progress Tab</label>
-				<span>
-					<input id="da_showProgressTab" name="da_showProgressTab" type="checkbox">
-					<label for="da_showProgressTab" class="checkbox"></label>
-				</span>
-			</div>
-
-			<div class="prow">
-				<label for="da_maxProgressRecords" data-lng="DA_MAX_PROGRESS_RECORDS">Max Progress Records</label>
-				<span>
-					<input id="da_maxProgressRecords" name="da_maxProgressRecords" type="number" step="10" min="10"
-						max="500" value="100">
-				</span>
-			</div>
 		</section>
 
 		<section id="tools_sec" class="scroll" style="display: none;">
@@ -699,6 +619,86 @@
 					<li><b>+ Ctrl</b> in album or over the media</li>
 				</ul>
 			</ul>
+
+			<h4 data-lng="DA_MASS_DOWNLOAD">Mass Download</h4>
+
+			<div class="prow">
+				<label for="da_maxConcurrentFilters" data-lng="DA_MAX_FILTERS">Max Concurrent Filters</label>
+				<span>
+					<input id="da_maxConcurrentFilters" name="da_maxConcurrentFilters" type="number" step="1" min="1"
+						max="20" value="5">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_maxConcurrentDownloads" data-lng="DA_MAX_DOWNLOADS">Max Concurrent Downloads</label>
+				<span>
+					<input id="da_maxConcurrentDownloads" name="da_maxConcurrentDownloads" type="number" step="1"
+						min="1" max="10" value="3">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_minImageSize" data-lng="DA_MIN_IMAGE_SIZE">Min Image Size (KB)</label>
+				<span>
+					<input id="da_minImageSize" name="da_minImageSize" type="number" step="5" min="0" value="45">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_minVideoSize" data-lng="DA_MIN_VIDEO_SIZE">Min Video Size (MB)</label>
+				<span>
+					<input id="da_minVideoSize" name="da_minVideoSize" type="number" step="1" min="0" value="2">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_excludedExtensions" data-lng="DA_EXCL_EXT">Excluded Extensions</label>
+				<span>
+					<input id="da_excludedExtensions" name="da_excludedExtensions" type="text"
+						value=".png, .svg, .ico, .gif">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_excludedKeywords" data-lng="DA_EXCL_KEYWORDS">Excluded Keywords (CSS/Text)</label>
+				<span>
+					<input id="da_excludedKeywords" name="da_excludedKeywords" type="text"
+						value="ad, banner, icon, logo, avatar, profile, user">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_downloadOnUnknown" data-lng="DA_UNKNOWN">Download Unknown Types</label>
+				<span>
+					<input id="da_downloadOnUnknown" name="da_downloadOnUnknown" type="checkbox" checked>
+					<label for="da_downloadOnUnknown" class="checkbox"></label>
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_resolutionTimeout" data-lng="DA_TIMEOUT">Resolution Timeout (s)</label>
+				<span>
+					<input id="da_resolutionTimeout" name="da_resolutionTimeout" type="number" step="1" min="1" max="60"
+						value="8">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_showProgressTab" data-lng="DA_SHOW_PROGRESS_TAB">Show Progress Tab</label>
+				<span>
+					<input id="da_showProgressTab" name="da_showProgressTab" type="checkbox">
+					<label for="da_showProgressTab" class="checkbox"></label>
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="da_maxProgressRecords" data-lng="DA_MAX_PROGRESS_RECORDS">Max Progress Records</label>
+				<span>
+					<input id="da_maxProgressRecords" name="da_maxProgressRecords" type="number" step="10" min="10"
+						max="500" value="100">
+				</span>
+			</div>
 
 		</section>
 
