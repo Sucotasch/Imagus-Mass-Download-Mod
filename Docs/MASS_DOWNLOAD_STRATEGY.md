@@ -457,6 +457,9 @@ PVI.TRG = original_TRG;
 - `mass-download/service-init.js` — глобальные переменные
 - `mass-download/service-core.js` — все функции mass-download
 - `mass-download/content-block.js` — reference файл с маркерами
+- Манифест: version `2026.7.15`, имя `Imagus Reborn MD`, убран `contextMenus`, добавлен popup, скопированы иконки мода
+- Локализация: строки `DA_*` добавлены в en и ru, исправлен `APP_READY`
+- Дополнительные файлы скопированы из мода: `popup.js/html`, `download-progress.js/html`
 
 ### 10.2 Обнаруженные сложности
 
@@ -464,10 +467,15 @@ PVI.TRG = original_TRG;
 |-----------|----------|---------|
 | grep-pattern для `} else pv = false;` | В upstream есть 2 совпадения (строки 2543 и 2544) | Вставка перед ВТОРЫМ (последним) |
 | grep-pattern для message handlers | `download(d)` — единственное уникальное совпадение | Вставка ПОСЛЕ этого handler |
-| grep-pattern для PVI methods | `initOnMouseMoveEnd` — آخر метод в upstream | Вставка перед закрытием `};` |
+| grep-pattern для PVI methods | `initOnMouseMoveEnd` — последний метод в upstream | Вставка перед закрытием `};` |
 | Upstream использует VideoJS | `PVI.VIDEOJS`, `PVI.PLAYER` — не tồnуют в моде | Оставлено как есть (upstream feature) |
 | Upstream использует Shadow DOM | `PVI.ROOT.attachShadow` — не в моде | Оставлено как есть |
 | `grantUrls` в upstream | Удалено в моде, заменено на `da` | Adapter F: замена в readCfg |
+| **Options HTML: класс `row` vs `prow`** | Рабочая версия использует `<div class="prow">` + `<span>` вокруг input. Overlay использовал `<div class="row">` без `<span>` | Скопирована точная структура из эталона |
+| **Options HTML: пустые `data-lng`** | Рабочая версия имеет текст в `<label>` (заменяется processLNG). Overlay имел пустые `data-lng` | Добавлен текст в каждую строку |
+| **Настройки за пределами scroll** | `da_sec` оказался за пределами `settings_sec` (scrollable container) | Убрана обёртка `<section id="da_sec">`, контент вставлен напрямую в `settings_sec` |
+| **Настройки исчезли после фикса** | Обёртка `<section>` внутри `settings_sec` ломала рендеринг upstream | Контент должен быть плоским (`<h4>` + `<div class="prow">`), без вложенных `<section>` |
+| **`chrome.userScripts` undefined** | Upstream падает если API недоступен (старый Chrome/Firefox) | Добавлена проверка `if (!chrome.userScripts) return;` |
 
 ### 10.3 Исправленные баги при реализации
 
@@ -480,6 +488,34 @@ PVI.TRG = original_TRG;
 | **Upstream: `grantUrls_` textarea crash** | overlay options.html:734 | Удалён `grantUrls_` textarea. При отсутствии `grantUrls` в конфиге `prefs["grantUrls"]` становится `{}` (объект), и `.map()` на объекте выбрасывает `TypeError` |
 | **Upstream: Shadow DOM traversal overhead** | overlay content.js `getElementsFromPoint` | Overlay traverses shadow roots через `elements[0].shadowRoot.elementsFromPoint`. Рабочая версия использует `doc.elementsFromPoint` напрямую. Дополнительная нагрузка при сканировании страниц |
 | **`return true`缺失** | overlay service.js `handleMessage` | Без `return true` в конце функции `context.postMessage(data)` в async-кейсах пытается ответить в закрытый канал → ошибки "Could not establish connection" на каждой из 300 вкладок |
+| **`PVI.TRG` undefined в `find()`** | overlay content.js `processNextInQueue` | Upstream сбрасывает `PVI.TRG = null` во время `find()`. Добавлен `PVI.TRG = el` после `PVI.find()` перед `PVI.load()` |
+| **`tmp_el[i]` null в `find()`** | overlay content.js:1237 | Добавлен `tmp_el[i] &&` перед `!tmp_el[i].currentSrc` (как в рабочей версии) |
+| **`find()` missing length check** | overlay content.js:1235 | Добавлен `i < tmp_el.length` в цикл — `getElementsFromPoint` может вернуть <5 элементов |
+| **`grantUrls_` textarea crash** | overlay options.html:734 | Удалён textarea — `.map()` на `{}` при отсутствии `grantUrls` в конфиге |
+| **Settings section placement** | overlay options.html | `da_sec` оказался за пределами `settings_sec` → настройки вне scrollable зоны |
+| **Settings disappeared after fix** | overlay options.html | Обёртка `<section>` внутри `settings_sec` ломала рендеринг upstream → убрана обёртка |
+| **`chrome.userScripts` undefined** | overlay service.js | Добавлена проверка `if (!chrome.userScripts) return;` перед `configureWorld` |
+
+### 10.4 Адаптеры: что конкретно применено
+
+| Точка | Файл | Содержание |
+|-------|------|------------|
+| A | service.js:8 | `importScripts('../mass-download/service-init.js', '../mass-download/service-core.js')` |
+| B | service.js:481-516 | 12 switch cases в handleMessage |
+| C | content.js:60-84 | `_isElementVisible` + `_hasStopWords` (helpers) |
+| D | content.js:499-509 | 11 PVI-свойств после `palette` |
+| E | content.js:2544-2550 | Hotkey Ctrl+Q в key_action |
+| F | content.js:3624-3638 | Message handlers (stopScanning, downloadAll, groupAnalysisComplete) |
+| G | content.js:3779-4051 | 7 методов PVI в конце объекта |
+| H | app.js:111 | `"da"` вместо `"grantUrls"` в readCfg keys |
+| I | defaults.json | Блок `da` (10 настроек) + `downloadAll: "Q"` |
+| J | options.html:276-354 | Секция mass download settings (~80 строк HTML) |
+| K | options.html:552-554 | Hotkey entry Ctrl+Q |
+| L | options.js:426 | `da` в pref_keys |
+| M | options.js:436 | Export format (shift-key pretty-print) |
+| N | options.css:894-916 | Стили mass download секции |
+| O | messages.json (en, ru) | 13 DA_* строк + исправление APP_READY |
+| P | manifest.json | Version, name, permissions, popup, icons |
 
 ### 10.4 Следующие шаги
 
