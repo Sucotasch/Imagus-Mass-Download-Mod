@@ -190,7 +190,7 @@ var sieve_sec,
                 dupes = [],
                 rules = sieve_sec.querySelectorAll("#sieve_container > div"),
                 some_func = function (el) {
-                    return el.env?.editor?.getValue().trim() !== "" || el.value.trim() !== "";
+                    return (typeof el.env?.editor?.getValue === 'function' ? el.env.editor.getValue() : el.value || "").trim() !== "";
                 };
             for (let i = 0; i < rules.length; ++i) {
                 const rule = rules[i].querySelector(":scope > [data-action='rule']");
