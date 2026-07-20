@@ -541,6 +541,10 @@ function keepAlive() {
 
 let optionsOpened = false;
 async function registerContentScripts() {
+    if (!chrome.userScripts) {
+        console.warn("chrome.userScripts API not available - user scripts will not be registered");
+        return;
+    }
     try {
         await chrome.userScripts.configureWorld({ csp: "script-src 'self' 'unsafe-eval'", messaging: true });
 
