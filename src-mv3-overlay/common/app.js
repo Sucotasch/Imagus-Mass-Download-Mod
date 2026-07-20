@@ -79,7 +79,9 @@ window.addEventListener(
 const Port = {
     listen: function (callback) {
         if (this.listener) {
-            chrome.runtime.onMessage?.removeListener(this.listener);
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+                chrome.runtime.onMessage.removeListener(this.listener);
+            }
         }
 
         if (typeof callback === "function") {
@@ -92,7 +94,9 @@ const Port = {
             } else {
                 this.listener = callback;
             }
-            chrome.runtime.onMessage?.addListener(this.listener);
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+                chrome.runtime.onMessage.addListener(this.listener);
+            }
         } else {
             this.listener = null;
         }

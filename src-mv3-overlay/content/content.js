@@ -104,6 +104,7 @@
     };
 
     var rotate = function (deg) {
+        if (!PVI.DIV) return;
         deg = typeof deg === 'number' ? deg : (deg ? 90 : -90);
         PVI.DIV.curdeg += deg;
         PVI.DIV.curdeg %= 360;

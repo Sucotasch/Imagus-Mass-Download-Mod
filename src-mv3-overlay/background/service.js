@@ -378,7 +378,7 @@ function handleMessage(message, sender, sendResponse) {
             fetch(`${chrome.runtime.getURL(message.file)}`)
                 .then(r => r.text())
                 .then(text => sendResponse(text));
-            break;
+            return true;
 
         case "open":
             openUrl(msg, sender);
@@ -515,13 +515,12 @@ function handleMessage(message, sender, sendResponse) {
             handleRetryDownload(msg, sender);
             break;
     }
-    return true;
 }
 
 async function deinitTabs() {
     const tabs = await chrome.tabs.query({ url: "<all_urls>" });
     for (const tab of tabs) {
-        chrome.tabs.sendMessage(tab.id, { cmd: "reinit" });
+        chrome.tabs.sendMessage(tab.id, { cmd: "reinit" }).catch(() => {});
     }
 }
 
@@ -864,7 +863,7 @@ if (chrome.contextMenus) {
         if (info.menuItemId === "open-options") {
             chrome.runtime.openOptionsPage();
         } else if (info.menuItemId === "ignore-element" && tab?.id) {
-            chrome.tabs.sendMessage(tab.id, { cmd: "ignore_element" });
+            chrome.tabs.sendMessage(tab.id, { cmd: "ignore_element" }).catch(() => {});
         }
     });
 }
