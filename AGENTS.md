@@ -72,6 +72,8 @@ User-facing mod strings use `DA_` prefix in `_locales/[lang]/messages.json`. Oth
 - **`_isElementVisible` is dead code** — defined in content.js:8 but never called. Pre-filtering only checks stop-words; hidden elements (bot traps) are processed wastefully by `PVI.find`.
 - **`_removeDownloadAllStatus` undefined** — referenced at content.js:2887 but no such function exists. Should be `_stopKeepAwake`.
 - **`keepAlive` duplicated** — defined at service.js:32 (mod) and service.js:751 (upstream). Two intervals running.
+- **Upstream `find()` missing length check** — overlay content.js:1235 has `for (i = 0; i < 5; ++i)` without `i < tmp_el.length`. If `getElementsFromPoint` returns <5 elements, `tmp_el[i]` is undefined → `TypeError: Cannot read properties of undefined (reading 'currentSrc')`. Fixed by adding length check.
+- **Upstream `grantUrls_` textarea crash** — overlay options.html:734 has `grantUrls_` textarea, but when `grantUrls` is absent from config, `prefs["grantUrls"]` becomes `{}` (object), and `.map()` on object throws `TypeError`. Fixed by removing the textarea.
 
 ## Strategy & Overlay Documentation
 

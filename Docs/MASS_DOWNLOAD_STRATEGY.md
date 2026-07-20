@@ -476,6 +476,10 @@ PVI.TRG = original_TRG;
 | `_removeDownloadAllStatus` undefined | content.js:2887 | Заменено на `_stopKeepAwake` (строка 3630) |
 | `_isElementVisible` dead code | content.js:8-20 | Оставлено как есть ( potential future use) |
 | `keepAlive` duplicated | service.js:32 и service.js:751 | Оставлено как есть (min overhead) |
+| **Upstream: `find()` missing length check** | overlay content.js:1235 | Добавлен `i < tmp_el.length` в цикл `for`. Без этого `getElementsFromPoint` возвращает <5 элементов → `TypeError: Cannot read properties of undefined (reading 'currentSrc')` |
+| **Upstream: `grantUrls_` textarea crash** | overlay options.html:734 | Удалён `grantUrls_` textarea. При отсутствии `grantUrls` в конфиге `prefs["grantUrls"]` становится `{}` (объект), и `.map()` на объекте выбрасывает `TypeError` |
+| **Upstream: Shadow DOM traversal overhead** | overlay content.js `getElementsFromPoint` | Overlay traverses shadow roots через `elements[0].shadowRoot.elementsFromPoint`. Рабочая версия использует `doc.elementsFromPoint` напрямую. Дополнительная нагрузка при сканировании страниц |
+| **`return true`缺失** | overlay service.js `handleMessage` | Без `return true` в конце функции `context.postMessage(data)` в async-кейсах пытается ответить в закрытый канал → ошибки "Could not establish connection" на каждой из 300 вкладок |
 
 ### 10.4 Следующие шаги
 
