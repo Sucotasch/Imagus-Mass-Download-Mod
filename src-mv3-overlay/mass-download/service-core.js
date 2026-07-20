@@ -200,20 +200,7 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
             error: error, downloadId: downloadId, task: task
         }).catch(() => { /* keep tabId for retries */ });
     }
-    downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
-
-    const maxRecords = (cachedPrefs.da && cachedPrefs.da.maxProgressRecords) || 100;
-    const keys = Object.keys(downloadProgress);
-    if (keys.length > maxRecords) {
-        const sorted = keys.sort((a, b) => {
-            const sa = downloadProgress[a], sb = downloadProgress[b];
-            const order = { completed: 0, skipped: 1, failed: 2, canceled: 3, scanning: 4, downloading: 5, pending: 6 };
-            const da = order[sa.status] ?? 7, db = order[sb.status] ?? 7;
-            return da - db || (sa.timestamp || 0) - (sb.timestamp || 0);
-        });
-        const toRemove = sorted.slice(0, keys.length - maxRecords);
-        toRemove.forEach(k => delete downloadProgress[k]);
-    }
+    downloadProgress[url] = { url, status, progress, error, downloadId, task };
 }
 
 async function processFilterQueue() {
