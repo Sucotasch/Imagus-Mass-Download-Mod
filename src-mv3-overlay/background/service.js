@@ -4,6 +4,9 @@ var manifest = chrome.runtime.getManifest();
 var cachedSieveRes = [],
     cachedPrefs = {};
 
+// === MASS DOWNLOAD ===
+importScripts('../mass-download/service-init.js', '../mass-download/service-core.js');
+
 const platform = navigator.userAgent.includes('Firefox') ? "firefox" : "chrome";
 
 const _ = function (msg) {
@@ -415,6 +418,43 @@ function onMessage(message, sender, sendResponse) {
                 });
             break;
         }
+
+        // === MASS DOWNLOAD CASES ===
+        case 'downloadAll':
+            return handleDownloadAll(msg, sender, sendResponse);
+        case 'openDownloadProgress':
+            handleOpenDownloadProgress(msg, sender);
+            break;
+        case 'registerProgressTab':
+            handleRegisterProgressTab(msg, sender);
+            break;
+        case 'downloadMass':
+            handleDownloadMass(msg, sender);
+            break;
+        case 'resolveAndDownloadGroups':
+            handleResolveGroups(msg);
+            break;
+        case 'updateStatus':
+            handleUpdateStatus(msg);
+            break;
+        case 'updateFilterStats':
+            handleUpdateFilterStats(msg);
+            break;
+        case 'stopScanning':
+            handleStopScanning();
+            break;
+        case 'getDownloadStatus':
+            handleGetDownloadStatus(msg, sendResponse);
+            break;
+        case 'clearCompletedDownloads':
+            handleClearCompleted();
+            break;
+        case 'clearAllDownloads':
+            handleClearAll();
+            break;
+        case 'retryDownload':
+            handleRetryDownload(msg, sender);
+            break;
     }
     return true;
 }

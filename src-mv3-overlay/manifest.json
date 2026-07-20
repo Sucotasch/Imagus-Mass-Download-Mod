@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 
-	"name": "Imagus Reborn",
+	"name": "Imagus Reborn MD",
 	"version": "2026.7.14",
 	"description": "__MSG_APP_DESCRIPTION__",
 	"default_locale": "en",
@@ -12,6 +12,7 @@
 	},
 
 	"action": {
+		"default_popup": "options/popup.html"
 	},
 
 	"permissions": [

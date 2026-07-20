@@ -87,7 +87,20 @@
 		"hz_fullSpace": "F",
 		"hz_caption": "C",
 		"openTab": "O",
-		"hz_history": "H"
+		"hz_history": "H",
+		"downloadAll": "Q"
+	},
+	"da": {
+		"maxConcurrentFilters": 5,
+		"maxConcurrentDownloads": 3,
+		"minImageSize": 45,
+		"minVideoSize": 2,
+		"excludedExtensions": ".png, .svg, .ico, .gif",
+		"excludedKeywords": "ad, banner, icon, logo, avatar, profile, user",
+		"downloadOnUnknown": true,
+		"resolutionTimeout": 8,
+		"showProgressTab": true,
+		"maxProgressRecords": 100
 	},
 	"grants": [],
 	"grantUrls": [],

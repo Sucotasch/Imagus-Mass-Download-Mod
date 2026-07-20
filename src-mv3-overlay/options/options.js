@@ -423,7 +423,7 @@ var download = function (data, filename, exportAsText) {
 
 var prefs = function (data, options, ev) {
     var i,
-        pref_keys = ["hz", "keys", "tls", "grants", "grantUrls"];
+        pref_keys = ["hz", "keys", "tls", "grants", "da"];
     if (typeof data === "object") {
         if (JSON.stringify(data) === "{}") return false;
         if ((options || {}).clear) Port.send({ cmd: "cfg_del", keys: Object.keys(data) });
@@ -433,7 +433,7 @@ var prefs = function (data, options, ev) {
     }
     data = {};
     for (i = 0; i < 5; ++i) if (pref_keys[i] in cfg) data[pref_keys[i]] = cfg[pref_keys[i]];
-    download(JSON.stringify(data, null, 2), app.name + "-conf.json", ev.ctrlKey);
+    download(JSON.stringify(data, null, ev.shiftKey ? 2 : 0), app.name + "-conf.json", ev.ctrlKey);
 };
 
 function onValueChange (e) {
