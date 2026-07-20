@@ -6,55 +6,60 @@ This project is a community-modified version of the Imagus Chrome extension, des
 
 Key features of the modification include:
 
-*   **Bulk Downloading:** A single-click action to download all supported media on a page.
-*   **Persistent Progress UI:** A dedicated tab to monitor download progress with detailed statistics.
-*   **Pre-download Filtering:** A system to filter media by type and size to avoid unwanted downloads.
+*   **Bulk Downloading:** A single-click action (`Ctrl+Q`) to download all supported media on a page.
+*   **Persistent Progress UI:** A dedicated tab opens automatically to monitor download progress with detailed statistics.
+*   **Pre-download Filtering:** A system to filter media by type, size, and stop-words to avoid unwanted downloads.
 *   **Operation Control:** The ability to cancel the download process and retry failed downloads.
 
-The project is written in JavaScript and is designed to be loaded as an unpacked extension in Google Chrome.
+The project is written in JavaScript (vanilla, ES6+, no frameworks) and is designed to be loaded as an unpacked extension in Google Chrome.
 
 ## Building and Running
 
-### Dependencies
+### Active Development (MV3)
 
-*   Python 3
-*   Java
+No build step required. To run the extension:
 
-### Building the Extension
+1.  Navigate to `chrome://extensions`.
+2.  Enable "Developer mode".
+3.  Click "Load unpacked".
+4.  Select the **`src-mv3`** directory.
 
-The project uses a Python script to build and minify the extension files. To build the extension, run the following command:
+### Legacy Build (MV2, optional)
+
+The `build.py` script builds the legacy `src/` tree. Requires Python 3 and Java.
 
 ```sh
 python3 build.py
 ```
 
-The build script uses the following tools:
-
+The build script downloads and uses:
 *   **Closure Compiler:** For minifying JavaScript files.
 *   **htmlcompressor:** For compressing HTML files.
 *   **YUI Compressor:** For compressing CSS files.
 
-### Running the Extension
-
-To run the extension in Chrome:
-
-1.  Navigate to `chrome://extensions`.
-2.  Enable "Developer mode".
-3.  Click "Load unpacked".
-4.  Select the `src` directory.
-
 ## Key Files
 
-*   `src/manifest.json`: The manifest file for the Chrome extension, defining its structure, permissions, and entry points.
-*   `src/background.html` & `src/js/background.js`: The background script that handles the core logic of the extension, including the download process.
-*   `src/includes/content.js`: The content script that is injected into web pages to find and manage media.
-*   `src/options.html` & `src/js/options.js`: The options page for configuring the extension's settings.
-*   `src/download-progress.html` & `src/js/download-progress.js`: The UI and logic for the download progress page.
-*   `src/sieve.jsn`: A JSON file containing the rules (sieves) for finding high-resolution images and media on different websites.
-*   `build.py`: The Python script used to build and package the extension.
+### Active Codebase (`src-mv3/`)
+
+*   `src-mv3/manifest.json`: Extension manifest (MV3), defines permissions and entry points.
+*   `src-mv3/background/service.js`: Service Worker — download queues, URL validation, sieve updates, settings storage.
+*   `src-mv3/content/content.js`: Content script — DOM scanning, hotkey handling (`Ctrl+Q`), URL collection, Imagus rule matching.
+*   `src-mv3/common/app.js`: Shared utilities used by both content and background.
+*   `src-mv3/options/options.js` & `options.html`: Settings page.
+*   `src-mv3/options/download-progress.js` & `download-progress.html`: Real-time mass download progress UI.
+*   `src-mv3/options/popup.js` & `popup.html`: Toolbar popup.
+*   `src-mv3/data/defaults.json`: Default settings. Mass-download config lives under the `da` key.
+*   `src-mv3/data/sieve.json`: Media extraction rules per site (auto-updated weekly).
+
+### Legacy Codebase (`src/`)
+
+The `src/` directory contains the original MV2 source. It is used only by `build.py` for the old CRX build. Do not edit unless specifically porting something backward.
 
 ## Development Conventions
 
-*   The project uses a build process to minify and compress the source code for production.
-*   The `sieve.jsn` file is a critical part of the extension, and development on the sieves is a key part of maintaining and extending the extension's functionality.
-*   The `unminify_all` script suggests that development is done on unminified source files, and the build process creates the minified versions for release.
+*   Vanilla JavaScript, ES6+, `"use strict"`. No linter, no formatter, no automated tests.
+*   The `sieve.json` rules starting with `_` are user/local — never overwritten on auto-update.
+*   Service Worker is ephemeral; a `keepAlive` hack (25s interval + silent audio loop) prevents suspension.
+*   All state in `service.js` is in-memory (`filterQueue`, `downloadQueue`, `downloadStats`). Stopping the worker loses queue state.
+*   Content script monkey-patches `PVI.set`/`PVI.show` to capture Imagus sieve results for mass download.
+*   Components communicate via `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage`.

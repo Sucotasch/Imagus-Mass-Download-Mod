@@ -28,10 +28,18 @@
 | `downloadAll` | Popup/Hotkey | Content | Запуск процесса сканирования страницы. |
 | `downloadMass` | Content | Background | Отправка одиночного найденного URL в очередь. |
 | `resolveAndDownloadGroups` | Content | Background | Отправка массивов URL (когда Imagus нашел несколько вариантов) для анализа. |
-| `updateStatus` | Background | Progress Tab | Обновление текстового статуса ("Scanned X/Y"). |
+| `openDownloadProgress` | Content | Background | Открытие вкладки прогресса. |
+| `updateStatus` | Content/Background | Progress Tab | Обновление текстового статуса ("Scanned X/Y"). |
+| `updateFilterStats` | Content | Background | Передача статистики фильтрации (found, filtered). |
+| `updateStats` | Background | Progress Tab | Обновление общей статистики. |
 | `updateDownloadStatus` | Background | Progress Tab | Передача состояния конкретного файла (URL, статус, прогресс). |
 | `registerProgressTab` | Progress Tab | Background | Регистрация ID вкладки прогресса для адресной рассылки обновлений. |
 | `stopScanning` | Progress Tab/Content | Background | Полная остановка всех очередей и сброс состояния. |
+| `getDownloadStatus` | Progress Tab | Background | Запрос текущего состояния всех загрузок. |
+| `retryDownload` | Progress Tab | Background | Повтор загрузки конкретного файла. |
+| `clearCompletedDownloads` | Progress Tab | Background | Очистка завершенных загрузок из прогресса. |
+| `clearAllDownloads` | Progress Tab | Background | Полная очистка прогресса и статистики. |
+| `groupAnalysisComplete` | Background | Content | Уведомление о завершении анализа URL-групп. |
 
 ## 3. Схема данных и настроек (`defaults.json`)
 
