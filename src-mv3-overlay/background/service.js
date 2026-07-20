@@ -71,30 +71,51 @@ function withBaseURI(base, relative, secure) {
     }
 }
 
-async function updateSieve(local) {
+async function updateSieve(local, retryCount = 0) {
+    const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
 
     try {
-        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
         }
 
         let newSieve = await response.json();
+
+        if (typeof newSieve !== 'object' || newSieve === null) {
+            throw new Error('Invalid sieve format: must be an object');
+        }
+
+        let validRuleCount = 0;
+        for (let key in newSieve) {
+            if (newSieve[key] && (newSieve[key].link || newSieve[key].img)) {
+                validRuleCount++;
+            }
+        }
+
+        if (validRuleCount === 0) {
+            throw new Error('Sieve contains no valid rules');
+        }
+
         if (curSieve) {
             let merged = {};
-            // keep rules that starts with "_"
             for (let key in curSieve) {
                 if (key.startsWith("_")) {
                     merged[key] = curSieve[key];
                 }
             }
-            // add new and updated rules
             for (let key in newSieve) {
                 merged[key] = newSieve[key];
             }
-            // add all other existing rules and disable them; copy disabled state for existing rules
             for (let key in curSieve) {
                 if (merged[key]) {
                     merged[key].off = curSieve[key].off;
@@ -106,14 +127,19 @@ async function updateSieve(local) {
             newSieve = merged;
         }
         await updatePrefs({ sieve: newSieve });
-        if (!local) {
-            await cfg.set({ sieveUpdateLast: Date.now() });
-        }
+        await cfg.set({ sieveUpdateLast: Date.now() });
         console.info(manifest.name + ": Sieve updated from " + (local ? "local" : "remote") + " repository.");
         return { updated_sieve: newSieve };
 
     } catch (error) {
         console.warn(manifest.name + ": Sieve failed to update from " + (local ? "local" : "remote") + " repository! | ", error.message);
+
+        if (!local && retryCount < MAX_RETRIES) {
+            const delay = Math.pow(2, retryCount) * 1000;
+            console.info(manifest.name + ": Retrying sieve update in " + delay + "ms (attempt " + (retryCount + 1) + "/" + MAX_RETRIES + ")");
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return updateSieve(local, retryCount + 1);
+        }
 
         if (!local) {
             const data = await cfg.get("sieve");
@@ -124,6 +150,17 @@ async function updateSieve(local) {
 
         return { error: "Error. " + error.message };
     }
+}
+
+function isSafeRegex(pattern) {
+    if (typeof pattern !== 'string') return true;
+    const dangerousPatterns = [
+        /(\.\*){2,}/,
+        /(\.\+){2,}/,
+        /(\w\*){2,}/,
+        /(\\[.*\\]\*){2,}/
+    ];
+    return !dangerousPatterns.some(p => p.test(pattern));
 }
 
 function cacheSieve(newSieve) {
@@ -137,6 +174,16 @@ function cacheSieve(newSieve) {
         if ((!rule.link && !rule.img) || (rule.img && !rule.to && !rule.res)) continue;
         try {
             if (rule.off) throw ruleName + " is off";
+
+            if (rule.link && typeof rule.link === 'string' && !isSafeRegex(rule.link)) {
+                console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (link)`);
+                continue;
+            }
+            if (rule.img && typeof rule.img === 'string' && !isSafeRegex(rule.img)) {
+                console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (img)`);
+                continue;
+            }
+
             if (rule.res)
                 if (/^:\n/.test(rule.res)) {
                     cachedSieveRes[cachedSieve.length] = rule.res.slice(2);
@@ -161,6 +208,8 @@ function cacheSieve(newSieve) {
     }
     cachedPrefs.sieve = cachedSieve;
 }
+
+let prefsMutex = Promise.resolve();
 
 async function updatePrefs(prefs, callback) {
     prefs = prefs || {};
@@ -227,7 +276,13 @@ async function updatePrefs(prefs, callback) {
         changes.sieve = typeof prefs.sieve === "string" ? JSON.parse(prefs.sieve) : prefs.sieve;
         cacheSieve(changes.sieve);
     }
-    await cfg.set(changes);
+
+    await (prefsMutex = prefsMutex.then(async () => {
+        await cfg.set(changes);
+    }).catch(err => {
+        console.error('updatePrefs storage error:', err);
+    }));
+
     if (!prefs.sieve) {
         const data = await cfg.get("sieve");
         if (!data?.sieve) {
@@ -242,6 +297,10 @@ async function updatePrefs(prefs, callback) {
 }
 
 function onMessage(message, sender, sendResponse) {
+    return handleMessage(message, sender, sendResponse);
+}
+
+function handleMessage(message, sender, sendResponse) {
     let msg, context;
     if (sender === null) {
         msg = message;
@@ -275,7 +334,7 @@ function onMessage(message, sender, sendResponse) {
             cfg.get(msg.keys, function (data) {
                 context.postMessage({ cfg: data });
             });
-            break;
+            return true;
         case "cfg_del":
             if (!Array.isArray(msg.keys)) {
                 msg.keys = [msg.keys];
@@ -288,19 +347,19 @@ function onMessage(message, sender, sendResponse) {
                 .then(function (resp) {
                     context.postMessage(resp);
                 });
-            break;
+            return true;
         case "savePrefs":
-            updatePrefs(msg.prefs, context.postMessage);
-            break;
+            updatePrefs(msg.prefs, function () { context.postMessage({}); });
+            return true;
         case "update_sieve":
             updateSieve(msg.local).then(context.postMessage);
-            break;
+            return true;
         case "loadScripts":
             registerContentScripts();
             break;
         case "download":
-            download(msg, sender.tab, sendResponse);
-            break;
+            download(msg, sender.tab?.incognito, sendResponse);
+            return true;
         case "history":
             if (chrome.extension?.inIncognitoContext || sender.tab?.incognito) break;
             if (msg.manual) {
@@ -310,7 +369,7 @@ function onMessage(message, sender, sendResponse) {
             } else {
                 chrome.history.addUrl({ url: msg.url });
             }
-            break;
+            return true;
         case "options":
             chrome.runtime.openOptionsPage();
             break;
@@ -416,7 +475,7 @@ function onMessage(message, sender, sendResponse) {
                     }
                     context.postMessage(data);
                 });
-            break;
+            return true;
         }
 
         // === MASS DOWNLOAD CASES ===
@@ -456,7 +515,6 @@ function onMessage(message, sender, sendResponse) {
             handleRetryDownload(msg, sender);
             break;
     }
-    return true;
 }
 
 async function deinitTabs() {
