@@ -4025,6 +4025,9 @@
             try {
                 const src = PVI.find(el, x, y);
 
+                // Restore TRG in case upstream code reset it during find
+                PVI.TRG = el;
+
                 if (src === false) {
                     onResolved(null);
                 } else {

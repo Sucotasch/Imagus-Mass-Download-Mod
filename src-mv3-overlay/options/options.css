@@ -892,41 +892,20 @@ section.warning {
 }
 
 /* === Mass Download Settings === */
-[data-lng="DA_MASS_DOWNLOAD"] + .row,
-[data-lng="DA_MAX_FILTERS"] {
-    display: flex;
-    align-items: center;
-    margin: 4px 0;
-}
-[data-lng="DA_MAX_FILTERS"] label,
-[data-lng="DA_MAX_DOWNLOADS"] label,
-[data-lng="DA_MIN_IMAGE_SIZE"] label,
-[data-lng="DA_MIN_VIDEO_SIZE"] label,
-[data-lng="DA_EXCL_EXT"] label,
-[data-lng="DA_EXCL_KEYWORDS"] label,
-[data-lng="DA_UNKNOWN"] label,
-[data-lng="DA_TIMEOUT"] label,
-[data-lng="DA_SHOW_PROGRESS_TAB"] label,
-[data-lng="DA_MAX_PROGRESS_RECORDS"] label {
-    flex: 1;
-    min-width: 200px;
-}
-[data-lng="DA_MAX_FILTERS"] input[type="number"],
-[data-lng="DA_MAX_DOWNLOADS"] input[type="number"],
-[data-lng="DA_MIN_IMAGE_SIZE"] input[type="number"],
-[data-lng="DA_MIN_VIDEO_SIZE"] input[type="number"],
-[data-lng="DA_TIMEOUT"] input[type="number"],
-[data-lng="DA_MAX_PROGRESS_RECORDS"] input[type="number"] {
-    width: 80px;
-}
-[data-lng="DA_EXCL_EXT"] input[type="text"],
-[data-lng="DA_EXCL_KEYWORDS"] input[type="text"] {
-    flex: 1;
-    max-width: 300px;
-}
 [data-lng="DA_MASS_DOWNLOAD"] {
     margin-top: 16px;
     margin-bottom: 8px;
     border-bottom: 1px solid #ddd;
     padding-bottom: 4px;
+}
+[data-lng="DA_MASS_DOWNLOAD"] + .prow label {
+    flex: 1;
+    min-width: 200px;
+}
+[data-lng="DA_MASS_DOWNLOAD"] + .prow input[type="number"] {
+    width: 80px;
+}
+[data-lng="DA_MASS_DOWNLOAD"] + .prow input[type="text"] {
+    flex: 1;
+    max-width: 300px;
 }
