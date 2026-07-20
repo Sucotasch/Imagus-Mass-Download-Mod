@@ -1234,7 +1234,7 @@
                         tmp_el = getElementsFromPoint(x, y);
                         for (i = 0; i < tmp_el.length && i < 5; ++i) {
                             if (tmp_el[i] === doc.body) break;
-                            if (!tmp_el[i].currentSrc && tmp_el[i].style.backgroundImage.lastIndexOf("url(", 0) !== 0) continue;
+                            if (tmp_el[i] && !tmp_el[i].currentSrc && tmp_el[i].style.backgroundImage.lastIndexOf("url(", 0) !== 0) continue;
                             var elRect = tmp_el[i].getBoundingClientRect();
                             if (x >= elRect.left && x < elRect.right && y >= elRect.top && y < elRect.bottom) {
                                 var trgRect = trg.getBoundingClientRect();
