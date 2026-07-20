@@ -212,7 +212,7 @@ async function processFilterQueue() {
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
-        const excludedExtensions = ((cachedPrefs.da && cachedPrefs.da.excludedExtensions) || '.png, .svg').split(',').map(s => s.trim().toLowerCase());
+        const excludedExtensions = ((cachedPrefs.da && cachedPrefs.da.excludedExtensions) || '.png, .svg, .ico, .gif').split(',').map(s => s.trim().toLowerCase());
         const minImageSize = ((cachedPrefs.da && cachedPrefs.da.minImageSize) || 45) * 1024;
         const minVideoSize = ((cachedPrefs.da && cachedPrefs.da.minVideoSize) || 2) * 1024 * 1024;
         const downloadOnUnknown = (cachedPrefs.da) ? cachedPrefs.da.downloadOnUnknown : true;
