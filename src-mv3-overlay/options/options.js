@@ -75,7 +75,10 @@ var processLNG = function (nodes) {
             if (attrs) {
                 if (/^(title|placeholder)$/.test(attrs)) els[l][attrs] = string;
                 els[l].removeAttribute("data-lngattr");
-            } else insertHTML(els[l], string);
+            } else {
+                els[l].textContent = "";
+                insertHTML(els[l], string);
+            }
             els[l].removeAttribute("data-lng");
             if (els[l].dataset["lngargs"] === void 0) continue;
             args = els[l].dataset["lngargs"].split(" ");
