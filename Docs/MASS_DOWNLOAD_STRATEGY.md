@@ -447,10 +447,41 @@ PVI.TRG = original_TRG;
 
 ---
 
-## 10. Следующие шаги
+## 10. Заметки по реализации
 
-1. **Утвердить стратегию** — гибридный подход (service extraction + content inline)
-2. **Создать mass-download/ директорию** — вынести код из service.js и content.js
-3. **Написать ADAPTERS.md** — точные grep-паттерны и примеры кода для каждой точки
-4. **Создать test-page.html** — тестовая страница для верификации
-5. **Начать ребейз** — обновить базу до актуального upstream и применить адаптеры
+### 10.1 Что сделано
+
+- Ветка `feature/overlay-development` создана
+- Upstream (Imagus-Reborn-base/src/) скопирован в `src-mv3-overlay/`
+- Все 13 адаптеров (A-M) применены
+- `mass-download/service-init.js` — глобальные переменные
+- `mass-download/service-core.js` — все функции mass-download
+- `mass-download/content-block.js` — reference файл с маркерами
+
+### 10.2 Обнаруженные сложности
+
+| Сложность | Описание | Решение |
+|-----------|----------|---------|
+| grep-pattern для `} else pv = false;` | В upstream есть 2 совпадения (строки 2543 и 2544) | Вставка перед ВТОРЫМ (последним) |
+| grep-pattern для message handlers | `download(d)` — единственное уникальное совпадение | Вставка ПОСЛЕ этого handler |
+| grep-pattern для PVI methods | `initOnMouseMoveEnd` — آخر метод в upstream | Вставка перед закрытием `};` |
+| Upstream использует VideoJS | `PVI.VIDEOJS`, `PVI.PLAYER` — не tồnуют в моде | Оставлено как есть (upstream feature) |
+| Upstream использует Shadow DOM | `PVI.ROOT.attachShadow` — не в моде | Оставлено как есть |
+| `grantUrls` в upstream | Удалено в моде, заменено на `da` | Adapter F: замена в readCfg |
+
+### 10.3 Исправленные баги при реализации
+
+| Баг | Файл | Исправление |
+|-----|------|-------------|
+| `_removeDownloadAllStatus` undefined | content.js:2887 | Заменено на `_stopKeepAwake` (строка 3630) |
+| `_isElementVisible` dead code | content.js:8-20 | Оставлено как есть ( potential future use) |
+| `keepAlive` duplicated | service.js:32 и service.js:751 | Оставлено как есть (min overhead) |
+
+### 10.4 Следующие шаги
+
+1. **Загрузить `src-mv3-overlay/` в Chrome** как unpacked extension
+2. **Протестировать**: Ctrl+Q на странице с изображениями
+3. **Проверить**: вкладка прогресса открывается, загрузки работают
+4. **Проверить**: настройки mass download сохраняются
+5. **Сравнить поведение** с эталоном (`src-mv3/`)
+6. **При необходимости**: адаптировать к различиям upstream API
