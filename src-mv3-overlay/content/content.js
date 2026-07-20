@@ -3845,7 +3845,7 @@
 
                 for (let i = index; i < chunkEnd; i++) {
                     const el = elementsToFilter[i];
-                    if (!_hasStopWords(el, keywords)) {
+                    if (_isElementVisible(el) && !_hasStopWords(el, keywords)) {
                         filteredElements.push(el);
                     } else {
                         PVI.downloadAllFiltered++;
