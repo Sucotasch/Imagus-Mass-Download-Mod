@@ -198,7 +198,7 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
             cmd: 'updateDownloadStatus',
             url: url, status: status, progress: progress,
             error: error, downloadId: downloadId, task: task
-        }).catch(() => { downloadProgressTabId = null; });
+        }).catch(() => { /* keep tabId for retries */ });
     }
     downloadProgress[url] = { url, status, progress, error, downloadId, task };
 }
@@ -217,9 +217,13 @@ async function processFilterQueue() {
         const minVideoSize = ((cachedPrefs.da && cachedPrefs.da.minVideoSize) || 2) * 1024 * 1024;
         const downloadOnUnknown = (cachedPrefs.da) ? cachedPrefs.da.downloadOnUnknown : true;
 
+        task._id = task._id || (typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : String(Date.now()) + ':' + Math.random());
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 8000);
-        activeControllers.set(task.url, controller);
+        activeControllers.set(task._id, controller);
 
         try {
             let response = await fetch(task.url, {
@@ -228,7 +232,7 @@ async function processFilterQueue() {
                 headers: { 'Referer': task.referer || '' }
             });
             clearTimeout(timeoutId);
-            activeControllers.delete(task.url);
+            activeControllers.delete(task._id);
 
             const contentType = response.headers.get('Content-Type') || '';
             const contentLength = response.headers.get('Content-Length');
@@ -263,11 +267,21 @@ async function processFilterQueue() {
             }
         } catch (error) {
             clearTimeout(timeoutId);
-            activeControllers.delete(task.url);
+            activeControllers.delete(task._id);
             if (!scanInProgress) continue;
 
             try {
-                let response = await fetch(task.url, { headers: { 'Referer': task.referer || '' } });
+                const innerController = new AbortController();
+                const innerTimeoutId = setTimeout(() => innerController.abort(), 15000);
+                let response;
+                try {
+                    response = await fetch(task.url, {
+                        headers: { 'Referer': task.referer || '' },
+                        signal: innerController.signal
+                    });
+                } finally {
+                    clearTimeout(innerTimeoutId);
+                }
                 if (!scanInProgress) continue;
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
@@ -275,30 +289,37 @@ async function processFilterQueue() {
                 if (contentType.startsWith('text/html')) {
                     updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
                 } else {
-                    const blob = await response.blob();
-                    const size = blob.size;
-                    const type = blob.type;
-                    const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
-
-                    if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
-                        updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                    const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
+                    const MAX_FALLBACK_SIZE = 10 * 1024 * 1024;
+                    if (contentLength > MAX_FALLBACK_SIZE) {
+                        updateDownloadProgress(task.url, 'skipped', 0, 'Too large for fallback', null, task);
                         downloadStats.filtered++;
                     } else {
-                        let passed = true;
-                        if (type.startsWith('image/')) {
-                            if (minImageSize > 0 && size < minImageSize) passed = false;
-                        } else if (type.startsWith('video/')) {
-                            if (minVideoSize > 0 && size < minVideoSize) passed = false;
-                        } else if (!downloadOnUnknown) {
-                            passed = false;
-                        }
+                        const blob = await response.blob();
+                        const size = blob.size;
+                        const type = blob.type;
+                        const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
 
-                        if (passed) {
-                            downloadQueue.push(task);
-                            processDownloadQueue();
-                        } else {
-                            updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                        if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
+                            updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
                             downloadStats.filtered++;
+                        } else {
+                            let passed = true;
+                            if (type.startsWith('image/')) {
+                                if (minImageSize > 0 && size < minImageSize) passed = false;
+                            } else if (type.startsWith('video/')) {
+                                if (minVideoSize > 0 && size < minVideoSize) passed = false;
+                            } else if (!downloadOnUnknown) {
+                                passed = false;
+                            }
+
+                            if (passed) {
+                                downloadQueue.push(task);
+                                processDownloadQueue();
+                            } else {
+                                updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
+                                downloadStats.filtered++;
+                            }
                         }
                     }
                 }
@@ -326,9 +347,14 @@ function processDownloadQueue() {
         activeDownloads++;
         updateDownloadProgress(task.url, 'downloading', 0, null, null, task);
 
+        const rawFilename = task.filename || (task.ext ? undefined : task.priorityExt);
+        const filename = typeof rawFilename === 'string'
+            ? rawFilename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_')
+            : rawFilename;
+
         chrome.downloads.download({
             url: task.url,
-            filename: task.filename || (task.ext ? undefined : task.priorityExt),
+            filename: filename,
             conflictAction: "uniquify"
         }, function (downloadId) {
             if (chrome.runtime.lastError) {
@@ -338,6 +364,15 @@ function processDownloadQueue() {
                 setTimeout(checkAllQueuesEmpty, 100);
             } else {
                 updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
+                const WATCHDOG_MS = 5 * 60 * 1000;
+                const watchdog = setTimeout(() => {
+                    try { chrome.downloads.cancel(downloadId); } catch (_) {}
+                    updateDownloadProgress(task.url, 'failed', 0, 'Download timed out', downloadId, task);
+                    activeDownloads--;
+                    processDownloadQueue();
+                    setTimeout(checkAllQueuesEmpty, 100);
+                }, WATCHDOG_MS);
+                task._watchdog = watchdog;
             }
         });
     }
@@ -351,6 +386,11 @@ chrome.downloads.onChanged.addListener(function (delta) {
         const download = results[0];
         const url = download.url;
         const existingTask = downloadProgress[url] ? downloadProgress[url].task : null;
+
+        if (existingTask && existingTask._watchdog) {
+            clearTimeout(existingTask._watchdog);
+            existingTask._watchdog = null;
+        }
 
         if (delta.state) {
             if (delta.state.current === 'complete') {
@@ -470,14 +510,21 @@ async function processUrlGroupsWithValidation(groups, referer) {
                     url: bestUrl,
                     referer: referer,
                     priorityExt: (bestUrl.match(/#([\da-z]{3,4})$/) || [])[1],
-                    ext: { img: 'jpg', video: 'mp4', audio: 'mp3' }[((/.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(bestUrl)) ? 'video' : 'img')],
+                    ext: (function () {
+                        var base = bestUrl.split(/[?#]/)[0];
+                        if (/\.(?:m(?:4[abprv]|p[34])|og[agv]|webm|avi|mov|mkv)/i.test(base)) return 'mp4';
+                        if (/\.(?:mp3|wav|flac|aac|ogg|m4a|opus)/i.test(base)) return 'mp3';
+                        return 'jpg';
+                    })(),
                     isFromArray: true,
                     originalArraySize: group.urls.length
                 };
                 filterQueue.push(task);
                 processFilterQueue();
             }
-        } catch (error) { }
+        } catch (error) {
+            console.warn(manifest.name + ': group resolution failed', error);
+        }
         processedGroups++;
         if (downloadProgressTabId) {
             chrome.tabs.sendMessage(downloadProgressTabId, {

@@ -77,10 +77,22 @@
         const text = (el.textContent || el.alt || el.title || '').toLowerCase();
         const href = (el.href || '').toLowerCase();
         return keywords.some(word => {
-            const wordBoundary = new RegExp('\\b' + word + '\\b');
-            return wordBoundary.test(text) || href.includes(word);
+            const escaped = word.replace(/[^A-Za-z0-9]+/g, '\\$&');
+            try {
+                const wordBoundary = new RegExp('\\b' + escaped + '\\b', 'i');
+                return wordBoundary.test(text) || href.includes(word);
+            } catch (_) {
+                return href.includes(word);
+            }
         });
     };
+
+    function _getMediaExt(url) {
+        var base = url.split(/[?#]/)[0];
+        if (/\.(?:m(?:4[abprv]|p[34])|og[agv]|webm|avi|mov|mkv)/i.test(base)) return 'mp4';
+        if (/\.(?:mp3|wav|flac|aac|ogg|m4a|opus)/i.test(base)) return 'mp3';
+        return 'jpg';
+    }
     // <<< MASS-DOWNLOAD-HELPERS
 
     var flip = function (el, ori) {
@@ -3993,11 +4005,7 @@
                             url: url,
                             referer: window.location.href,
                             priorityExt: (url.match(/#([\da-z]{3,4})$/) || [])[1],
-                            ext: {
-                                img: 'jpg',
-                                video: 'mp4',
-                                audio: 'mp3'
-                            }[((/\\.(?:m(?:4[abprv]|p[34])|og[agv]|webm)/.test(url)) ? 'video' : 'img')],
+                            ext: _getMediaExt(url),
                             isSingle: true
                         });
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
