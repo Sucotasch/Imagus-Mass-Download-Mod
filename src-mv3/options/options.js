@@ -75,7 +75,10 @@ var processLNG = function (nodes) {
             if (attrs) {
                 if (/^(title|placeholder)$/.test(attrs)) els[l][attrs] = string;
                 els[l].removeAttribute("data-lngattr");
-            } else insertHTML(els[l], string);
+            } else {
+                els[l].textContent = "";
+                insertHTML(els[l], string);
+            }
             els[l].removeAttribute("data-lng");
             if (els[l].dataset["lngargs"] === void 0) continue;
             args = els[l].dataset["lngargs"].split(" ");
@@ -364,9 +367,13 @@ var save = async function () {
             fldType = fld.getAttribute("type");
             if (fldType === "checkbox") prefs[pref[0]][pref[1]] = fld.checked;
             else if (fldType === "range" || fldType === "number" || fld.classList.contains("number")) {
-                prefs[pref[0]][pref[1]] = fld.min ? Math.max(fld.min, Math.min(fld.max, parseFloat(fld.value))) : parseFloat(fld.value);
-                if (typeof prefs[pref[0]][pref[1]] !== "number") prefs[pref[0]][pref[1]] = parseFloat(fld.defaultValue);
-                fld.value = prefs[pref[0]][pref[1]];
+                let val = parseFloat(fld.value);
+                if (isNaN(val)) val = parseFloat(fld.defaultValue) || 0;
+                let min = fld.getAttribute("min"), max = fld.getAttribute("max");
+                if (min !== null && min !== "") val = Math.max(parseFloat(min), val);
+                if (max !== null && max !== "") val = Math.min(parseFloat(max), val);
+                prefs[pref[0]][pref[1]] = val;
+                fld.value = val;
             } else prefs[pref[0]][pref[1]] = fld.value;
         }
     }

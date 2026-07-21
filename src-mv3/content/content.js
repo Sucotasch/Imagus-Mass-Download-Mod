@@ -2882,6 +2882,9 @@
             } else if (d.cmd === 'stopScanning') {
                 if (PVI.downloadAllActive) {
                     PVI.downloadAllActive = false;
+                    PVI.downloadAllQueue = [];
+                    PVI._updateDownloadAllStatus('<strong style="color: #ff8a80;">Scan canceled by user</strong>');
+                    setTimeout(PVI._removeDownloadAllStatus, 3000);
                 }
             } else if (d.cmd === 'downloadAll') {
                 if (typeof sendResponse === 'function') sendResponse({ status: 'initiated' });

@@ -22,9 +22,9 @@ Content scripts (`content/content.js` and `common/app.js`) are registered dynami
 The core "Mass Download" feature from the original mod has been ported and adapted for MV3.
 
 ### Content Script (content/content.js)
-- **Scanning Logic**: `PVI.scanPage(doc)` iterates through all links and images, matching them against Imagus sieves.
-- **Grouping**: Media found in the same visual area or originating from the same link are grouped into `groups` for analysis.
-- **Service Worker Keep-Alive**: When a mass download starts, `PVI.startDownloadAll()` triggers a **silent audio loop** (via a hidden `<audio>` element). This is a specialized hack to prevent the Service Worker from suspending while the content script is performing heavy analysis or wait periods.
+- **Scanning Logic**: `PVI.downloadAll(doc)` иницирует сканирование, `PVI.processNextInQueue()` обрабатывает элементы по очереди, сопоставляя их с правилами Imagus sieve.
+- **Grouping**: URL-массивы (когда sieve вернул несколько вариантов) собираются в `PVI.ambiguousUrlGroups` для анализа в background script.
+- **Service Worker Keep-Alive**: При запуске массовой загрузки `PVI._startKeepAwake()` запускает **тихий аудио-цикл** (через скрытый `<audio>` элемент) для предотвращения засыпания Service Worker.
 
 ### Processing Engine (background/service.js)
 - **Filter Queue**: When URLs are found, they are sent to the background `filterQueue`.
@@ -65,12 +65,12 @@ MV3 significantly restricts header modification.
 ## 5. Development Workflow
 
 1. **Testing**: 
-    - Load the `src-mv3` folder as an unpacked extension.
+    - Load the `src-mv3-overlay` folder as an unpacked extension.
     - **Crucial**: Enable "Developer Mode" in `chrome://extensions`.
 2. **Debugging**:
     - Service Worker logs: Click "service worker" link in the extension card.
     - Content Script logs: Standard F12 console.
-    - Analysis Progress: Monitor the "Download Progress" tab (opened via `Shift+D`).
+    - Analysis Progress: The "Download Progress" tab opens automatically on mass download start.
 3. **Adding Sieves**:
     - Sieves are located in `data/sieve.json` (integrated from Imagus Reborn).
     - Custom rules can be added here or via the Options UI.

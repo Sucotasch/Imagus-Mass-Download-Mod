@@ -1,0 +1,321 @@
+#imagus-popup {
+    margin: 0;
+    padding: 0;
+    visibility: visible;
+    cursor: default;
+    display: none;
+    z-index: 2147483647;
+    position: fixed;
+    box-sizing: content-box;
+    left: auto;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    height: auto;
+    max-width: none;
+    max-height: none;
+    --gallery-grid-size: 150px;
+}
+
+#imagus-popup.dragging {
+    transition: all 0s;
+}
+
+#imagus-popup.video1 {
+    border-color: hsl(18deg 100% 82% / 70%) !important;
+    box-shadow: hsl(18deg 50% 50% / 70%) 0px 0px 2px 0px !important;
+}
+#imagus-popup.video2 {
+    border-color: hsl(240deg 100% 90% / 70%) !important;
+    box-shadow: hsl(240deg 50% 50% / 70%) 0px 0px 2px 0px !important;
+}
+
+#imagus-loader {
+  background-clip: padding-box;
+  position: fixed;
+  z-index: 2147483647;
+  left: auto;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+#imagus-hover {
+    position: absolute;
+    box-sizing: content-box;
+    pointer-events: none;
+    z-index: 2147483646;
+    opacity: 0;
+    top: 50vh;
+    left: 50vw;
+    width: 0px;
+    height: 0px;
+    padding: 0;
+    margin: 0;
+}
+
+#imagus-caption {
+    left: 0;
+    right: auto;
+    display: block;
+    cursor: inherit;
+    position: absolute;
+    width: auto;
+    height: auto;
+    border: 0;
+    font: 13px/1.4em "Trebuchet MS", sans-serif;
+    line-height: 18px;
+    padding: 0 4px;
+    max-width: 100%;
+    overflow: hidden;
+    box-sizing: border-box;
+    text-overflow: ellipsis;
+    border-radius: 0 0 3px 3px;
+    background: rgba(0, 0, 0, .6);
+    color: #fff;
+}
+
+#imagus-caption.outside:not(.bottom),
+#imagus-caption.bottom:not(.outside) {
+    border-radius: 3px 3px 0 0;
+}
+
+#imagus-caption.light {
+    background: rgba(255, 255, 255, .9);
+    color: #000;
+}
+
+#imagus-caption b {
+    margin-right: 4px;
+}
+
+#imagus-caption b:first-child {
+    transition: background-color .1s;
+    border-radius: 3px;
+    padding: 0 2px;
+}
+
+#imagus-popup:not(.dragging) #imagus-caption {
+    cursor: grab;
+}
+
+#imagus-popup.dragging iframe {
+    pointer-events: none;
+}
+
+#imagus-caption:hover {
+    opacity: .1;
+}
+
+#imagus-preview {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    box-shadow: rgb(0 0 0) 0px 0px 18px 6px inset, rgb(255 255 255) 0px 0px 18px 6px inset;
+    box-shadow: rgb(255 255 255) 0px 0px 16px 4px inset, rgb(0 0 0) 0px 0px 16px 4px inset;
+}
+
+#imagus-toolbar {
+    interpolate-size: allow-keywords;
+    box-sizing: border-box;
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    border-radius: 8px;
+    overflow: hidden;
+    padding: 4px;
+    z-index: 10;
+    display: none;
+    background: #00000040;
+    opacity: 0;
+    height: 48px;
+    transition-property: opacity, height, color, background-color;
+    transition-duration: .1s;
+    transition-delay: .5s, .5s, .5s, .5s;
+    flex-direction: column;
+    gap: 4px;
+    color: black;
+    backdrop-filter: blur(6px);
+}
+#imagus-popup:not(.album) > #imagus-toolbar :is([data-action="gallery"], [data-action="goto"]) {
+    display: none;
+}
+#imagus-popup.fz > #imagus-toolbar {
+    display: flex;
+}
+#imagus-toolbar[data-mode="3"] {
+    opacity: 1;
+}
+#imagus-toolbar[data-mode="4"] {
+    display: none;
+}
+div:hover > #imagus-toolbar[data-mode="1"] {
+    opacity: 1;
+    transition: opacity .1s 0s, height .1s .5s, color .1s .5s, background-color .1s .5s;
+}
+div:hover > #imagus-toolbar:hover {
+    opacity: 1;
+    height: unset;
+    background: #00000070;
+    transition-delay: 0s;
+}
+#imagus-toolbar i:first-child {
+    font-size: 22px;
+}
+#imagus-toolbar i {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    transition: inherit;
+    background: #ffffff80;
+    border-radius: 4px;
+    font: 20px sans-serif;
+    flex-shrink: 0;
+    color: #00000082
+}
+#imagus-toolbar:hover i {
+    color: black;
+    background: #b5b5b5;
+}
+#imagus-toolbar:hover i:hover {
+    background: #ebebeb;
+}
+#imagus-toolbar i span:nth-child(2),
+#imagus-toolbar:hover i span:nth-child(1) {
+    display: none;
+}
+#imagus-toolbar:hover i span:nth-child(2) {
+    display: block;
+}
+[data-rotate="90"] #imagus-toolbar {
+    left: -40px;
+    bottom: unset;
+    right: unset;
+    rotate: -90deg;
+    transform-origin: top right;
+}
+[data-rotate="180"] #imagus-toolbar {
+    left: 6px;
+    top: unset;
+    bottom: 6px;
+    right: unset;
+    rotate: 180deg;
+    transform-origin: center;
+}
+[data-rotate="270"] #imagus-toolbar {
+    top: calc(100% - 6px);
+    bottom: unset;
+    right: 6px;
+    rotate: 90deg;
+    transform-origin: top right;
+}
+
+#imagus-gallery {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    justify-content: flex-start;
+    overflow: auto;
+    overscroll-behavior: contain;
+    cursor: default;
+    z-index: 5;
+    background: #dedede;
+    gap: 8px;
+    padding: 8px;
+}
+#imagus-gallery > * {
+    width: var(--gallery-grid-size);
+    height: var(--gallery-grid-size);
+    position: relative;
+}
+#imagus-gallery video,
+#imagus-gallery img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    cursor: pointer;
+    overflow-clip-margin: unset;
+    background: white;
+    margin: 0;
+}
+#imagus-gallery > .vid {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+#imagus-gallery > .vid:before,
+#imagus-gallery > .vid:after {
+    content: "";
+    position: absolute;
+    opacity: 0.5;
+    pointer-events: none;
+}
+#imagus-gallery > .vid:before {
+    background: #000000;
+    width: 60%;
+    height: 60%;
+    border-radius: 20%;
+}
+#imagus-gallery > .vid:after {
+    width: 0;
+    height: 0;
+    border-top: calc(var(--gallery-grid-size) / 5) solid transparent;
+    border-bottom: calc(var(--gallery-grid-size) / 5) solid transparent;
+    border-left: calc(var(--gallery-grid-size) / 3.5) solid #ffffff;
+    margin-left: 5%;
+}
+
+#imagus-videojs {
+    height: 100%;
+    width: 100%;
+    position: relative;
+    z-index: -1;
+}
+
+#imagus-videojs > #imagus-player {
+    height: 100%;
+    width: 100%;
+}
+
+#imagus-videojs video {
+    outline: none;
+}
+
+#imagus-videojs .vjs-menu-button-popup .vjs-menu .vjs-menu-content {
+    max-height: 24em;
+}
+
+#imagus-videojs .vjs-playback-rate .vjs-menu {
+    width: 5em;
+}
+
+#imagus-videojs .vjs-max-quality-selector-button .vjs-menu {
+    width: 14em;
+}
+
+#imagus-videojs .vjs-max-quality-selector-button .vjs-menu .vjs-menu-content {
+    padding: 5px;
+}
+
+#imagus-videojs .vjs-max-quality-selector .vjs-menu li.vjs-selected {
+    font-weight: 400;
+    text-shadow: 0 0 #000;
+}
+
+/* this is for Videojs to select the best suitable video resolution */
+#imagus-popup[style*="display: none"] video {
+    width: 100vw;
+    height: 100vh;
+}

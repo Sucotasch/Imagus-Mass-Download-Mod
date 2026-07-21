@@ -200,7 +200,7 @@ User Action → Content Script → Service Worker → Storage/Network
 | Negative Keywords | -20 | "thumb", "small", "preview", "mini" |
 | HTTPS Protocol | +5 | Secure connection preferred |
 | Clean URL | +10 | No query parameters |
-| Script URLs | -50 | .php, .asp, .jsp, .cgi, .do |
+| Script URLs | -15 | .php, .asp, .jsp, .cgi, .do |
 
 ### Circuit Breaker Pattern
 
@@ -208,10 +208,10 @@ User Action → Content Script → Service Worker → Storage/Network
 ┌─────────────────────────────────────────────────────────┐
 │                  CIRCUIT BREAKER                        │
 ├─────────────────────────────────────────────────────────┤
-│  Failure Rate > 70%  →  Disable Validation (30s)       │
-│  Sliding Window: Last 10 failures tracked              │
+│  Trigger: ≥8 recent failures OR failure rate > 70%     │
+│  Sliding Window: Last 10 attempts tracked              │
 │  Recovery: Auto-re-enable after 30,000ms timeout       │
-│  Fallback: Always use first URL on validation failure  │
+│  Fallback: Heuristic-only selection when triggered     │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -549,7 +549,7 @@ src-mv3/
 | Негативные ключевые слова | -20 | "thumb", "small", "preview", "mini" |
 | HTTPS протокол | +5 | Предпочтение безопасному соединению |
 | Чистый URL | +10 | Без параметров запроса |
-| Скрипт URL | -50 | .php, .asp, .jsp, .cgi, .do |
+| Скрипт URL | -15 | .php, .asp, .jsp, .cgi, .do |
 
 ### Паттерн Circuit Breaker
 
@@ -557,10 +557,10 @@ src-mv3/
 ┌─────────────────────────────────────────────────────────┐
 │                  CIRCUIT BREAKER                        │
 ├─────────────────────────────────────────────────────────┤
-│  Процент ошибок > 70%  →  Отключить валидацию (30с)    │
-│  Скользящее окно: Последние 10 ошибок отслеживаются    │
-│  Восстановление: Авто-включение после тайм-аута 30000мс│
-│  Резерв: Всегда использовать первый URL при ошибке     │
+│  Триггер: ≥8 ошибок подряд ИЛИ rate > 70%             │
+│  Скользящее окно: Последние 10 попыток                 │
+│  Восстановление: Авто-включение после 30,000мс         │
+│  Резерв: Только эвристика при срабатывании             │
 └─────────────────────────────────────────────────────────┘
 ```
 
