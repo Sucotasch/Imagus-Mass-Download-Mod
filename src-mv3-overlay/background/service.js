@@ -362,6 +362,7 @@ function handleMessage(message, sender, sendResponse) {
             return true;
         case "history":
             if (chrome.extension?.inIncognitoContext || sender.tab?.incognito) break;
+            if (typeof msg.url !== "string" || !msg.url) break;
             if (msg.manual) {
                 chrome.history.getVisits({ url: msg.url }, function (hv) {
                     chrome.history[(hv.length ? "delete" : "add") + "Url"]({ url: msg.url });
@@ -823,7 +824,9 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
 
 // update badge on tab activation
 chrome.tabs.onActivated.addListener(async function(info) {
-    updateBadge(info.tabId, (await chrome.tabs.get(info.tabId)).url);
+    try {
+        updateBadge(info.tabId, (await chrome.tabs.get(info.tabId)).url);
+    } catch (e) {}
 });
 
 
