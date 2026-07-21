@@ -2845,7 +2845,7 @@
                 else PVI.lastScrollTime = e.timeStamp;
 
             const isScroll = PVI.shouldScroll(e, target);
-            if (PVI.isVideo() && (
+            if (PVI.TRG && PVI.isVideo() && (
                     e.ctrlKey ||
                     !PVI.TRG.IMGS_album && !cfg.hz.scrollVideoWithCtrl && isScroll ||
                     target.closest(".vjs-progress-control, .vjs-volume-panel")
