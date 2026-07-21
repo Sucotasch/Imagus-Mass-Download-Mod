@@ -103,6 +103,9 @@ const Port = {
     },
 
     send: async function (message, callback) {
+        if (typeof chrome === 'undefined' || !chrome.runtime) {
+            return Promise.reject(new Error('Extension context invalidated'));
+        }
         if (Port.listener || callback) {
             return chrome.runtime.sendMessage(message, callback || Port.listener);
         } else {
