@@ -41,9 +41,10 @@ var _hasStopWords = function (el, keywords) {
         const escaped = word.replace(/[^A-Za-z0-9]+/g, '\\$&');
         try {
             const wordBoundary = new RegExp('\\b' + escaped + '\\b', 'i');
-            return wordBoundary.test(text) || href.includes(word);
+            const hrefSegment = new RegExp('(?:^|[/?&=.#_-])' + escaped + '(?:[/?&=.#_-]|$)', 'i');
+            return wordBoundary.test(text) || hrefSegment.test(href);
         } catch (_) {
-            return href.includes(word);
+            return false;
         }
     });
 };
@@ -106,6 +107,8 @@ if (pv) pdsp(e);
     if (PVI.downloadAllActive) {
         PVI.downloadAllActive = false;
         PVI.downloadAllQueue = [];
+        PVI.ambiguousUrlGroups = [];
+        if (PVI._cleanupMonkeyPatch) PVI._cleanupMonkeyPatch();
         PVI._updateDownloadAllStatus('<strong style="color: #ff8a80;">Scan canceled by user</strong>');
         setTimeout(PVI._stopKeepAwake, 3000);
     }
@@ -306,7 +309,9 @@ processNextInQueue: function () {
         PVI.show = original_show;
         PVI.TRG = original_TRG;
         clearTimeout(timeout);
+        PVI._cleanupMonkeyPatch = null;
     };
+    PVI._cleanupMonkeyPatch = cleanup;
 
     const onResolved = (result) => {
         if (resolved) return;

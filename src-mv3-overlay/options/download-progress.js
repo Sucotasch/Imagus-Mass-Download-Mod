@@ -184,6 +184,11 @@
     }
 
     // Render the table
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     function renderTable() {
         const items = Object.values(downloadItems);
 
@@ -202,20 +207,20 @@
         items.sort((a, b) => b.timestamp - a.timestamp);
 
         progressBody.innerHTML = items.map(item => `
-      <tr data-id="${item.id}">
+      <tr data-id="${escapeHtml(item.id)}">
         <td>
           <div class="thumbnail">
             ${getThumbnail(item)}
           </div>
         </td>
         <td style="word-break: break-all;">
-          <div><strong>${item.fileName}</strong></div>
-          <div class="file-info"><a href="${item.url}" target="_blank" rel="noopener noreferrer">${item.url}</a></div>
-          <div class="file-info">${item.fileType.toUpperCase()}</div>
+          <div><strong>${escapeHtml(item.fileName)}</strong></div>
+          <div class="file-info"><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.url)}</a></div>
+          <div class="file-info">${escapeHtml(item.fileType.toUpperCase())}</div>
         </td>
         <td>
-          <span class="status-badge status-${item.status}">${getStatusText(item.status)}</span>
-          ${item.error ? `<div class="error-details">${item.error}</div>` : ''}
+          <span class="status-badge status-${escapeHtml(item.status)}">${escapeHtml(getStatusText(item.status))}</span>
+          ${item.error ? `<div class="error-details">${escapeHtml(item.error)}</div>` : ''}
         </td>
         <td>
           <div class="progress-bar">
@@ -224,7 +229,7 @@
           <div class="file-info">${item.progress || 0}%</div>
         </td>
         <td>
-          ${(item.status === 'failed' || item.status === 'canceled') ? `<button class="retry-btn" data-id="${item.id}">Retry</button>` : ''}
+          ${(item.status === 'failed' || item.status === 'canceled') ? `<button class="retry-btn" data-id="${escapeHtml(item.id)}">Retry</button>` : ''}
         </td>
       </tr>
     `).join('');
@@ -239,7 +244,7 @@
 
     function getThumbnail(item) {
         if (item.fileType === 'image') {
-            return `<img src="${item.url}" alt="Preview" style="width:100%;height:100%;object-fit:cover;">`;
+            return `<img src="${escapeHtml(item.url)}" alt="Preview" style="width:100%;height:100%;object-fit:cover;">`;
         } else if (item.fileType === 'video') {
             return '🎬';
         } else {

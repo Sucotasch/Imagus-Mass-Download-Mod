@@ -675,6 +675,7 @@ function initTab(sender, sendResponse) {
             sieve: grantsIsBlocked(sender.tab.url) ? null : cachedPrefs.sieve,
             tls: cachedPrefs.tls,
             keys: cachedPrefs.keys,
+            da: cachedPrefs.da,
             grantUrls: cachedPrefs.grantUrls,
             app: { name: manifest.name, version: manifest.version },
             messages: scriptMessages,

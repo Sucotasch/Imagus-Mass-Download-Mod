@@ -26,3 +26,6 @@ var urlValidationStats = {
 
 // Track active fetch controllers to prevent memory leaks and enable request cancellation
 const activeControllers = new Map();
+
+// Reverse mapping: chrome.downloads.downloadId -> task object
+const downloadIdToTask = new Map();

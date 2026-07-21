@@ -49,6 +49,30 @@ async function getOrCreateProgressTab(initiatorTabId) {
     return progressTabPromise;
 }
 
+// --- Content-Type to Extension Mapping ---
+const MIME_TO_EXT = {
+    'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+    'image/gif': '.gif', 'image/svg+xml': '.svg', 'image/x-icon': '.ico',
+    'image/vnd.microsoft.icon': '.ico', 'image/webp': '.webp',
+    'image/bmp': '.bmp', 'image/tiff': '.tiff', 'image/avif': '.avif',
+    'video/mp4': '.mp4', 'video/webm': '.webm', 'video/x-msvideo': '.avi',
+    'video/quicktime': '.mov', 'video/x-matroska': '.mkv',
+    'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg',
+    'audio/flac': '.flac', 'audio/aac': '.aac', 'audio/mp4': '.m4a',
+};
+
+function isExcludedType(url, contentType, excludedList) {
+    const urlExtension = (url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
+    if (excludedList.includes(urlExtension)) return true;
+    if (contentType) {
+        const mime = contentType.split(';')[0].trim().toLowerCase();
+        const mappedExt = MIME_TO_EXT[mime];
+        if (mappedExt && excludedList.includes(mappedExt)) return true;
+        if (excludedList.includes(mime)) return true;
+    }
+    return false;
+}
+
 // --- Message Handler Functions ---
 // These are called from the upstream handleMessage switch.
 // Each corresponds to a case in the mass-download switch block.
@@ -57,7 +81,7 @@ function handleDownloadAll(msg, sender, sendResponse) {
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
         if (tabs[0]) {
             downloadInitiatorTabId = tabs[0].id;
-            chrome.tabs.sendMessage(tabs[0].id, { cmd: 'downloadAll' }).catch(() => {
+            chrome.tabs.sendMessage(tabs[0].id, { cmd: 'downloadAll' }, { frameId: 0 }).catch(() => {
                 console.warn(manifest.name + ': Failed to send downloadAll to content script');
             });
             sendResponse({ status: 'initiated' });
@@ -68,10 +92,23 @@ function handleDownloadAll(msg, sender, sendResponse) {
     return true;
 }
 
+function resetMassDownloadSession() {
+    globalProcessedUrls.clear();
+    downloadProgress = {};
+    downloadStats = { found: 0, filtered: 0, downloaded: 0 };
+    urlValidationStats.totalValidations = 0;
+    urlValidationStats.successfulValidations = 0;
+    urlValidationStats.recentFailures = [];
+    urlValidationStats.circuitBreakerOpen = false;
+    filterQueue = [];
+    downloadQueue = [];
+}
+
 function handleOpenDownloadProgress(msg, sender) {
+    resetMassDownloadSession();
     downloadInitiatorTabId = sender.tab?.id;
     scanInProgress = true;
-    const showProgressTab = cachedPrefs?.da?.showProgressTab ?? false;
+    const showProgressTab = cachedPrefs?.da?.showProgressTab !== false;
     if (showProgressTab) {
         getOrCreateProgressTab(downloadInitiatorTabId).catch(err => {
             console.error(manifest.name + ': Failed to create progress tab:', err);
@@ -138,8 +175,10 @@ function handleStopScanning() {
 
     for (let url in downloadProgress) {
         if (downloadProgress[url].status === 'downloading' && downloadProgress[url].downloadId) {
+            const task = downloadProgress[url].task;
             chrome.downloads.cancel(downloadProgress[url].downloadId);
-            updateDownloadProgress(url, 'canceled', 0, 'Download canceled', downloadProgress[url].downloadId, downloadProgress[url].task);
+            updateDownloadProgress(url, 'canceled', 0, 'Download canceled', downloadProgress[url].downloadId, task);
+            releaseDownloadSlot(task);
         }
     }
 
@@ -157,6 +196,24 @@ function handleGetDownloadStatus(msg, sendResponse) {
     sendResponse({ items: downloadProgress, stats: downloadStats });
 }
 
+// --- Download Slot Management ---
+// Idempotent helper: releases one download slot, clears watchdog, removes from map.
+function releaseDownloadSlot(task) {
+    if (!task || task._slotReleased) return;
+    task._slotReleased = true;
+    if (task._watchdog) {
+        clearTimeout(task._watchdog);
+        task._watchdog = null;
+    }
+    if (task._downloadId != null) {
+        downloadIdToTask.delete(task._downloadId);
+        task._downloadId = null;
+    }
+    activeDownloads--;
+    processDownloadQueue();
+    setTimeout(checkAllQueuesEmpty, 100);
+}
+
 function handleClearCompleted() {
     for (let url in downloadProgress) {
         if (downloadProgress[url].status === 'completed') delete downloadProgress[url];
@@ -164,9 +221,11 @@ function handleClearCompleted() {
 }
 
 function handleClearAll() {
+    handleStopScanning();
     downloadProgress = {};
     downloadStats = { found: 0, filtered: 0, downloaded: 0 };
     globalProcessedUrls.clear();
+    downloadIdToTask.clear();
 }
 
 function handleRetryDownload(msg, sender) {
@@ -264,9 +323,8 @@ async function processFilterQueue() {
             }
 
             const size = parseInt(contentLength, 10);
-            const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
 
-            if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(contentType.split(';')[0])) {
+            if (isExcludedType(task.url, contentType, excludedExtensions)) {
                 updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
                 downloadStats.filtered++;
             } else {
@@ -280,6 +338,11 @@ async function processFilterQueue() {
                 }
 
                 if (passed) {
+                    if (!scanInProgress) {
+                        updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                        downloadStats.filtered++;
+                        continue;
+                    }
                     downloadQueue.push(task);
                     processDownloadQueue();
                 } else {
@@ -295,6 +358,7 @@ async function processFilterQueue() {
             try {
                 const innerController = new AbortController();
                 const innerTimeoutId = setTimeout(() => innerController.abort(), 15000);
+                activeControllers.set(task._id, innerController);
                 let response;
                 try {
                     response = await fetch(task.url, {
@@ -303,6 +367,7 @@ async function processFilterQueue() {
                     });
                 } finally {
                     clearTimeout(innerTimeoutId);
+                    activeControllers.delete(task._id);
                 }
                 if (!scanInProgress) continue;
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -320,9 +385,8 @@ async function processFilterQueue() {
                         const blob = await response.blob();
                         const size = blob.size;
                         const type = blob.type;
-                        const urlExtension = (task.url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
 
-                        if (excludedExtensions.includes(urlExtension) || excludedExtensions.includes(type)) {
+                        if (isExcludedType(task.url, type, excludedExtensions)) {
                             updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
                             downloadStats.filtered++;
                         } else {
@@ -346,8 +410,12 @@ async function processFilterQueue() {
                     }
                 }
             } catch (getError) {
-                if (platform === 'chrome' && (getError.name === 'AbortError' || !scanInProgress)) {
-                    updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                if (!scanInProgress) {
+                    updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task);
+                    return;
+                }
+                if (getError.name === 'AbortError') {
+                    updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout', null, task);
                     return;
                 }
                 updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
@@ -369,7 +437,15 @@ function processDownloadQueue() {
         activeDownloads++;
         updateDownloadProgress(task.url, 'downloading', 0, null, null, task);
 
-        const rawFilename = task.filename || (task.ext ? undefined : task.priorityExt);
+        const rawFilename = task.filename || (() => {
+            try {
+                const pathname = new URL(task.url).pathname;
+                const name = pathname.split('/').pop();
+                return name || undefined;
+            } catch (_) {
+                return undefined;
+            }
+        })();
         const filename = typeof rawFilename === 'string'
             ? rawFilename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_')
             : rawFilename;
@@ -385,14 +461,14 @@ function processDownloadQueue() {
                 processDownloadQueue();
                 setTimeout(checkAllQueuesEmpty, 100);
             } else {
+                task._downloadId = downloadId;
+                downloadIdToTask.set(downloadId, task);
                 updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
                 const WATCHDOG_MS = 5 * 60 * 1000;
                 const watchdog = setTimeout(() => {
                     try { chrome.downloads.cancel(downloadId); } catch (_) {}
                     updateDownloadProgress(task.url, 'failed', 0, 'Download timed out', downloadId, task);
-                    activeDownloads--;
-                    processDownloadQueue();
-                    setTimeout(checkAllQueuesEmpty, 100);
+                    releaseDownloadSlot(task);
                 }, WATCHDOG_MS);
                 task._watchdog = watchdog;
             }
@@ -407,30 +483,27 @@ chrome.downloads.onChanged.addListener(function (delta) {
         if (!results || !results[0]) return;
         const download = results[0];
         const url = download.url;
-        const existingTask = downloadProgress[url] ? downloadProgress[url].task : null;
 
-        if (existingTask && existingTask._watchdog) {
-            clearTimeout(existingTask._watchdog);
-            existingTask._watchdog = null;
-        }
+        const existingTask = downloadIdToTask.get(delta.id)
+            || (downloadProgress[url] ? downloadProgress[url].task : null);
 
         if (delta.state) {
             if (delta.state.current === 'complete') {
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
-                activeDownloads--;
-                if (downloadProgressTabId && activeDownloads > 0) {
+                if (downloadProgressTabId) {
                     chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
                         console.warn(manifest.name + ': Failed to send stats to progress tab');
                     });
                 }
-                processDownloadQueue();
-                setTimeout(checkAllQueuesEmpty, 100);
+                releaseDownloadSlot(existingTask);
             } else if (delta.state.current === 'interrupted') {
-                updateDownloadProgress(url, 'failed', 0, 'Download interrupted', delta.id, existingTask);
-                activeDownloads--;
-                processDownloadQueue();
-                setTimeout(checkAllQueuesEmpty, 100);
+                const alreadyCanceled = existingTask && downloadProgress[url]
+                    && downloadProgress[url].status === 'canceled';
+                if (!alreadyCanceled) {
+                    updateDownloadProgress(url, 'failed', 0, 'Download interrupted', delta.id, existingTask);
+                }
+                releaseDownloadSlot(existingTask);
             }
         } else if (download.totalBytes > 0) {
             const progress = Math.round((download.bytesReceived / download.totalBytes) * 100);
