@@ -420,7 +420,7 @@
     }
 
     async function download(msg) {
-        let src = msg?.url || PVI.PLAYER?.src() || PVI.EXTENSION?.VIDEOJS?.player?.src() || PVI.CNT.src;
+        let src = msg?.url || (PVI.CNT === PVI.VIDEOJS ? PVI.PLAYER?.src() : PVI.CNT.src) || PVI.EXTENSION?.VIDEOJS?.player?.src();
 
         if (PVI.galleryState === 2) {
             let album = PVI.stack[PVI.TRG?.IMGS_album] || [];
