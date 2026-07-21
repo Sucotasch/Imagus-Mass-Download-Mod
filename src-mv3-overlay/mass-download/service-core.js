@@ -94,7 +94,15 @@ function handleDownloadAll(msg, sender, sendResponse) {
 
 function resetMassDownloadSession() {
     globalProcessedUrls.clear();
-    downloadProgress = {};
+    // Preserve completed/skipped entries from previous scans for history
+    const preserved = {};
+    for (const url in downloadProgress) {
+        const s = downloadProgress[url].status;
+        if (s === 'completed' || s === 'skipped') {
+            preserved[url] = downloadProgress[url];
+        }
+    }
+    downloadProgress = preserved;
     downloadStats = { found: 0, filtered: 0, downloaded: 0 };
     urlValidationStats.totalValidations = 0;
     urlValidationStats.successfulValidations = 0;
