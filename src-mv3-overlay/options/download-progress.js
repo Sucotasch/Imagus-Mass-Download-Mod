@@ -244,7 +244,7 @@
 
     function getThumbnail(item) {
         if (item.fileType === 'image') {
-            return `<img src="${escapeHtml(item.url)}" alt="Preview" style="width:100%;height:100%;object-fit:cover;">`;
+            return `<img loading="lazy" decoding="async" src="${escapeHtml(item.url)}" alt="Preview" style="width:100%;height:100%;object-fit:cover;">`;
         } else if (item.fileType === 'video') {
             return '🎬';
         } else {
