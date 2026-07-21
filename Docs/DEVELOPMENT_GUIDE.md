@@ -19,7 +19,7 @@
 ## 2. Критические баги и Технический долг
 
 ### 1. Ошибка `persistState()` и сбой прерывания (Cancel All)
-*   **Где**: `src-mv3/background/service.js`, `src-mv3/content/content.js`.
+*   **Где**: `src-mv3-overlay/background/service.js`, `src-mv3-overlay/content/content.js`.
 *   **Симптом**: При попытке остановить сканирование расширение падало, а загрузки продолжались.
 *   **Решение (Optimal Solution)**:
     1.  **Background**: Удален `persistState()`. Добавлен протокол **Clean Stop**: пометка всех задач `canceled`, отмена активных `chrome.downloads` и `fetch`.

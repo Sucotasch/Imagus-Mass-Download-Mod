@@ -65,7 +65,7 @@ MV3 significantly restricts header modification.
 ## 5. Development Workflow
 
 1. **Testing**: 
-    - Load the `src-mv3` folder as an unpacked extension.
+    - Load the `src-mv3-overlay` folder as an unpacked extension.
     - **Crucial**: Enable "Developer Mode" in `chrome://extensions`.
 2. **Debugging**:
     - Service Worker logs: Click "service worker" link in the extension card.

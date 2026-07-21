@@ -368,8 +368,8 @@ PVI.TRG = original_TRG;
 
 ```
 ШАГ 1: Подготовка
-├── Скопировать новый upstream в Imagus-Reborn-base/ (эталон)
-└── Скопировать новый upstream в src-mv3/ (свежая база)
+├── Скопировать новый upstream в Imagus-Reborn-base/ (эталон, не править)
+└── Скопировать новый upstream в src-mv3-overlay/ (свежая база для оверлея)
 
 ШАГ 2: Проверка API contract
 ├── PVI.find — сигнатура не изменилась?
@@ -377,59 +377,91 @@ PVI.TRG = original_TRG;
 ├── PVI.set — переименован?
 ├── PVI.show — всё ещё использует "R_"?
 ├── handleMessage — структура switch не изменилась?
-└── readCfg — формат keys не изменился?
+├── readCfg — формат keys не изменился?
+├── initTab — prefs object не изменился?
+└── userScripts API — регистрация не изменилась?
 
-ШАГ 3: Применение адаптеров (~195 строк, 30-45 мин)
-├── A. importScripts в service.js
-├── B. Switch cases в handleMessage
-├── C. PVI-свойства с маркерами в content.js
+ШАГ 3: Применение адаптеров (~200 строк, 30-45 мин)
+├── A. importScripts в service.js (service-init + service-core)
+├── B. Switch cases в handleMessage (14 масс-загрузочных cases)
+├── C. PVI-свойства с маркерами >>> <<< в content.js
 ├── D. Hotkey + message hooks с маркерами в content.js
-├── E. Методы PVI с маркерами в content.js
+├── E. Методы PVI с маркерами в content.js (downloadAll, filter, resolve, …)
 ├── F. "da" в readCfg (app.js)
-├── G. Блок da в defaults.json
-├── H. Секция настроек в options.html
-├── I. Hotkey entry в options.html
-├── J. da в pref_keys (options.js)
-├── K. Export format (options.js)
-├── L. Стили в options.css
-└── M. DA_* строки в messages.json
+├── G. Блок da в defaults.json (10 настроек)
+├── H. Секция mass download settings в options.html
+├── I. Hotkey entry (Ctrl+Q) в options.html
+├── J. da в pref_keys + export format (options.js)
+├── K. Стили в options.css
+├── L. DA_* строки в messages.json (en, ru, …)
+├── M. popup.js/html + download-progress.js/html (скопировать из предыдущей версии)
+└── N. mass-download/ directory (service-init.js, service-core.js, content-block.js)
 
-ШАГ 4: Копирование mass-download/
-└── Скопировать mass-download/ из предыдущей версии (код не менялся)
+ШАГ 4: Синхронизация content-block.js ↔ content.js
+├── Убедиться что markers >>> <<< совпадают
+├── _hasStopWords, _getMediaExt, _isElementVisible — идентичны
+├── PVI properties — идентичны
+├── Message handlers — идентичны
+└── PVI methods — идентичны
 
-ШАГ 5: Верификация
-├── Открыть test-page.html
-├── Нажать Ctrl+Q
-├── Проверить: сканирование → фильтрация → загрузка
+ШАГ 5: Исправление известных upstream bugs
+├── find() length check (for i < 5 — добавить i < tmp_el.length)
+├── rotate() null guard (if (!PVI.DIV) return)
+├── grantUrls_ textarea (удалить)
+├── app.js chrome.runtime guard (triple check)
+└── SieveUI getValue() type check
+
+ШАГ 6: Верификация
+├── Загрузить src-mv3-overlay/ в Chrome как unpacked extension
+├── Открыть страницу с изображениями
+├── Нажать Ctrl+Q → сканирование → фильтрация → загрузка
 ├── Проверить: вкладка прогресса открывается
-├── Проверить: отмена работает
-└── Проверить: настройки mass download сохраняются
+├── Проверить: отмена работает (hover восстанавливается сразу)
+├── Проверить: настройки mass download сохраняются
+├── Проверить: mass download работает с iframe (frameId: 0)
+├── Проверить: повторный scan сохраняет данные предыдущих загрузок
+└── Проверить: нет ошибок в console log
 ```
 
 ---
 
-## 8. Обнаруженные баги (не связанные с текущей задачей)
+## 8. Обнаруженные и исправленные баги
 
-### Bug 1: _removeDownloadAllStatus не определена
+### Исправлены в src-mv3-overlay (до аудита 2026-07-20)
 
-**Файл**: `content.js:2887`
-**Код**: `setTimeout(PVI._removeDownloadAllStatus, 3000);`
-**Проблема**: Функция `_removeDownloadAllStatus` **не определена** нигде в mass-download блоке. Определены `_updateDownloadAllStatus` и `_stopKeepAwake`.
-**Влияние**: При получении `stopScanning` сообщения статус-баннер не удаляется через 3с (setTimeout вызовет ошибку в консоли, но не крашнет расширение).
-**Возможное исправление**: Заменить на `PVI._stopKeepAwake` или определить `_removeDownloadAllStatus` как обёртку.
+| Баг | Статус | Исправление |
+|-----|--------|-------------|
+| `_removeDownloadAllStatus` undefined | Fixed | Заменено на `_stopKeepAwake` |
+| `_isElementVisible` dead code | Fixed | Вызывается в `filterQueueAsynchronously` |
+| `keepAlive` duplicated | Fixed | Одно определение в overlay |
+| Upstream `find()` length check | Fixed | Добавлен `i < tmp_el.length` |
+| Upstream `grantUrls_` textarea crash | Fixed | Удалён textarea |
+| Upstream `rotate()` null guard | Fixed | `if (!PVI.DIV) return;` |
+| `app.js` chrome.runtime guard | Fixed | Triple check в Port.listen + Port.send |
+| `deinitTabs`/context menu `.catch()` | Fixed | Добавлены `.catch(() => {})` |
+| `SieveUI` getValue() type check | Fixed | Тип-проверка перед `.trim()` |
 
-### Bug 2: _isElementVisible — мёртвый код
+### Исправлены по аудиту FULL_AUDIT_2026-07-20
 
-**Файл**: `content.js:8-20`
-**Проблема**: Функция определена но **нигде не вызывается**. Предфильтрация проверяет только стоп-слова, не видимость.
-**Влияние**: Bot traps (скрытые элементы) обрабатываются впустую — тратят время на `PVI.find` без результата.
-**Возможное исправление**: Добавить вызов `_isElementVisible(el)` в `filterQueueAsynchronously` перед проверкой стоп-слов.
-
-### Bug 3: Дублирование keepAlive
-
-**Файл**: `service.js:32-35` и `service.js:751`
-**Проблема**: `keepAlive()` определена дважды. Первая определение (строка 32) — добавление мода. Второе (строка 751) — upstream.
-**Влияние**: Два интервала по 25с вместо одного. Минимальный расход ресурсов, но избыточно.
+| Баг | Severity | Исправление |
+|-----|----------|-------------|
+| onChanged обрабатывает все загрузки | P0 | `downloadIdToTask` Map + `releaseDownloadSlot()` |
+| Watchdog + onChanged двойной activeDownloads-- | P0 | Идемпотентный `releaseDownloadSlot` с `_slotReleased` guard |
+| excludedExtensions Content-Type сравнение | P0 | `MIME_TO_EXT` mapping + `isExcludedType()` helper |
+| cfg.da не в hello prefs | P0 | `da: cachedPrefs.da` в initTab prefs |
+| Нет сброса сессии при новом скане | P1 | `resetMassDownloadSession()` с сохранением completed/skipped |
+| HEAD success игнорирует scanInProgress | P1 | Guard перед `downloadQueue.push` |
+| GET fallback не в activeControllers | P1 | Регистрация inner AbortController |
+| AbortError = canceled на Chrome | P1 | Разделение timeout vs user cancel |
+| tabs.sendMessage во все frames | P1 | `{ frameId: 0 }` |
+| Monkey-patch не восстанавливается | P1 | `PVI._cleanupMonkeyPatch` ref |
+| showProgressTab default drift | P2 | `?? false` → `!== false` |
+| href.includes false positives | P2 | Segment-boundary regex |
+| filename always undefined | P2 | Из URL pathname |
+| XSS в progress innerHTML | P2 | `escapeHtml()` wrapper |
+| clearAll incomplete | P2 | Вызов `handleStopScanning()` |
+| Thumbnail lazy loading | P3 | `loading="lazy" decoding="async"` |
+| Port.send chrome.runtime guard | Fix | Triple check перед `sendMessage` |
 
 ---
 
@@ -449,79 +481,70 @@ PVI.TRG = original_TRG;
 
 ## 10. Заметки по реализации
 
-### 10.1 Что сделано
+### 10.1 Текущее состояние
 
-- Ветка `feature/overlay-development` создана
-- Upstream (Imagus-Reborn-base/src/) скопирован в `src-mv3-overlay/`
-- Все 13 адаптеров (A-M) применены
-- `mass-download/service-init.js` — глобальные переменные
-- `mass-download/service-core.js` — все функции mass-download
-- `mass-download/content-block.js` — reference файл с маркерами
-- Манифест: version `2026.7.15`, имя `Imagus Reborn MD`, убран `contextMenus`, добавлен popup, скопированы иконки мода
-- Локализация: строки `DA_*` добавлены в en и ru, исправлен `APP_READY`
-- Дополнительные файлы скопированы из мода: `popup.js/html`, `download-progress.js/html`
+- Ветка `feature/overlay-development` — активная разработка
+- Все 16 адаптеров (A-P) применены
+- 16+ багов исправлены (включая аудит 2026-07-20)
+- `mass-download/` содержит 3 файла: `service-init.js`, `service-core.js`, `content-block.js`
+- Манифест: version `2026.7.15`, имя `Imagus Reborn MD`
+- Локализация: `DA_*` строки в en, ru, и других языках
 
-### 10.2 Обнаруженные сложности
+### 10.2 Известные сложности при re-base
 
 | Сложность | Описание | Решение |
 |-----------|----------|---------|
-| grep-pattern для `} else pv = false;` | В upstream есть 2 совпадения (строки 2543 и 2544) | Вставка перед ВТОРЫМ (последним) |
-| grep-pattern для message handlers | `download(d)` — единственное уникальное совпадение | Вставка ПОСЛЕ этого handler |
-| grep-pattern для PVI methods | `initOnMouseMoveEnd` — последний метод в upstream | Вставка перед закрытием `};` |
-| Upstream использует VideoJS | `PVI.VIDEOJS`, `PVI.PLAYER` — не tồnуют в моде | Оставлено как есть (upstream feature) |
-| Upstream использует Shadow DOM | `PVI.ROOT.attachShadow` — не в моде | Оставлено как есть |
-| `grantUrls` в upstream | Удалено в моде, заменено на `da` | Adapter F: замена в readCfg |
-| **Options HTML: класс `row` vs `prow`** | Рабочая версия использует `<div class="prow">` + `<span>` вокруг input. Overlay использовал `<div class="row">` без `<span>` | Скопирована точная структура из эталона |
-| **Options HTML: пустые `data-lng`** | Рабочая версия имеет текст в `<label>` (заменяется processLNG). Overlay имел пустые `data-lng` | Добавлен текст в каждую строку |
-| **Настройки за пределами scroll** | `da_sec` оказался за пределами `settings_sec` (scrollable container) | Убрана обёртка `<section id="da_sec">`, контент вставлен напрямую в `settings_sec` |
-| **Настройки исчезли после фикса** | Обёртка `<section>` внутри `settings_sec` ломала рендеринг upstream | Контент должен быть плоским (`<h4>` + `<div class="prow">`), без вложенных `<section>` |
-| **`chrome.userScripts` undefined** | Upstream падает если API недоступен (старый Chrome/Firefox) | Добавлена проверка `if (!chrome.userScripts) return;` |
+| grep-pattern для `} else pv = false;` | В upstream 2 совпадения | Вставка перед ВТОРЫМ (последним) |
+| grep-pattern для message handlers | `download(d)` — уникальное совпадение | Вставка ПОСЛЕ этого handler |
+| grep-pattern для PVI methods | `initOnMouseMoveEnd` — последний метод | Вставка перед закрытием `};` |
+| Upstream использует VideoJS | `PVI.VIDEOJS`, `PVI.PLAYER` | Оставлено как есть (upstream feature) |
+| Upstream использует Shadow DOM | `PVI.ROOT.attachShadow` | Оставлено как есть |
+| `grantUrls` в upstream | Удалено в моде, заменено на `da` | Adapter: замена в readCfg |
+| Options HTML: класс `row` vs `prow` | Структура different | Скопирована точная структура из эталона |
+| Options HTML: пустые `data-lng` | Текст нужен для processLNG | Добавлен текст в каждую строку |
+| Настройки за пределами scroll | `da_sec` вне `settings_sec` | Убрана обёртка `<section>`, плоский контент |
+| `chrome.userScripts` undefined | Upstream падает если API недоступен | Добавлена проверка `if (!chrome.userScripts) return;` |
 
-### 10.3 Исправленные баги при реализации
+### 10.3 Invariants (не ломать при re-base)
 
-| Баг | Файл | Исправление |
-|-----|------|-------------|
-| `_removeDownloadAllStatus` undefined | content.js:2887 | Заменено на `_stopKeepAwake` (строка 3630) |
-| `_isElementVisible` dead code | content.js:8-20 | Оставлено как есть ( potential future use) |
-| `keepAlive` duplicated | service.js:32 и service.js:751 | Оставлено как есть (min overhead) |
-| **Upstream: `find()` missing length check** | overlay content.js:1235 | Добавлен `i < tmp_el.length` в цикл `for`. Без этого `getElementsFromPoint` возвращает <5 элементов → `TypeError: Cannot read properties of undefined (reading 'currentSrc')` |
-| **Upstream: `grantUrls_` textarea crash** | overlay options.html:734 | Удалён `grantUrls_` textarea. При отсутствии `grantUrls` в конфиге `prefs["grantUrls"]` становится `{}` (объект), и `.map()` на объекте выбрасывает `TypeError` |
-| **Upstream: Shadow DOM traversal overhead** | overlay content.js `getElementsFromPoint` | Overlay traverses shadow roots через `elements[0].shadowRoot.elementsFromPoint`. Рабочая версия использует `doc.elementsFromPoint` напрямую. Дополнительная нагрузка при сканировании страниц |
-| **`return true`缺失** | overlay service.js `handleMessage` | Без `return true` в конце функции `context.postMessage(data)` в async-кейсах пытается ответить в закрытый канал → ошибки "Could not establish connection" на каждой из 300 вкладок |
-| **`PVI.TRG` undefined в `find()`** | overlay content.js `processNextInQueue` | Upstream сбрасывает `PVI.TRG = null` во время `find()`. Добавлен `PVI.TRG = el` после `PVI.find()` перед `PVI.load()` |
-| **`tmp_el[i]` null в `find()`** | overlay content.js:1237 | Добавлен `tmp_el[i] &&` перед `!tmp_el[i].currentSrc` (как в рабочей версии) |
-| **`find()` missing length check** | overlay content.js:1235 | Добавлен `i < tmp_el.length` в цикл — `getElementsFromPoint` может вернуть <5 элементов |
-| **`grantUrls_` textarea crash** | overlay options.html:734 | Удалён textarea — `.map()` на `{}` при отсутствии `grantUrls` в конфиге |
-| **Settings section placement** | overlay options.html | `da_sec` оказался за пределами `settings_sec` → настройки вне scrollable зоны |
-| **Settings disappeared after fix** | overlay options.html | Обёртка `<section>` внутри `settings_sec` ломала рендеринг upstream → убрана обёртка |
-| **`chrome.userScripts` undefined** | overlay service.js | Добавлена проверка `if (!chrome.userScripts) return;` перед `configureWorld` |
+| ID | Invariant |
+|----|-----------|
+| I1 | `PVI` остаётся IIFE-local; content mass-download **только inline** |
+| I2 | SW mass-download — глобалы через `importScripts`; cases только в switch `handleMessage` |
+| I3 | Очереди **in-memory**; Clean Stop = abort + clear, без `persistState` |
+| I4 | `return true` / async `sendResponse` — только где реально нужен (не blanket) |
+| I5 | Правила sieve с `_` — user/local, не затирать auto-update |
+| I6 | `activeDownloads` / `activeFilters` должны отражать **только** mass-download задачи |
+| I7 | Новые настройки `da`: default = текущее поведение (fail-open где уместно) |
+| I8 | `content-block.js` ↔ `content.js` markers синхронны при правках content |
 
 ### 10.4 Адаптеры: что конкретно применено
 
 | Точка | Файл | Содержание |
 |-------|------|------------|
-| A | service.js:8 | `importScripts('../mass-download/service-init.js', '../mass-download/service-core.js')` |
-| B | service.js:481-516 | 12 switch cases в handleMessage |
-| C | content.js:60-84 | `_isElementVisible` + `_hasStopWords` (helpers) |
-| D | content.js:499-509 | 11 PVI-свойств после `palette` |
-| E | content.js:2544-2550 | Hotkey Ctrl+Q в key_action |
-| F | content.js:3624-3638 | Message handlers (stopScanning, downloadAll, groupAnalysisComplete) |
-| G | content.js:3779-4051 | 7 методов PVI в конце объекта |
-| H | app.js:111 | `"da"` вместо `"grantUrls"` в readCfg keys |
-| I | defaults.json | Блок `da` (10 настроек) + `downloadAll: "Q"` |
-| J | options.html:276-354 | Секция mass download settings (~80 строк HTML) |
-| K | options.html:552-554 | Hotkey entry Ctrl+Q |
-| L | options.js:426 | `da` в pref_keys |
-| M | options.js:436 | Export format (shift-key pretty-print) |
-| N | options.css:894-916 | Стили mass download секции |
-| O | messages.json (en, ru) | 13 DA_* строк + исправление APP_READY |
+| A | service.js | `importScripts('../mass-download/service-init.js', '../mass-download/service-core.js')` |
+| B | service.js handleMessage | 14 switch cases для mass-download |
+| C | content.js helpers | `_isElementVisible` + `_hasStopWords` + `_getMediaExt` |
+| D | content.js PVI properties | `downloadAllActive`, queues, stats, groups |
+| E | content.js hotkey | Ctrl+Q в `PVI.key_action` |
+| F | content.js messages | `downloadAll`, `stopScanning`, `groupAnalysisComplete` |
+| G | content.js methods | 7 методов PVI в конце объекта |
+| H | app.js readCfg | `"da"` в keys |
+| I | defaults.json | Блок `da` (10 настроек) |
+| J | options.html | Mass download settings секция |
+| K | options.html | Hotkey entry Ctrl+Q |
+| L | options.js | `da` в pref_keys + export format |
+| M | options.css | Стили mass download секции |
+| N | messages.json (en, ru) | `DA_*` строки |
+| O | popup.js/html + download-progress.js/html | Скопированы из предыдущей версии |
 | P | manifest.json | Version, name, permissions, popup, icons |
 
-### 10.4 Следующие шаги
+### 10.5 Следующие шаги
 
-1. **Загрузить `src-mv3-overlay/` в Chrome** как unpacked extension
-2. **Протестировать**: Ctrl+Q на странице с изображениями
-3. **Проверить**: вкладка прогресса открывается, загрузки работают
-4. **Проверить**: настройки mass download сохраняются
-5. **Сравнить поведение** с эталоном (`src-mv3/`)
-6. **При необходимости**: адаптировать к различиям upstream API
+1. Загрузить `src-mv3-overlay/` в Chrome как unpacked extension
+2. Протестировать: Ctrl+Q на странице с изображениями
+3. Проверить: вкладка прогресса, отмена, настройки
+4. Проверить: mass download на странице с iframe (frameId: 0)
+5. Проверить: повторный scan сохраняет историю
+6. Сравнить поведение с эталоном (`src-mv3/`)
+

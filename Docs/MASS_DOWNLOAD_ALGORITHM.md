@@ -39,7 +39,7 @@ const allElements = Array.from(doc.querySelectorAll(
 - **Стоп-слова**: Проверка `_hasStopWords(el, keywords)` — ищет ключевые из `cfg.da.excludedKeywords` в тексте, `alt`, `title`, `href` элемента.
 - **Дедупликация**: `PVI.downloadAllUniqueUrls` (Set) отсеивает повторные URL.
 
-> **Замечание**: Функция `_isElementVisible` определена в коде (строка 8), но **нигде не вызывается**. Предфильтрация НЕ проверяет видимость элементов. Скрытые элементы (bot traps, `display: none`, `visibility: hidden`) попадают в очередь и обрабатываются `PVI.find` впустую — `elementsFromPoint(0,0)` для скрытых элементов не находит медиа, но время тратится.
+> **Примечание**: Функция `_isElementVisible` определена и **вызывается** в `filterQueueAsynchronously` перед проверкой стоп-слов. Скрытые элементы (bot traps, `display: none`, `visibility: hidden`) отсеиваются до `PVI.find`.
 
 ### 1.3 Резолвинг (`PVI.processNextInQueue`, content.js:3144)
 
@@ -170,4 +170,4 @@ Background завершает processUrlGroupsWithValidation
 
 ## Известные проблемы
 
-- **Нет фильтрации невидимых элементов**: `_isElementVisible` определена, но не используется. Bot traps и скрытые элементы (`display: none`, `visibility: hidden`, `opacity: 0`) обрабатываются впустую. Исправление: вызывать `_isElementVisible` в `filterQueueAsynchronously` перед проверкой стоп-слов.
+- **Фильтрация невидимых элементов**: `_isElementVisible` определена и вызывается в `filterQueueAsynchronously` перед проверкой стоп-слов. Bot traps и скрытые элементы отсеиваются до `PVI.find`.

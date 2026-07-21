@@ -1,59 +1,68 @@
 # Архитектура проекта Imagus Reborn MD (Manifest V3)
 
-Этот документ описывает структуру расширения, роли файлов и механизмы взаимодействия между компонентами.
+> Актуальная версия: `src-mv3-overlay/` (ветка `feature/overlay-development`)
 
 ## 1. Обзор компонентов
 
-### Фоновые процессы (Background)
-*   **`src-mv3/background/service.js`**: "Мозг" расширения. Работает как Service Worker.
-    *   **Роль**: Управляет очередями загрузки, валидацией URL, обновлением правил (Sieve), хранением настроек и координацией между вкладками.
-    *   **Зависимости**: Основной потребитель `defaults.json` и `sieve.json`.
+### Service Worker (Background)
+- **`background/service.js`** — Upstream SW + `importScripts()` для mass-download модулей + switch cases в `handleMessage`
+- **`mass-download/service-init.js`** — Глобальные переменные: очереди, stats, `activeControllers`, `downloadIdToTask`
+- **`mass-download/service-core.js`** — Вся логика mass-download: фильтрация, загрузка, прогресс, групповая обработка
 
-### Контентные скрипты (Content Scripts)
-*   **`src-mv3/content/content.js`**: Внедряется в веб-страницы.
-    *   **Роль**: Перехват нажатий клавиш (Ctrl+Q), сканирование DOM, первичная фильтрация элементов по видимости и отправка задач в фоновый процесс.
-    *   **Особенность**: Временно "подменяет" функции Imagus (`PVI.set`, `PVI.show`) для захвата результатов разрешения правил.
+### Content Script
+- **`content/content.js`** — Upstream PVI + **inline** mass-download блоки (PVI IIFE-local, внешние файлы не могут видеть PVI)
+- **`content/relay.js`** — Upstream relay
+- **`mass-download/content-block.js`** — **Reference** файл (не грузится runtime). Канонический текст для вставки в content.js через markers `>>>` / `<<<`
 
-### Интерфейс (UI)
-*   **`src-mv3/options/options.js/html`**: Страница настроек.
-*   **`src-mv3/options/download-progress.js/html`**: Панель управления массовой загрузкой.
-    *   **Роль**: Отображает состояние очередей из Background в реальном времени. Позволяет останавливать/возобновлять процессы.
+### UI
+- **`options/options.js/html`** — Страница настроек (включая mass-download настройки `da_*`)
+- **`options/popup.js/html`** — Toolbar popup → `cmd: downloadAll`
+- **`options/download-progress.js/html`** — Прогресс-вкладка
+- **`options/SieveUI.js`** — UI редактора sieve правил
 
-## 2. Система обмена сообщениями (Message Bus)
+### Данные
+- **`data/defaults.json`** — Дефолты; mass-download под ключом `da`
+- **`data/sieve.json`** — Правила извлечения медиа
+- **`common/app.js`** — `Port`, `readCfg`, shared utilities
+- **`_locales/*/messages.json`** — Локализация (`DA_*` строки для mass-download)
 
-Взаимодействие происходит через `chrome.runtime.sendMessage` и `chrome.tabs.sendMessage`.
+## 2. Система обмена сообщениями
 
-| Команда | Откуда | Куда | Описание |
-| :--- | :--- | :--- | :--- |
-| `downloadAll` | Popup/Hotkey | Content | Запуск процесса сканирования страницы. |
-| `downloadMass` | Content | Background | Отправка одиночного найденного URL в очередь. |
-| `resolveAndDownloadGroups` | Content | Background | Отправка массивов URL (когда Imagus нашел несколько вариантов) для анализа. |
-| `openDownloadProgress` | Content | Background | Открытие вкладки прогресса. |
-| `updateStatus` | Content/Background | Progress Tab | Обновление текстового статуса ("Scanned X/Y"). |
-| `updateFilterStats` | Content | Background | Передача статистики фильтрации (found, filtered). |
-| `updateStats` | Background | Progress Tab | Обновление общей статистики. |
-| `updateDownloadStatus` | Background | Progress Tab | Передача состояния конкретного файла (URL, статус, прогресс). |
-| `registerProgressTab` | Progress Tab | Background | Регистрация ID вкладки прогресса для адресной рассылки обновлений. |
-| `stopScanning` | Progress Tab/Content | Background | Полная остановка всех очередей и сброс состояния. |
-| `getDownloadStatus` | Progress Tab | Background | Запрос текущего состояния всех загрузок. |
-| `retryDownload` | Progress Tab | Background | Повтор загрузки конкретного файла. |
-| `clearCompletedDownloads` | Progress Tab | Background | Очистка завершенных загрузок из прогресса. |
-| `clearAllDownloads` | Progress Tab | Background | Полная очистка прогресса и статистики. |
-| `groupAnalysisComplete` | Background | Content | Уведомление о завершении анализа URL-групп. |
+| Команда | Направление | Описание |
+|---------|-------------|----------|
+| `downloadAll` | popup→SW→content | Запуск сканирования страницы |
+| `openDownloadProgress` | content→SW | Открытие вкладки прогресса |
+| `registerProgressTab` | progress→SW | Регистрация ID вкладки |
+| `downloadMass` | content→SW | одиночный URL в очередь |
+| `resolveAndDownloadGroups` | content→SW | массивы URL для анализа |
+| `updateStatus` / `updateFilterStats` | content→SW→progress | Статус и статистика |
+| `stopScanning` | progress→SW→content | Полная остановка |
+| `getDownloadStatus` | progress→SW | Текущее состояние (sync sendResponse) |
+| `clearCompletedDownloads` / `clearAllDownloads` / `retryDownload` | progress→SW | Управление прогрессом |
+| `groupAnalysisComplete` | SW→content | Завершение анализа групп |
+| `updateDownloadStatus` / `updateStats` / `allDownloadsComplete` | SW→progress | UI обновления |
 
-## 3. Схема данных и настроек (`defaults.json`)
+## 3. Настройки mass-download (`da` в `defaults.json`)
 
-Основные параметры массовой загрузки сосредоточены в объекте `da`:
+| Ключ | Тип | Дефолт | Описание |
+|------|-----|--------|----------|
+| `maxConcurrentFilters` | number | 5 | Параллельных HEAD/GET проверок |
+| `maxConcurrentDownloads` | number | 3 | Параллельных chrome.downloads |
+| `minImageSize` | number | 45 | Мин. размер изображения (КБ) |
+| `minVideoSize` | number | 2 | Мин. размер видео (МБ) |
+| `excludedExtensions` | string | `.png, .svg, .ico, .gif` | Исключённые расширения |
+| `excludedKeywords` | string | `ad, banner, icon, logo, avatar, profile, user` | Стоп-слова |
+| `downloadOnUnknown` | boolean | true | Скачивать неизвестные типы |
+| `resolutionTimeout` | number | 8 | Таймаут разрешения sieve (с) |
+| `showProgressTab` | boolean | true | Показывать вкладку прогресса |
+| `maxProgressRecords` | number | 100 | Макс. записей в прогрессе |
 
-*   `maxConcurrentFilters`: Сколько HEAD/GET запросов выполняется одновременно для проверки размера/типа.
-*   `maxConcurrentDownloads`: Лимит одновременных закачек в Chrome.
-*   `minImageSize` / `minVideoSize`: Пороги фильтрации (в КБ/МБ).
-*   `excludedExtensions`: Список расширений-изгоев (через запятую).
-*   `excludedKeywords`: Слова в URL/классах, которые блокируют элемент (например, "banner").
+Добавление новой настройки: `da` в `defaults.json` → UI в `options.html`/`options.js` → локализация `DA_*` в `_locales/`.
 
-## 4. Карта зависимостей (Что будет, если изменить...)
+## 4. Карта зависимостей
 
-*   **Изменение `defaults.json`**: Требует обновления логики в `options.js` (для отображения) и `service.js` (для применения). Если добавить новое поле, оно должно быть в `da` или `hz`.
-*   **Изменение структуры сообщения в `updateDownloadStatus`**: Сломает отрисовку строк в `download-progress.js`.
-*   **Изменение `PVI.find` в `content.js`**: Может нарушить работу основного Imagus (увеличение по наведению).
-*   **Изменение `cfg.get`/`cfg.set` в `service.js`**: Повлияет на сохранение всех настроек расширения.
+- **`defaults.json`** → `service.js` (updatePrefs) → `cachedPrefs` → `service-core.js` (чтение da.*)
+- **`defaults.json`** → `service.js` (initTab) → content script (`cfg.da`)
+- **`content.js`** → `Port.send` → `service.js` (handleMessage switch) → `service-core.js` handlers
+- **`service-core.js`** → `chrome.tabs.sendMessage` → `download-progress.js` (handleMessage)
+- **`options.js`** → `Port.send({ cmd: 'savePrefs' })` → `service.js` (updatePrefs) → `chrome.storage.local`
