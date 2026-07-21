@@ -27,11 +27,15 @@ Mod:
 
 Since this mod uses custom enhancements, it must be installed manually via Developer Mode:
 
+**Quick install:** Download the latest release from [Releases](https://github.com/Sucotasch/Imagus-Mass-Download-Mod/releases/tag/v2026.7.15), extract, and load `src-mv3-overlay` as unpacked extension.
+
+**Or clone from source:**
+
 1. Clone this repository or download the ZIP for the `mv3-version` branch.
 2. Navigate to `chrome://extensions/` in your browser.
 3. Enable **"Developer mode"** in the top-right corner.
 4. Click the **"Load unpacked"** button.
-5. Select the **`src-mv3`** folder from the downloaded project directory.
+5. Select the **`src-mv3-overlay`** folder from the downloaded project directory.
 
 The extension is now installed and ready to use.
 
@@ -129,17 +133,22 @@ This community-driven modification focuses on feature expansion and long-term co
 ### File Structure
 
 ```
-src-mv3/
+src-mv3-overlay/
 ├── manifest.json              # Extension manifest (MV3)
 ├── background/
-│   └── service.js             # Service Worker (background logic)
+│   └── service.js             # Service Worker + importScripts mass-download
 ├── content/
-│   └── content.js             # Content script (page scanning)
+│   ├── content.js             # Content script (PVI + inline mass-download)
+│   └── relay.js               # Upstream relay
+├── mass-download/
+│   ├── service-init.js        # Global variables (queues, stats)
+│   ├── service-core.js        # Filter, download, progress, groups
+│   └── content-block.js       # Reference file for content.js patches
 ├── common/
-│   └── app.js                 # Shared utilities
+│   └── app.js                 # Shared utilities (Port, readCfg)
 ├── options/
-│   ├── options.html           # Settings page
-│   ├── popup.html             # Toolbar popup
+│   ├── options.html           # Settings page (including da_* settings)
+│   ├── popup.html             # Toolbar popup → downloadAll
 │   ├── download-progress.html # Progress tracking UI
 │   └── SieveUI.js             # Rule editor component
 ├── data/
@@ -242,9 +251,6 @@ cd Imagus-Mass-Download-Mod
 
 # 2. Checkout the MV3 branch
 git checkout mv3-version
-
-# 3. (Optional) Build minified version
-python3 build.py
 ```
 
 ### Chrome Extension Loading
@@ -252,7 +258,7 @@ python3 build.py
 1. Navigate to `chrome://extensions/`
 2. Enable **"Developer mode"** (top-right toggle)
 3. Click **"Load unpacked"**
-4. Select the **`src-mv3`** folder
+4. Select the **`src-mv3-overlay`** folder
 5. Extension is now active ✓
 
 ### Verification
@@ -282,11 +288,16 @@ python3 build.py
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Min File Size | 10 KB | Skip files smaller than this |
-| Max File Size | 500 MB | Skip files larger than this |
-| Stop Words | avatar, profile, icon | Exclude URLs containing these |
-| Concurrency | 5 | Parallel download threads |
-| Timeout | 30000ms | Max time per download batch |
+| Max Concurrent Filters | 5 | Parallel HEAD/GET validation requests |
+| Max Concurrent Downloads | 3 | Parallel chrome.downloads |
+| Min Image Size | 45 KB | Skip images smaller than this |
+| Min Video Size | 2 MB | Skip videos smaller than this |
+| Excluded Extensions | .png, .svg, .ico, .gif | Don't download these file types |
+| Stop Words | ad, banner, icon, logo, avatar, profile, user | Exclude URLs containing these |
+| Download Unknown Types | true | Download files with unknown MIME type |
+| Resolution Timeout | 8 s | Max time to resolve a sieve rule |
+| Show Progress Tab | true | Auto-open progress tab on scan start |
+| Max Progress Records | 100 | Limit entries in download history |
 
 #### Filter Configuration (JSON)
 
@@ -591,9 +602,6 @@ cd Imagus-Mass-Download-Mod
 
 # 2. Переключиться на ветку MV3
 git checkout mv3-version
-
-# 3. (Опционально) Собрать минифицированную версию
-python3 build.py
 ```
 
 ### Загрузка расширения в Chrome
@@ -601,7 +609,7 @@ python3 build.py
 1. Перейти на `chrome://extensions/`
 2. Включить **"Режим разработчика"** (переключатель вверху справа)
 3. Нажать **"Загрузить распакованное"**
-4. Выбрать папку **`src-mv3`**
+4. Выбрать папку **`src-mv3-overlay`**
 5. Расширение теперь активно ✓
 
 ### Проверка
@@ -631,11 +639,16 @@ python3 build.py
 
 | Настройка | По умолчанию | Описание |
 |-----------|--------------|----------|
-| Мин. размер файла | 10 КБ | Пропускать файлы меньше этого |
-| Макс. размер файла | 500 МБ | Пропускать файлы больше этого |
-| Стоп-слова | avatar, profile, icon | Исключить URL содержащие это |
-| Параллелизм | 5 | Параллельные потоки загрузки |
-| Тайм-аут | 30000мс | Макс. время на пакет загрузки |
+| Макс. параллельных фильтров | 5 | Параллельные HEAD/GET проверки |
+| Макс. параллельных загрузок | 3 | Параллельные chrome.downloads |
+| Мин. размер изображения | 45 КБ | Пропускать изображения меньше этого |
+| Мин. размер видео | 2 МБ | Пропускать видео меньше этого |
+| Исключённые расширения | .png, .svg, .ico, .gif | Не скачивать эти типы файлов |
+| Стоп-слова | ad, banner, icon, logo, avatar, profile, user | Исключить URL содержащие это |
+| Скачивать неизвестные типы | true | Скачивать файлы с неизвестным MIME |
+| Таймаут разрешения | 8 с | Макс. время на разрешение sieve правила |
+| Показывать вкладку прогресса | true | Автоматически открывать вкладку прогресса |
+| Макс. записей прогресса | 100 | Лимит записей в истории загрузок |
 
 #### Конфигурация фильтра (JSON)
 
