@@ -6,11 +6,19 @@
 
 | Файл | Содержание |
 |------|------------|
+| [DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md](DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md) | Dev guide: residual bugs WP-1…N, hooks, anti-patterns (после audit fixes) |
 | [MASS_DOWNLOAD_STRATEGY.md](MASS_DOWNLOAD_STRATEGY.md) | Стратегия mass-download: overlay architecture, адаптеры, re-base procedure, API contract, invariants |
 | [MASS_DOWNLOAD_ALGORITHM.md](MASS_DOWNLOAD_ALGORITHM.md) | Алгоритм mass-download: две фазы, эвристика, circuit breaker, очереди |
 | [MV3_DEVELOPMENT.md](MV3_DEVELOPMENT.md) | Обзор MV3-архитектуры, Service Worker, userScripts API |
 | [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) | Структура компонентов, шина сообщений, настройки, карта зависимостей |
 | [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) | Обслуживание sieve, баги, отладка, горячие клавиши |
+
+## Аудит
+
+| Файл | Содержание |
+|------|------------|
+| [../Audit/FULL_AUDIT_STATUS_2026-07-20.md](../Audit/FULL_AUDIT_STATUS_2026-07-20.md) | **Актуальный** статус BUG-01…20 после fix-коммитов |
+| [../Audit/FULL_AUDIT_2026-07-20.md](../Audit/FULL_AUDIT_2026-07-20.md) | Полный audit/bughunt (историческое evidence-досье) |
 
 ## Историческая документация (MV2)
 

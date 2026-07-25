@@ -2,6 +2,7 @@
 	"hz": {
 		"deactivate": 1,
 		"debugRules": false,
+		"grantUrlsEnabled": true,
 		"actTrigger": "ctrl",
 		"delay": 300,
 		"delayOnIdle": true,
@@ -20,6 +21,7 @@
 		"mediaVolume": 40,
 		"autoplay": true,
 		"hideControlsDelay": 2000,
+		"invertWheel": false,
 		"mediaLoop": "default",
 		"smoothScroll": false,
 		"galleryGridSize": 150,
@@ -36,7 +38,7 @@
 		"capFlashCount": 1,
 		"fzDefault": false,
 		"fzMode": 1,
-		"fzOnPress": 2,
+		"fzOnPress": 1,
 		"toolbar": 1,
 		"toolbarButtons": "XSOGIRP",
 		"resizeModeType": "memory",
@@ -88,6 +90,8 @@
 		"hz_caption": "C",
 		"openTab": "O",
 		"hz_history": "H",
+		"framePrev": ",",
+		"frameNext": ".",
 		"downloadAll": "Q"
 	},
 	"da": {

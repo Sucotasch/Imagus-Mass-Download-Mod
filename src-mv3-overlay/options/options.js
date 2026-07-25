@@ -311,7 +311,7 @@ var load = function () {
             }
 
         } else if (pref[0] === "grants" || pref[0] === "grantUrls") {
-            const shosts = (prefs[pref[0]] || []).map(grant => {
+            const shosts = (Array.isArray(prefs[pref[0]]) ? prefs[pref[0]] : []).map(grant => {
                 return grant.op === ";" ?
                     ";" + grant.txt :
                     grant.op + (grant.rules || grant.opts || "") + ":" + grant.url;

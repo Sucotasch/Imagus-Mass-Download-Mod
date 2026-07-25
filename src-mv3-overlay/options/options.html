@@ -214,10 +214,19 @@
 				</span>
 			</div>
 
-			<div class="prow">
+			<div class="prow tiptop">
 				<label for="hz_hideControlsDelay" data-lng="HZ_HIDECONTROLSDELAY"></label>
+				<div class="tip" data-lng="HZ_HIDECONTROLS_TIP"></div>
 				<span>
-					<input id="hz_hideControlsDelay" name="hz_hideControlsDelay" type="number" step="500" min="0" max="10000" value="2000">
+					<input id="hz_hideControlsDelay" name="hz_hideControlsDelay" type="number" step="1" min="-1" max="10000">
+				</span>
+			</div>
+
+			<div class="prow">
+				<label for="hz_invertWheel" data-lng="HZ_INVERTWHEEL"></label>
+				<span>
+					<input id="hz_invertWheel" name="hz_invertWheel" type="checkbox">
+					<label for="hz_invertWheel" class="checkbox"></label>
 				</span>
 			</div>
 
@@ -644,6 +653,13 @@
 				<li><label for="keys_downloadAll"><input id="keys_downloadAll" name="keys_downloadAll" value="Q">, <b>Ctrl + Q</b> <span data-lng="HZ_SC_MASS_DOWNLOAD"></span></label></li>
 				<li><label for="keys_hz-save"><input id="keys_hz-save" name="keys_hz-save" value="">, <b>Ctrl + S</b> <span data-lng="HZ_SC_SAVE"></span></label></li>
 				<li><label for="keys_hz-reset"><input id="keys_hz-reset" name="keys_hz-reset" value="">, <b>Esc</b> <span data-lng="HZ_SC_RESET"></span></label></li>
+				<li>
+					<label for="keys_framePrev">
+						<input id="keys_framePrev" name="keys_framePrev"> /
+						<input id="keys_frameNext" name="keys_frameNext">
+						<span data-lng="HZ_SC_FRAMESTEP"></span>
+					</label>
+				</li>
 				<li><b>Ctrl + C</b> <label data-lng="HZ_SC_COPY"></label></li>
 				<li><b>+</b> / <b>-</b> <span data-lng="SC_ZOOMINOUT"></span></li>
 
@@ -670,6 +686,8 @@
 				<li><b>Shift + End</b> Jump to number, or search for captions</li>
 
 				<li style="list-style-type: none"><h4>On media (audio/video)</h4></li>
+				<li><b>Click the top 2/3</b> Close</li>
+				<li><b>Click the bottom 1/3</b> Play/Pause</li>
 				<li><b>Space</b> Play/Pause, <b>hold</b> to increase playback rate</li>
 				<li><b>Shift + Space</b> Show/Hide controls</li>
 				<li><b>Left / Right / Wheel</b> (<b>+ Ctrl</b> in album) Backward/forward 5s (<b>+ Shift</b>: 15s)</li>
@@ -765,6 +783,16 @@
 			<label>
 				<span data-lng="GRNT_WEBSITE"></span>
 				<textarea class="grants" name="grants_" tabindex="1" data-lng="GRNT_RULEPERLINE"  data-lngattr="placeholder"></textarea>
+			</label>
+			<div>
+				<span>
+					<input id="hz_grantUrlsEnabled" name="hz_grantUrlsEnabled" type="checkbox" checked>
+					<label for="hz_grantUrlsEnabled" class="checkbox"></label>
+				</span>
+				<label for="hz_grantUrlsEnabled" data-lng="GRNT_ELEMENT"></label>
+			</div>
+			<label>
+				<textarea class="grants" name="grantUrls_" tabindex="2" data-lng="GRNT_RULEPERLINE"  data-lngattr="placeholder"></textarea>
 			</label>
 
 			<div id="grants_help" data-lng="GRNT_HELP"></div>

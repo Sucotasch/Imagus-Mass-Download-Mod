@@ -57,6 +57,31 @@
         Function(code)();
     }
 
+    const iframes = new Map();
+    function findIframe(contentWin) {
+        if (!contentWin) return;
+        if (iframes.has(contentWin)) {
+            return iframes.get(contentWin);
+        }
+        const iframe = Array.from(document.querySelectorAll("iframe")).find(f => f.contentWindow === contentWin);
+        if (iframe) {
+            iframes.set(contentWin, iframe);
+            return iframe;
+        }
+        const roots = findRoots(doc);
+        for (const root of roots) {
+            root.querySelectorAll("iframe").forEach(f => iframes.set(f.contentWindow, f));
+            if (iframes.has(contentWin)) {
+                return iframes.get(contentWin);
+            }
+        }
+    }
+    function findRoots(el) {
+        return [...el.querySelectorAll("*")]
+            .filter(e => !!e.shadowRoot)
+            .flatMap(e => [e.shadowRoot, ...findRoots(e.shadowRoot)]);
+    }
+
     // >>> MASS-DOWNLOAD-HELPERS
     var _isElementVisible = function (el) {
         if (!el) return false;
@@ -163,7 +188,7 @@
     }
 
     var isUrlIgnored = function(url) {
-        if (!cfg.grantUrls?.length || !url) return false;
+        if (!cfg.hz.grantUrlsEnabled || !cfg.grantUrls?.length || !url) return false;
 
         for (const g of cfg.grantUrls) {
             if (g.op[1] && typeof g.url === "string") {
@@ -386,7 +411,7 @@
             return;
         }
 
-        if (e.target === PVI.CNT) {
+        if (PVI.DIV.contains(e.target) || e.target === PVI.ROOT) {
             pdsp(e, false);
         } else if (e.ctrlKey && !elapsed && !e.shiftKey && !e.altKey && cfg.tls.opzoom && PVI.state < 2) {
             const tags = ['IMG', 'VIDEO', 'SVG', 'CANVAS', 'EMBED', 'OBJECT', 'AREA'];
@@ -739,9 +764,9 @@
             PVI.VID.setAttribute("id", "imagus-videojs");
 
             injectCss("content/styles_doc.css", "", true);
-            injectCss("lib/videojs_all.min.css");
+            injectCss("lib/videojs_mod.css");
 
-            await injectJs("lib/videojs_mod.min.js");
+            await injectJs("lib/videojs_mod.js");
             const playerOptions = {
                 autoplay: cfg.hz.autoplay ? "any" : false,
                 controls: true,
@@ -789,6 +814,10 @@
                     }
                 }
 
+                PVI.PLAYER.on("loadstart", e => {
+                    PVI.PLAYER.muted(false);
+                });
+
                 PVI.PLAYER.on("loadedmetadata", e => {
                     // select original audio
                     for (let aud of PVI.PLAYER.audioTracks()?.tracks_ || []) {
@@ -811,6 +840,20 @@
                     }
 
                     PVI.content_onready(e);
+                    PVI.updateCaption(e);
+
+                    PVI.PLAYER._isAudio = PVI.PLAYER.videoHeight() === 0;
+                    PVI.PLAYER.audioPosterMode(PVI.PLAYER._isAudio);
+                    PVI.PLAYER.poster(!PVI.PLAYER._isAudio ? "" :
+                        `data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTAwIDc1IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHdpZHRoPSIxMDAiIGhlaWdodD0iNzUiIGZpbGw9IiNmZmYiLz48cGF0aCBkPSJtMjkuNzYgMThoMi41MTg2djAuODE1MDNjNi4zMDI1IDEuMzkzOCA3LjAyMjcgNC4zMzExIDMuMzY4OSA4LjkzNzggMC4zODY1My00LjU3OTEtMC4wODk1MS01LjU1OTUtMy4zNjg5LTUuNzcyMnYxMS41NzZhMS40NzI5IDEuNDI1MyAwIDAgMSAwIDAuMTg1MDZjMCAxLjUwNDEtMS42Mjc1IDIuOTk2My0zLjY0MTYgMy4zMzQ5cy0zLjYzNzUtMC42MTAyOS0zLjYzNzUtMi4xMTgzYzAtMi4wNTE0IDIuOTEzMi0zLjgzNSA0Ljc2MDUtMy4yMCV6bTM3LjE0OCAwaDIuNTE4NnYwLjgxNTAzYzYuMjk4NSAxLjM5MzggNy4wMTg2IDQuMzMxMSAzLjM2NDkgOC45Mzc4IDAuNDA2ODgtNC41NzkxLTAuMDg5NTEtNS41NTk1LTMuMzY0OS01Ljc3MjJ2MTEuNTc2IDAuMTg1MDZjMCAxLjUwNDEtMS42Mjc1IDIuOTk2My0zLjY2MTkgMy4zMzQ5LTIuMDM0NCAwLjMzODYxLTMuNjYxOS0wLjYxMDI5LTMuNjYxOS0yLjExODMgMC0yLjA1MTQgMi45MTMyLTMuODM1IDQuNzYwNS0zLjIwNXYtMTMuNzUzem0tMTMuMjE5IDI3LjAyNmE0LjU4MTQgNC40MzM1IDAgMCAxIDEuODMwOSAwLjAzMTV2LTEyLjQzOGwtMTMuNjAyIDMuNzc1OXEwIDcuMzQ3MSAwIDE0LjY4NmMwIDIuMjkxNS0yLjYxMjIgMy45NjEtNC4307c2IDQuMzMxMS0yLjU5OTkgMC40MzMxMS00LjcxMTYtMC43ODc0Ny00LjcxMTYtMi43NTYyczIuMTIzOS0zLjg3NDQgNC43MDc2LTQuMzA3NWE1LjI4OTQgNS4xMTg2IDAgMCAxIDIuNjQwNiAwLjE2NTM3di0xNy43ODFsMTcuNzE1LTMuOTAxOXYyMC4wMzNjMC4xOTUzIDIuMTI2Mi0yLjAzNDQgMy43MzY2LTMuODg5NyA0LjA0NzYtMi4xNzI3IDAuMzYyMjQtMy45MzA0LTAuNjYxNDgtMy45MzA0LTIuMjg3NiAwLTEuNjI2MSAxLjc1NzctMy4yMzY1IDMuOTMwNC0zLjU5ODd6Ii8+PC9zdmc+`,
+                    );
+                    const controlsTimeout = PVI.PLAYER._isAudio ? 0 : cfg.hz.hideControlsDelay;
+                    PVI.PLAYER.controls(PVI.PLAYER._isAudio || cfg.hz.hideControlsDelay >= 0);
+                    PVI.PLAYER.options({
+                        inactivityTimeout: controlsTimeout,
+                    });
+                    PVI.PLAYER.cache_.inactivityTimeout = controlsTimeout;
+                    PVI.PLAYER.userActive(false);
                 });
 
                 PVI.PLAYER.on("error", PVI.content_onerror);
@@ -821,11 +864,17 @@
                 });
 
                 PVI.PLAYER.on("playing", (e) => {
-                    const isAudio = PVI.PLAYER.videoHeight() === 0;
-                    PVI.PLAYER.audioPosterMode(isAudio);
-                    PVI.PLAYER.options({ inactivityTimeout: isAudio ? 0 : cfg.hz.hideControlsDelay })
+                    PVI.PLAYER.controls(PVI.PLAYER._isAudio || cfg.hz.hideControlsDelay >= 0);
+                    PVI.PLAYER.options({
+                        inactivityTimeout: PVI.PLAYER._isAudio ? 0 : cfg.hz.hideControlsDelay,
+                    });
                     PVI.PLAYER.userActive(true);
                 });
+
+                PVI.PLAYER.on("pause", (e) => {
+                    PVI.PLAYER.controls(true);
+                });
+
                 PVI.PLAYER.on("resize", () => {
                     const vWidth = PVI.PLAYER.videoWidth();
                     const vHeight = PVI.PLAYER.videoHeight();
@@ -843,6 +892,7 @@
                         delete mqSelector.selectedIndexPrevious;
                     }
                 });
+                PVI.PLAYER.on("timeupdate", PVI.updateCaption);
 
                 PVI.PLAYER.volume(cfg.hz.mediaVolume / 100);
 
@@ -863,8 +913,10 @@
             buildNodes(PVI.CAP, [
                 { tag: "b", attrs: { style: "display: none;" } },
                 { tag: "b", attrs: { style: `display: ${cfg.hz.capWH ? "inline-block" : "none"}` } },
+                { tag: "b", attrs: { class: "time", style: "display: none;" } },
                 { tag: "span", attrs: { style: "color: inherit; display: " + (cfg.hz.capText ? "inline-block" : "none") } },
             ]);
+            PVI.CAP_TIME = PVI.CAP.children[2];
             var e = PVI.CAP.firstElementChild;
             do {
                 e.IMGS_ = e.IMGS_c = true;
@@ -923,6 +975,19 @@
             var c = PVI.CAP,
                 h;
             if (!c || c.state === 0 || !PVI.TRG) return;
+
+            if (e?.type === "timeupdate" || e?.type === "loadedmetadata") {
+                // display video remaining time
+                if (PVI.PLAYER.duration()) {
+                    let remain = Math.floor(PVI.PLAYER.duration() - PVI.PLAYER.currentTime());
+                    if (Number.isFinite(remain) && (PVI.PLAYER._remain !== remain || e.type === "loadedmetadata")) {
+                        PVI.PLAYER._remain = remain;
+                        const text = `[-${Math.floor(remain / 60)}:${('0' + (remain % 60)).slice(-2)}]`;
+                        PVI.CAP_TIME.textContent = text;
+                        PVI.CAP_TIME.style.display = "inline-block";
+                    }
+                }
+            }
 
             if (PVI.TRG?.IMGS_album)
                 if (c.firstChild.style.display === "none" && (h = PVI.stack[PVI.TRG.IMGS_album]) && h[2]) {
@@ -1059,8 +1124,7 @@
                         }
                     });
                 }
-            /* commented out because that did not allow large images (bigger than viewport)
-            if (el.clientWidth > topWinW * 0.7 && el.clientHeight > topWinH * 0.7) return null; */
+            if (el.clientWidth > topWinW * 0.8 && el.clientHeight > topWinH * 0.8) return null;
             imgs = { imgSRC_o: el.currentSrc || el.src || el.data || null };
             if (!imgs.imgSRC_o && el.localName === "image") {
                 imgs.imgSRC_o = el.getAttributeNS("http://www.w3.org/1999/xlink", "href");
@@ -1547,7 +1611,12 @@
 
         show: function (msg, delayed) {
             if (PVI.iFrame) {
-                win.parent.postMessage({ vdfDpshPtdhhd: "from_frame", msg: msg }, "*");
+                win.parent.postMessage({
+                    vdfDpshPtdhhd: "from_frame",
+                    msg: msg,
+                    x: PVI.x,
+                    y: PVI.y
+                 }, "*");
                 return;
             }
             if (!delayed && typeof msg === "string") {
@@ -1843,6 +1912,8 @@
                         thumb: i.IMGS_thumb ? [i.IMGS_thumb, i.IMGS_thumb_ok] : null,
                         album: i.IMGS_album ? { id: i.IMGS_album, list: PVI.stack[i.IMGS_album] } : null,
                         caption: i.IMGS_caption,
+                        x: PVI.x,
+                        y: PVI.y,
                     },
                     "*"
                 );
@@ -2554,6 +2625,13 @@
                 } else if (key === "M" && PVI.CNT === PVI.VIDEOJS) {
                     PVI.PLAYER.muted(!PVI.PLAYER.muted());
 
+                } else if (key === cfg.keys.frameNext || key === cfg.keys.framePrev) {
+                    if (e.ctrlKey) {
+                        PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === cfg.keys.frameNext ? 4 : -4));
+                    } else {
+                        PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === cfg.keys.frameNext ? 1 : -1) / 30);
+                    }
+
                 } else pv = false;
             // >>> MASS-DOWNLOAD-HOTKEY
             } else if (key === cfg.keys.downloadAll) {
@@ -2852,10 +2930,11 @@
                 )
             ) {
                 pdsp(e);
+                const wheelDown = cfg.hz.invertWheel ? e.deltaY < 0 : e.deltaY > 0;
                 if (target.closest(".vjs-volume-panel")) {
-                    PVI.key_action({ which: e.deltaY > 0 ? 38 : 40, target: PVI.CNT });
+                    PVI.key_action({ which: wheelDown ? 38 : 40, target: PVI.CNT });
                 } else {
-                    PVI.key_action({ which: e.deltaY > 0 ? 39 : 37, ctrlKey: true, target: PVI.CNT });
+                    PVI.key_action({ which: wheelDown ? 39 : 37, ctrlKey: true, target: PVI.CNT });
                 }
                 return;
 
@@ -3011,7 +3090,7 @@
         },
 
         m_over: function (e) {
-            if (cfg.hz.deactivate && (PVI.freeze || e[cfg._freezeTriggerEventKey]) || PVI.fullZm) return;
+            if (cfg.hz.deactivate && (PVI.freeze || e[cfg._freezeTriggerEventKey]) || PVI.fullZm || doc.fullscreenElement) return;
 
             var src, trg, cache;
 
@@ -3072,6 +3151,7 @@
                 return;
             }
 
+            if (e.target?.clientWidth > topWinW * 0.8 || e.target?.clientHeight > topWinH * 0.8) return;
             if (trg.IMGS_c && trg.IMGS_c !== true) {
                 cache = trg.IMGS_c;
             }

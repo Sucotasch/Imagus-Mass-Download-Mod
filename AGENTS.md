@@ -5,7 +5,7 @@
 Chrome extension (Manifest V3): Imagus “hover-to-enlarge” plus bulk media download.
 Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + original Imagus (Zren).
 
-**Current branch:** `feature/overlay-development`  
+**Current branch:** `mv3-version`  
 **Active tree to load in Chrome:** `src-mv3-overlay/`
 
 ## Directory Map
@@ -17,6 +17,8 @@ Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + ori
 | `src/` | Legacy MV2; built by `build.py` | Only for MV2 legacy |
 | `Imagus-Reborn-base/` | Upstream snapshot (hababr/Imagus-Reborn) | **Do not edit** — reference only |
 | `Docs/` | Developer docs (algorithm, structure, overlay strategy) | Docs only |
+| `src-mv3-overlay-upd/` | Untracked staging dir for pending re-base | Do not edit — transient |
+| `_tmp_upstream/` | Temporary upstream diff/comparison files | Do not edit — transient |
 | `minified/` / `unminified/` | Pre-built sieve artifacts | Not main source |
 | `Audit/` | External audit reports | Reference |
 
@@ -49,7 +51,7 @@ src-mv3-overlay/
 ├── options/                       # options, popup, download-progress, SieveUI
 ├── data/defaults.json             # hz / keys / tls / da
 ├── data/sieve.json                # Site media rules
-└── manifest.json                  # MV3 (version tracks upstream, e.g. 2026.7.15)
+└── manifest.json                  # MV3 (version tracks upstream, e.g. 2026.7.21)
 ```
 
 ### Service worker wiring
@@ -162,33 +164,46 @@ Still relevant:
 
 Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 
-- ReDoS in `_hasStopWords` (escape keywords; try/catch)
-- Media ext regex (`\\.` bug) / audio→jpg — use `_getMediaExt()`
-- Unbounded blob GET fallback — Content-Length / size cap
-- Stale `downloadProgressTabId` (catch + `tabs.onRemoved`)
+**Input validation / regex:**
+- ReDoS in `_hasStopWords` — escape keywords; try/catch
+- Media ext regex `\\.` bug / audio→jpg — use `_getMediaExt()`
+- Stop-words `href.includes` false positives — segment-boundary regex
+- Content-Type vs dotted extensions — use `isExcludedType()` with `MIME_TO_EXT`
+
+**Concurrency / lifecycle:**
 - `activeControllers` keyed by URL only — use unique IDs
-- Missing filename sanitization on mass download
+- Watchdog + onChanged double `activeDownloads--` — `releaseDownloadSlot` with `_slotReleased` guard
+- `onChanged` processes all browser downloads — use `downloadIdToTask` Map
+- GET fallback not abortable — register in `activeControllers`
 - No download watchdog / non-abortable inner GET
+- HEAD success ignores `scanInProgress` — guard before `downloadQueue.push`
+- Monkey-patch not restored on cancel — `PVI._cleanupMonkeyPatch` ref
+- No session reset on new scan — `resetMassDownloadSession()` clears all state
+
+**Settings / state:**
+- `cfg.da` missing from `initTab` hello prefs — excludedKeywords/resolutionTimeout not applied
 - `excludedExtensions` fallback mismatch vs defaults
 - Dead `maxProgressRecords` — must actually cap lists
-- Blanket `return true` in `handleMessage`
-- Upstream: `find()` length check, `rotate()` null guard, `grantUrls` object `.map`, `SieveUI` `getValue()` type check, `app.js` chrome.runtime guard, deinitTabs/context menu `.catch()`
-- `_isElementVisible` must stay wired in the filter queue (was dead code in older trees)
-- `onChanged` processes all browser downloads — use `downloadIdToTask` Map + `releaseDownloadSlot()` idempotent helper
-- Watchdog + onChanged double `activeDownloads--` — `releaseDownloadSlot` with `_slotReleased` guard
-- Content-Type vs dotted extensions — use `isExcludedType()` with `MIME_TO_EXT` mapping
-- `cfg.da` missing from `initTab` hello prefs — excludedKeywords/resolutionTimeout not applied
-- No session reset on new scan — `resetMassDownloadSession()` clears all state
-- HEAD success ignores `scanInProgress` — guard before `downloadQueue.push`
-- GET fallback not abortable — register in `activeControllers`
-- AbortError marked as canceled instead of timeout — split by `scanInProgress`
-- `tabs.sendMessage` to all frames — use `{ frameId: 0 }`
-- Monkey-patch not restored on cancel — `PVI._cleanupMonkeyPatch` ref
 - `showProgressTab` default drift — `?? false` → `!== false`
-- Stop-words `href.includes` false positives — segment-boundary regex
+- Stale `downloadProgressTabId` — catch + `tabs.onRemoved`
+
+**Content script:**
+- `_isElementVisible` must stay wired in filter queue (was dead code in older trees)
+- `tabs.sendMessage` to all frames — use `{ frameId: 0 }`
 - Mass-download filename always undefined — derive from URL pathname
-- Progress tab innerHTML XSS — `escapeHtml()` wrapper
+- AbortError marked as canceled instead of timeout — split by `scanInProgress`
 - `clearAll` incomplete — calls `handleStopScanning()` first
+
+**Upstream fixes (keep during re-base):**
+- `find()` length check, `rotate()` null guard, `grantUrls` object `.map`
+- `SieveUI` `getValue()` type check, `app.js` chrome.runtime guard
+- deinitTabs/context menu `.catch()`
+
+**Security:**
+- Unbounded blob GET fallback — Content-Length / size cap
+- Missing filename sanitization on mass download
+- Progress tab innerHTML XSS — `escapeHtml()` wrapper
+- Blanket `return true` in `handleMessage`
 
 ## Docs Map
 
@@ -196,6 +211,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 |-----|----------|
 | `Docs/MASS_DOWNLOAD_STRATEGY.md` | Overlay design, entry points, re-base procedure |
 | `Docs/MASS_DOWNLOAD_ALGORITHM.md` | Two-phase algorithm, heuristics, circuit breaker |
+| `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` | Post-audit dev guide: residual bugs, hooks, anti-patterns |
 | `Docs/PROJECT_STRUCTURE.md` | Components, message bus, dependency map |
 | `Docs/MV3_DEVELOPMENT.md` | MV3 SW, userScripts, migration notes |
 | `Docs/DEVELOPMENT_GUIDE.md` | Sieve maintenance, hotkeys, debugging |
