@@ -27,7 +27,7 @@ Mod:
 
 Since this mod uses custom enhancements, it must be installed manually via Developer Mode:
 
-**Quick install:** Download the latest release from [Releases](https://github.com/Sucotasch/Imagus-Mass-Download-Mod/releases/tag/v2026.7.15), extract, and load `src-mv3-overlay` as unpacked extension.
+**Quick install:** Download the latest release from [Releases](https://github.com/Sucotasch/Imagus-Mass-Download-Mod/releases/tag/v2026.7.21), extract, and load `src-mv3-overlay` as unpacked extension.
 
 **Or clone from source:**
 
