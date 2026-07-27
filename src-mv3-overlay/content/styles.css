@@ -92,6 +92,15 @@
     margin-right: 4px;
 }
 
+#imagus-caption .time {
+    margin-right: 4px;
+    color: #ccffd0;
+}
+
+#imagus-caption.light .time {
+    color: #306f35;
+}
+
 #imagus-caption b:first-child {
     transition: background-color .1s;
     border-radius: 3px;
@@ -155,6 +164,9 @@
 }
 #imagus-toolbar[data-mode="4"] {
     display: none;
+}
+#imagus-toolbar:empty {
+    visibility: hidden;
 }
 div:hover > #imagus-toolbar[data-mode="1"] {
     opacity: 1;
@@ -282,6 +294,7 @@ div:hover > #imagus-toolbar:hover {
     width: 100%;
     position: relative;
     z-index: -1;
+    overflow: hidden;
 }
 
 #imagus-videojs > #imagus-player {
@@ -312,6 +325,23 @@ div:hover > #imagus-toolbar:hover {
 #imagus-videojs .vjs-max-quality-selector .vjs-menu li.vjs-selected {
     font-weight: 400;
     text-shadow: 0 0 #000;
+}
+
+#imagus-videojs .vjs-progress-holder .vjs-play-progress,
+#imagus-videojs .vjs-slider-horizontal .vjs-volume-level {
+    z-index: 1;
+}
+
+#imagus-videojs .vjs-slider-horizontal .vjs-volume-level .vjs-svg-icon {
+    transform: none;
+}
+
+#imagus-videojs .vjs-play-progress .vjs-svg-icon {
+    top: unset;
+}
+
+#imagus-videojs .vjs-poster {
+    cursor: unset;
 }
 
 /* this is for Videojs to select the best suitable video resolution */

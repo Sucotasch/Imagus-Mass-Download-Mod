@@ -731,16 +731,14 @@
                 "P": { tag: "i", text: "P", attrs: { "data-action": "preferences", title: _("PREFERENCES") } },
             };
             const btns = cfg.hz.toolbarButtons.toUpperCase().split("").map(b => BOTTONS[b] || null).filter(Boolean);
-            if (btns.length) {
-                buildNodes(PVI.DIV, [{
-                    tag: "div",
-                    attrs: { id: "imagus-toolbar", "data-mode": cfg.hz.toolbar },
-                    nodes: btns,
-                }]);
-                PVI.TBAR = PVI.DIV.querySelector("#imagus-toolbar");
-                PVI.TBAR.addEventListener("click", PVI.tbarClick);
-                PVI.TBAR.addEventListener("mousedown", PVI.tbarClick);
-            }
+            buildNodes(PVI.DIV, [{
+                tag: "div",
+                attrs: { id: "imagus-toolbar", "data-mode": cfg.hz.toolbar },
+                nodes: btns,
+            }]);
+            PVI.TBAR = PVI.DIV.querySelector("#imagus-toolbar");
+            PVI.TBAR.addEventListener("click", PVI.tbarClick);
+            PVI.TBAR.addEventListener("mousedown", PVI.tbarClick);
 
             PVI.reset();
         },
@@ -749,7 +747,6 @@
             PVI.createVideojs(() => {
                 PVI.CNT = PVI.VIDEOJS;
                 PVI.PLAYER.src(src);
-                PVI.PLAYER.muted(false);
             });
         },
 
@@ -763,15 +760,14 @@
             PVI.VID.setAttribute("class", "video-js");
             PVI.VID.setAttribute("id", "imagus-videojs");
 
-            injectCss("content/styles_doc.css", "", true);
             injectCss("lib/videojs_mod.css");
 
             await injectJs("lib/videojs_mod.js");
             const playerOptions = {
                 autoplay: cfg.hz.autoplay ? "any" : false,
-                controls: true,
-                poster: `data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTAwIDc1IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHdpZHRoPSIxMDAiIGhlaWdodD0iNzUiIGZpbGw9IiNmZmYiLz48cGF0aCBkPSJtMjkuNzYgMThoMi41MTg2djAuODE1MDNjNi4zMDI1IDEuMzkzOCA3LjAyMjcgNC4zMzExIDMuMzY4OSA4LjkzNzggMC4zODY1My00LjU3OTEtMC4wODk1MS01LjU1OTUtMy4zNjg5LTUuNzcyMnYxMS41NzZhMS40NzI5IDEuNDI1MyAwIDAgMSAwIDAuMTg1MDZjMCAxLjUwNDEtMS42Mjc1IDIuOTk2My0zLjY0MTYgMy4zMzQ5cy0zLjYzNzUtMC42MTAyOS0zLjYzNzUtMi4xMTgzYzAtMi4wNTE0IDIuOTEzMi0zLjgzNSA0Ljc2MDUtMy4yMDV6bTM3LjE0OCAwaDIuNTE4NnYwLjgxNTAzYzYuMjk4NSAxLjM5MzggNy4wMTg2IDQuMzMxMSAzLjM2NDkgOC45Mzc4IDAuNDA2ODgtNC41NzkxLTAuMDg5NTEtNS41NTk1LTMuMzY0OS01Ljc3MjJ2MTEuNTc2IDAuMTg1MDZjMCAxLjUwNDEtMS42Mjc1IDIuOTk2My0zLjY2MTkgMy4zMzQ5LTIuMDM0NCAwLjMzODYxLTMuNjYxOS0wLjYxMDI5LTMuNjYxOS0yLjExODMgMC0yLjA1MTQgMi45MTMyLTMuODM1IDQuNzYwNS0zLjIwNXYtMTMuNzUzem0tMTMuMjE5IDI3LjAyNmE0LjU4MTQgNC40MzM1IDAgMCAxIDEuODMwOSAwLjAzMTV2LTEyLjQzOGwtMTMuNjAyIDMuNzc1OXEwIDcuMzQ3MSAwIDE0LjY4NmMwIDIuMjkxNS0yLjYxMjIgMy45NjEtNC43MDc2IDQuMzMxMS0yLjU5OTkgMC40MzMxMS00LjcxMTYtMC43ODc0Ny00LjcxMTYtMi43NTYyczIuMTIzOS0zLjg3NDQgNC43MDc2LTQuMzA3NWE1LjI4OTQgNS4xMTg2IDAgMCAxIDIuNjQwNiAwLjE2NTM3di0xNy43ODFsMTcuNzE1LTMuOTAxOXYyMC4wMzNjMC4xOTUzIDIuMTI2Mi0yLjAzNDQgMy43MzY2LTMuODg5NyA0LjA0NzYtMi4xNzI3IDAuMzYyMjQtMy45MzA0LTAuNjYxNDgtMy45MzA0LTIuMjg3NiAwLTEuNjI2MSAxLjc1NzctMy4yMzY1IDMuOTMwNC0zLjU5ODd6Ii8+PC9zdmc+`,
-                // experimentalSvgIcons: true,
+                muted: false,
+                controls: cfg.hz.hideControlsDelay >= 0,
+                experimentalSvgIcons: true,
                 liveui: true,
                 playbackRates: [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 2],
                 loop: cfg.hz.mediaLoop === "always" || cfg.hz.mediaLoop === "default",
@@ -793,6 +789,7 @@
             };
 
             // videojs.log.level('all');
+            videojs.log.history.disable();
             videojs(PVI.VID, playerOptions, () => {
                 PVI.VIDEOJS = PVI.VID.parentElement;
                 PVI.VIDEOJS.classList.add("content");
@@ -987,6 +984,7 @@
                         PVI.CAP_TIME.style.display = "inline-block";
                     }
                 }
+                return;
             }
 
             if (PVI.TRG?.IMGS_album)
@@ -1883,6 +1881,7 @@
             PVI.gallery(1);
             PVI.resetNode(PVI.TRG, true);
             PVI.CAP.style.display = "none";
+            PVI.CAP_TIME.style.display = "none";
             PVI.CAP.firstChild.textContent = idx + " / " + (album.length - 1);
             PVI.prepareCaption(PVI.TRG, album[idx][1]);
             PVI.set(album[idx][0]);
@@ -2278,6 +2277,7 @@
             }
             if (PVI.CAP) {
                 PVI.CAP.style.display = "none";
+                PVI.CAP_TIME.style.display = "none";
                 PVI.CAP.children[0].style.display = "none";
             }
             if (PVI.IMG.scale) {
@@ -2363,8 +2363,9 @@
 
         keyup_space: function (e) {
             if (PVI.spaceIsDown && shortcut.key(e) === "Space") {
-                PVI.PLAYER.options({ inactivityTimeout: cfg.hz.hideControlsDelay });
-                PVI.PLAYER.userActive(false);
+                PVI.PLAYER.options({ inactivityTimeout: PVI.PLAYER._isAudio ? 0 : cfg.hz.hideControlsDelay });
+                PVI.PLAYER.controls(cfg.hz.hideControlsDelay >= 0 || PVI.PLAYER._isAudio);
+                PVI.PLAYER.userActive(PVI.PLAYER._isAudio || cfg.hz.hideControlsDelay === 0);
                 if (PVI.spaceIsDown === 1) {
                     PVI.playerIsPaused = !PVI.PLAYER.paused();
                 } else if (PVI.spaceIsDown === 2) {
@@ -2421,6 +2422,7 @@
                         PVI.PLAYER.play();
                         PVI.PLAYER.playbackRate(2);
                         PVI.PLAYER.options({ inactivityTimeout: 0 });
+                        PVI.PLAYER.controls(true);
                         PVI.PLAYER.userActive(true);
                     }
                 } else {
@@ -2559,17 +2561,6 @@
                         }
                     }
 
-                } else if (key === "," || key === ".") {
-                    if (PVI.isVideo()) {
-                        if (PVI.isAudio) {
-                            PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === "." ? 4 : -4));
-                        } else {
-                            PVI.PLAYER.pause();
-                            PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === "." ? 1 : -1) / 30);
-                        }
-                        pv = true;
-                    }
-
                 // Shift + 0-9
                 } else if (e.shiftKey && e.keyCode >= 48 && e.keyCode <= 57 && PVI.isVideo()) {
                     PVI.PLAYER.currentTime(PVI.PLAYER.duration() * ((e.keyCode - 48) / 10));
@@ -2626,10 +2617,14 @@
                     PVI.PLAYER.muted(!PVI.PLAYER.muted());
 
                 } else if (key === cfg.keys.frameNext || key === cfg.keys.framePrev) {
-                    if (e.ctrlKey) {
-                        PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === cfg.keys.frameNext ? 4 : -4));
-                    } else {
-                        PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === cfg.keys.frameNext ? 1 : -1) / 30);
+                    if (PVI.isVideo()) {
+                        if (PVI.isAudio) {
+                            PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === cfg.keys.frameNext ? 4 : -4));
+                        } else {
+                            PVI.PLAYER.pause();
+                            PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === cfg.keys.frameNext ? 1 : -1) / 30);
+                        }
+                        pv = true;
                     }
 
                 } else pv = false;
@@ -3105,6 +3100,7 @@
                 }
                 if (PVI.CAP) {
                     PVI.CAP.style.display = "none";
+                    PVI.CAP_TIME.style.display = "none";
                     PVI.CAP.children[0].style.display = "none";
                 }
                 clearTimeout(PVI.timers.preview);
@@ -3290,10 +3286,10 @@
         },
 
         m_move: function (e) {
-            if (e && PVI.x === e.clientX && PVI.y === e.clientY) return;
+            if (e && PVI.x === e.clientX && PVI.y === e.clientY || doc.fullscreenElement) return;
             rotate(0);
             let trg = e?.target;
-            while (trg?.shadowRoot && trg !== PVI.TRG) {
+            while (trg?.shadowRoot && trg !== PVI.TRG && e.clientX && e.clientY) {
                 const newTrg = trg.shadowRoot.elementsFromPoint(e.clientX, e.clientY)?.[0];
                 if (!newTrg || newTrg === trg) break;
                 trg = newTrg;
@@ -3385,7 +3381,7 @@
                 (!trg?.IMGS_ && trg !== PVI.ROOT && PVI.TRG !== trg && !PVI.DIV.contains(trg))
             )
                 PVI.m_over({ relatedTarget: PVI.TRG, clientX: e.clientX, clientY: e.clientY });
-            else if (/* cfg.hz.move && */ PVI.state > 2 && !PVI.timers.m_move && (PVI.state === 3 || cfg.hz.placement < 2 || cfg.hz.placement > 3))
+            else if (cfg.hz.move && PVI.state > 2 && !PVI.timers.m_move && (PVI.state === 3 || cfg.hz.placement < 2 || cfg.hz.placement > 3))
                 PVI.timers.m_move = win.requestAnimationFrame(PVI.m_move_show);
         },
 
@@ -3541,7 +3537,10 @@
                     PVI.hide({ target: PVI.TRG, clientX: PVI.DIV.offsetWidth / 2 + cfg.hz.margin, clientY: PVI.DIV.offsetHeight / 2 + cfg.hz.margin });
                     return;
                 }
-                PVI.x = PVI.y = 0;
+                const iframe = findIframe(e.source);
+                const rect = iframe?.getBoundingClientRect() || { x: 0, y: 0 };
+                PVI.x = (d.x + rect.x) || 0;
+                PVI.y = (d.y + rect.y) || 0;
                 if (typeof d.msg === "string") {
                     PVI.show(d.msg);
                     return;
