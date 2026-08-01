@@ -61,9 +61,21 @@ const MIME_TO_EXT = {
     'audio/flac': '.flac', 'audio/aac': '.aac', 'audio/mp4': '.m4a',
 };
 
+function getUrlExtension(url) {
+    try {
+        const pathname = new URL(url, 'https://dummy.invalid').pathname;
+        const m = pathname.match(/(\.[a-z0-9]{1,8})$/i);
+        return m ? m[1].toLowerCase() : '';
+    } catch (_) {
+        const base = String(url).split(/[?#]/)[0];
+        const m = base.match(/(\.[a-z0-9]{1,8})$/i);
+        return m ? m[1].toLowerCase() : '';
+    }
+}
+
 function isExcludedType(url, contentType, excludedList) {
-    const urlExtension = (url.match(/\.[^.?#]+/) || [''])[0].toLowerCase();
-    if (excludedList.includes(urlExtension)) return true;
+    const urlExtension = getUrlExtension(url);
+    if (urlExtension && excludedList.includes(urlExtension)) return true;
     if (contentType) {
         const mime = contentType.split(';')[0].trim().toLowerCase();
         const mappedExt = MIME_TO_EXT[mime];
@@ -201,7 +213,8 @@ function handleStopScanning() {
 }
 
 function handleGetDownloadStatus(msg, sendResponse) {
-    sendResponse({ items: downloadProgress, stats: downloadStats });
+    const maxRecords = (cachedPrefs.da && cachedPrefs.da.maxProgressRecords) || 100;
+    sendResponse({ items: downloadProgress, stats: downloadStats, maxRecords: maxRecords });
 }
 
 // --- Download Slot Management ---
@@ -293,8 +306,8 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
 }
 
 async function processFilterQueue() {
-    let maxConcurrentFilters = (cachedPrefs.da && cachedPrefs.da.maxConcurrentFilters) || 5;
-    if (maxConcurrentFilters === 0) maxConcurrentFilters = Infinity;
+    let maxConcurrentFilters = Number(cachedPrefs.da?.maxConcurrentFilters) || 5;
+    if (!Number.isFinite(maxConcurrentFilters) || maxConcurrentFilters < 1) maxConcurrentFilters = 5;
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
@@ -408,8 +421,13 @@ async function processFilterQueue() {
                             }
 
                             if (passed) {
-                                downloadQueue.push(task);
-                                processDownloadQueue();
+                                if (!scanInProgress) {
+                                    updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                                    downloadStats.filtered++;
+                                } else {
+                                    downloadQueue.push(task);
+                                    processDownloadQueue();
+                                }
                             } else {
                                 updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
                                 downloadStats.filtered++;
@@ -437,8 +455,8 @@ async function processFilterQueue() {
 }
 
 function processDownloadQueue() {
-    let maxConcurrentDownloads = (cachedPrefs.da && cachedPrefs.da.maxConcurrentDownloads) || 3;
-    if (maxConcurrentDownloads === 0) maxConcurrentDownloads = Infinity;
+    let maxConcurrentDownloads = Number(cachedPrefs.da?.maxConcurrentDownloads) || 3;
+    if (!Number.isFinite(maxConcurrentDownloads) || maxConcurrentDownloads < 1) maxConcurrentDownloads = 3;
 
     while (activeDownloads < maxConcurrentDownloads && downloadQueue.length > 0) {
         const task = downloadQueue.shift();
@@ -487,13 +505,12 @@ function processDownloadQueue() {
 // --- Download Tracking ---
 
 chrome.downloads.onChanged.addListener(function (delta) {
+    const existingTask = downloadIdToTask.get(delta.id);
+    if (!existingTask) return;
+
     chrome.downloads.search({ id: delta.id }, function (results) {
         if (!results || !results[0]) return;
-        const download = results[0];
-        const url = download.url;
-
-        const existingTask = downloadIdToTask.get(delta.id)
-            || (downloadProgress[url] ? downloadProgress[url].task : null);
+        const url = existingTask.url;
 
         if (delta.state) {
             if (delta.state.current === 'complete') {
@@ -513,8 +530,8 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 }
                 releaseDownloadSlot(existingTask);
             }
-        } else if (download.totalBytes > 0) {
-            const progress = Math.round((download.bytesReceived / download.totalBytes) * 100);
+        } else if (results[0].totalBytes > 0) {
+            const progress = Math.round((results[0].bytesReceived / results[0].totalBytes) * 100);
             updateDownloadProgress(url, 'downloading', progress, null, delta.id, existingTask);
         }
     });

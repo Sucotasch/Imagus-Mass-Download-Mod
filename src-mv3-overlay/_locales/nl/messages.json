@@ -634,5 +634,14 @@
   },
   "SC_MFITBOTH": {
     "message": "Aan beide aanpassen"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> — altijd verborgen\n<b>0</b> — altijd zichtbaar\n<b>&gt;0</b> — verbergen na opgegeven tijd (ms)\n\nOok zichtbaar bij pauze en vasthouden van Spatie. Wisselen via Shift+Spatie."
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "Muiswielrichting omkeren (volume en tijdlijn)"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "Een frame vooruit/achteruit springen"
   }
 }

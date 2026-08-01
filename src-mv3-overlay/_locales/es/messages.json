@@ -634,5 +634,14 @@
   },
   "SC_MFITBOTH": {
     "message": "Ajustar a ambos"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> — siempre oculto\n<b>0</b> — siempre visible\n<b>&gt;0</b> — ocultar después del tiempo especificado (ms)\n\nTambién visible en pausa y al mantener Space. Alternar con Mayús+Espacio."
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "Invertir dirección de la rueda del ratón (volumen y línea de tiempo)"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "Avanzar/retroceder un fotograma"
   }
 }

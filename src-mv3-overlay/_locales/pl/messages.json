@@ -634,5 +634,14 @@
   },
   "SC_MFITBOTH": {
     "message": "Dopasuj do obu"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> — zawsze ukryte\n<b>0</b> — zawsze widoczne\n<b>&gt;0</b> — ukryj po podanym czasie (ms)\n\nWidoczne również na pauzie i przy przytrzymywaniu Spacji. Przełączanie za pomocą Shift+Spacja."
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "Odwróć kierunek kółka myszy (głośność i oś czasu)"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "Przeskocz o jedną klatkę do przodu/tyłu"
   }
 }

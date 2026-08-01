@@ -2618,7 +2618,7 @@
 
                 } else if (key === cfg.keys.frameNext || key === cfg.keys.framePrev) {
                     if (PVI.isVideo()) {
-                        if (PVI.isAudio) {
+                        if (PVI.PLAYER?._isAudio) {
                             PVI.PLAYER.currentTime(PVI.PLAYER.currentTime() + (key === cfg.keys.frameNext ? 4 : -4));
                         } else {
                             PVI.PLAYER.pause();
@@ -3231,8 +3231,8 @@
             const style = win.getComputedStyle(PVI.TRG);
             PVI.HVR.style.width = rect.width + "px";
             PVI.HVR.style.height = rect.height + "px";
-            PVI.HVR.style.left = (rect.x + window.scrollX) + "px";
-            PVI.HVR.style.top = (rect.y + window.scrollY) + "px";
+            PVI.HVR.style.left = rect.x + "px";
+            PVI.HVR.style.top = rect.y + "px";
             PVI.HVR.style.borderTopLeftRadius     = (parseInt(style.borderTopLeftRadius, 10) || 2) + "px";
             PVI.HVR.style.borderTopRightRadius    = (parseInt(style.borderTopRightRadius, 10) || 2) + "px";
             PVI.HVR.style.borderBottomLeftRadius  = (parseInt(style.borderBottomLeftRadius, 10) || 2) + "px";

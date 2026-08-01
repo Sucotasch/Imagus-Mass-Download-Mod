@@ -634,5 +634,14 @@
   },
   "SC_MFITBOTH": {
     "message": "Igazítás mindkettőhöz"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> — mindig rejtett\n<b>0</b> — mindig látható\n<b>&gt;0</b> — elrejtés megadott idő után (ms)\n\nSzünet közben és a Szóköz nyomva tartásakor is látható. Váltás: Shift+Szóköz."
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "Egérkerék irányának megfordítása (hangerő és idővonal)"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "Egy képpel előre/hátra lépés"
   }
 }

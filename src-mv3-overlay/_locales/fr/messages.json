@@ -634,5 +634,14 @@
   },
   "SC_MFITBOTH": {
     "message": "Ajuster aux deux"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> — toujours masqué\n<b>0</b> — toujours visible\n<b>&gt;0</b> — masquer après le temps spécifié (ms)\n\nAussi visible en pause et lors de la maintenance de la barre d'espace. Basculer via Maj+Espace."
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "Inverser la direction de la molette (volume et chronologie)"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "Avancer/reculer d'une image"
   }
 }

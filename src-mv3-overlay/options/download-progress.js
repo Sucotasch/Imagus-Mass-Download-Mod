@@ -16,6 +16,7 @@
 
     // State management
     let downloadItems = {};
+    let maxProgressRecords = 100;
 
     // Handle status response from background script
     function handleStatusResponse(response) {
@@ -29,6 +30,9 @@
             }
             if (response.stats) {
                 updateGlobalStats(response.stats);
+            }
+            if (response.maxRecords) {
+                maxProgressRecords = response.maxRecords;
             }
             updateDisplay();
         }
@@ -136,16 +140,15 @@
         Object.assign(downloadItems[id], data);
 
         // Cap records to prevent unbounded growth
-        const maxRecords = 100;
         const keys = Object.keys(downloadItems);
-        if (keys.length > maxRecords) {
+        if (keys.length > maxProgressRecords) {
             const sorted = keys.sort((a, b) => {
                 const sa = downloadItems[a], sb = downloadItems[b];
                 const order = { completed: 0, skipped: 1, failed: 2, canceled: 3, scanning: 4, downloading: 5, pending: 6 };
                 const da = order[sa.status] ?? 7, db = order[sb.status] ?? 7;
                 return da - db || (sa.timestamp || 0) - (sb.timestamp || 0);
             });
-            const toRemove = sorted.slice(0, keys.length - maxRecords);
+            const toRemove = sorted.slice(0, keys.length - maxProgressRecords);
             toRemove.forEach(k => delete downloadItems[k]);
         }
     }

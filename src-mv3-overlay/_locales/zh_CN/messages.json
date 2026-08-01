@@ -634,5 +634,14 @@
   },
   "SC_MFITBOTH": {
     "message": "适应宽高"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> — 始终隐藏\n<b>0</b> — 始终显示\n<b>&gt;0</b> — 指定时间后隐藏（毫秒）\n\n暂停和按住空格时也会显示。通过 Shift+空格 切换。"
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "反转鼠标滚轮方向（音量和时间线）"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "逐帧前进/后退"
   }
 }

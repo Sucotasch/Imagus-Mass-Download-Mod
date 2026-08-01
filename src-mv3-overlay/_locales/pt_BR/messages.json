@@ -634,5 +634,14 @@
   },
   "SC_MFITBOTH": {
     "message": "Ajustar a ambos"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> — sempre oculto\n<b>0</b> — sempre visível\n<b>&gt;0</b> — ocultar após o tempo especificado (ms)\n\nTambém visível ao pausar e ao segurar Espaço. Alternar via Shift+Espaço."
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "Inverter direção da roda do mouse (volume e linha do tempo)"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "Avançar/voltar um quadro"
   }
 }

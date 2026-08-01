@@ -44,7 +44,7 @@
 }
 
 #imagus-hover {
-    position: absolute;
+    position: fixed;
     box-sizing: content-box;
     pointer-events: none;
     z-index: 2147483646;
