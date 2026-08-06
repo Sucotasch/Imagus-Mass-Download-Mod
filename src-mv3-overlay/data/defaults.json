@@ -39,6 +39,7 @@
 		"fzDefault": false,
 		"fzMode": 1,
 		"fzOnPress": 1,
+		"lockedZoom": 1,
 		"toolbar": 1,
 		"toolbarButtons": "XSOGIRP",
 		"resizeModeType": "memory",

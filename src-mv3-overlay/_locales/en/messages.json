@@ -679,5 +679,8 @@
   },
   "DA_MAX_PROGRESS_RECORDS": {
     "message": "Max Progress Records"
+  },
+  "HZ_SC_CLEAR": {
+    "message": "to clear a focused hotkey on this page"
   }
 }

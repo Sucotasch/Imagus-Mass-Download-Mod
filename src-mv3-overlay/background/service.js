@@ -707,7 +707,7 @@ function initTab(sender, sendResponse) {
     if (typeof sendResponse === "function") {
         sendResponse(resp);
     } else {
-        chrome.tabs.sendMessage(sender.tab.id, resp);
+        chrome.tabs.sendMessage(sender.tab.id, resp).catch(() => {});
     }
 }
 

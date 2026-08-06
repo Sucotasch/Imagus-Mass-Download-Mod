@@ -371,13 +371,14 @@
             PVI.contextEvent = e;
         }
 
-        if (!mdownstart || e.button !== 2 || PVI.md_x !== e.clientX || PVI.md_y !== e.clientY) {
+        const isCursorMoved = Math.abs(PVI.md_x - e.clientX) > 5 || Math.abs(PVI.md_y - e.clientY) > 5;
+        if (!mdownstart || e.button !== 2 || isCursorMoved) {
             if (mdownstart) mdownstart = null;
 
             if (
                 e.button === 2 &&
                 (!PVI.fireHide || PVI.state > 2) &&
-                (Math.abs(PVI.md_x - e.clientX) > 5 || Math.abs(PVI.md_y - e.clientY) > 5) &&
+                isCursorMoved &&
                 cfg.hz.actTrigger === "m2" &&
                 !cfg.hz.deactivate
             ) {
@@ -698,8 +699,12 @@
             }
             if (cfg.hz.capText || cfg.hz.capWH) PVI.createCAP();
             if (doc.querySelector("embed, object")) {
-                PVI.DIV.insertBefore(doc.createElement("iframe"), PVI.DIV.firstElementChild);
-                PVI.DIV.firstChild.style.cssText = "z-index: -1; width: 100%; height: 100%; position: absolute; left: 0; top: 0; border: 0";
+                try {
+                    const iframe = doc.createElement("iframe");
+                    iframe.setAttribute("sandbox", "");
+                    PVI.DIV.insertBefore(iframe, PVI.DIV.firstElementChild);
+                    PVI.DIV.firstChild.style.cssText = "z-index: -1; width: 100%; height: 100%; position: absolute; left: 0; top: 0; border: 0";
+                } catch (e) { /* CSP or other error — skip iframe backdrop */ }
             }
 
             // mark over the hovered object
@@ -794,16 +799,17 @@
                 PVI.VIDEOJS = PVI.VID.parentElement;
                 PVI.VIDEOJS.classList.add("content");
                 PVI.PLAYER = videojs.players["imagus-videojs"];
-                const qLevels = PVI.PLAYER.qualityLevels();
-                const mqSelector = PVI.PLAYER.maxQualitySelector({
-                    autoLabel: "Auto ",
-                    disableAuto: true,
-                    displayMode: 1,
-                    defaultQuality: 0,
-                    filterDuplicateHeights: false,
-                    filterDuplicates: false,
-                    showBitrates: true
-                });
+                if (PVI.PLAYER) {
+                    const qLevels = PVI.PLAYER.qualityLevels();
+                    const mqSelector = PVI.PLAYER.maxQualitySelector({
+                        autoLabel: "Auto ",
+                        disableAuto: true,
+                        displayMode: 1,
+                        defaultQuality: 0,
+                        filterDuplicateHeights: false,
+                        filterDuplicates: false,
+                        showBitrates: true
+                    });
 
                 const setSize = (width, height) => {
                     if (!PVI.PLAYER.isFullscreen() && width && height) {
@@ -892,6 +898,7 @@
                 PVI.PLAYER.on("timeupdate", PVI.updateCaption);
 
                 PVI.PLAYER.volume(cfg.hz.mediaVolume / 100);
+                }
 
                 callback();
             });
@@ -2920,7 +2927,7 @@
             const isScroll = PVI.shouldScroll(e, target);
             if (PVI.TRG && PVI.isVideo() && (
                     e.ctrlKey ||
-                    !PVI.TRG.IMGS_album && !cfg.hz.scrollVideoWithCtrl && isScroll ||
+                    !PVI.TRG?.IMGS_album && !cfg.hz.scrollVideoWithCtrl && isScroll ||
                     target.closest(".vjs-progress-control, .vjs-volume-panel")
                 )
             ) {
@@ -3012,10 +3019,8 @@
             let winWI = winW - PVI.DBOX["wpb"] - PVI.DBOX["wm"];
             let winHI = winH - PVI.DBOX["hpb"] - PVI.DBOX["hm"] - PVI.getCapHeight();
             if (x === cfg.keys.mZoomLock) {
-                if (PVI.lockedZoom) {
-                    s[0] *= PVI.lockedZoom;
-                    s[1] *= PVI.lockedZoom;
-                }
+                s[0] *= cfg.hz.lockedZoom || 1;
+                s[1] *= cfg.hz.lockedZoom || 1;
             } else if (x === cfg.keys.mFit || x === false) {
                 if (winWI / winHI < s[0] / s[1]) {
                     x = winWI > s[0] ? false : cfg.keys.mFitW;
@@ -3071,7 +3076,11 @@
 
             if (PVI.resizeMode === cfg.keys.mZoomLock) {
                 const natW = PVI.TRG.IMGS_SVG ? PVI.stack[PVI.IMG.src][0] : PVI.CNT.naturalWidth;
-                PVI.lockedZoom = natW > 0 ? s[rot ? 1 : 0] / natW : 1;
+                const zoom = natW > 0 ? s[rot ? 1 : 0] / natW : 1;
+                if (zoom !== cfg.hz.lockedZoom) {
+                    cfg.hz.lockedZoom = zoom;
+                    Port.send({ cmd: "savePrefs", prefs: { hz: { lockedZoom: cfg.hz.lockedZoom } } });
+                }
             }
             if (!xy_img) xy_img = [true, null];
             xy_img.push(Math.floor(s[rot ? 1 : 0]), Math.ceil(s[rot ? 0 : 1]));
@@ -3147,7 +3156,7 @@
                 return;
             }
 
-            if (e.target?.clientWidth > topWinW * 0.8 || e.target?.clientHeight > topWinH * 0.8) return;
+            if (e.target?.clientWidth > topWinW * 0.8 && e.target?.clientHeight > topWinH * 0.8 && !e.target.shadowRoot) return;
             if (trg.IMGS_c && trg.IMGS_c !== true) {
                 cache = trg.IMGS_c;
             }
@@ -3570,6 +3579,7 @@
                 var trg = PVI.resolving[d.id] || PVI.TRG;
                 var rule = cfg.sieve[d.params.rule.id];
                 delete PVI.resolving[d.id];
+                if (!trg) return 1;
                 if (!d.return_url) PVI.create();
                 if (!d.cache && (d.m === true || d.params.rule.skip_resolve)) {
                     try {
@@ -3580,6 +3590,7 @@
                                 d.params.rule.req_res
                             );
                         }
+                        if (!PVI.TRG) return 1;
                         PVI.node = trg;
                         d.m = rule.res.call(PVI, d.params);
                     } catch (ex) {
