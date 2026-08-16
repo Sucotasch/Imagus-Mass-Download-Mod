@@ -52,7 +52,7 @@ src-mv3-overlay/
 ├── options/                       # options, popup, download-progress, SieveUI
 ├── data/defaults.json             # hz / keys / tls / da
 ├── data/sieve.json                # Site media rules
-└── manifest.json                  # MV3 (version tracks upstream, currently 2026.7.25)
+└── manifest.json                  # MV3 (version tracks upstream, currently 2026.7.25.1)
 ```
 
 ### Service worker wiring
