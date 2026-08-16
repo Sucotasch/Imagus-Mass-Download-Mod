@@ -7,7 +7,8 @@
 | Файл | Содержание |
 |------|------------|
 | [DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md](DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md) | Dev guide: residual bugs WP-1…N, hooks, anti-patterns (после audit fixes) |
-| [UPSTREAM_721_INTEGRATION_PLAN.md](UPSTREAM_721_INTEGRATION_PLAN.md) | **Сейчас:** 7.21 port — статус после partial apply + WP-FIX residual (не full re-base) |
+| [FIREFOX_OVERLAY.md](FIREFOX_OVERLAY.md) | Firefox-дерево `src-mv3-overlay-firefox/`: дельты против Chrome, установка, re-base, судьба старой FF-ветки |
+| [UPSTREAM_725_INTEGRATION_PLAN.md](UPSTREAM_725_INTEGRATION_PLAN.md) | 7.25 port — исполнен (f329234); история и чеклист |
 | [MASS_DOWNLOAD_STRATEGY.md](MASS_DOWNLOAD_STRATEGY.md) | Стратегия mass-download: overlay architecture, адаптеры, re-base procedure, API contract, invariants |
 | [MASS_DOWNLOAD_ALGORITHM.md](MASS_DOWNLOAD_ALGORITHM.md) | Алгоритм mass-download: две фазы, эвристика, circuit breaker, очереди |
 | [MV3_DEVELOPMENT.md](MV3_DEVELOPMENT.md) | Обзор MV3-архитектуры, Service Worker, userScripts API |

@@ -12,7 +12,8 @@ Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + ori
 
 | Directory | Role | Edit? |
 |-----------|------|-------|
-| **`src-mv3-overlay/`** | **Active development** — fresh upstream + modular mass-download | **Yes (default)** |
+| **`src-mv3-overlay/`** | **Active development (Chrome)** — fresh upstream + modular mass-download | **Yes (default)** |
+| **`src-mv3-overlay-firefox/`** | **Active development (Firefox)** — byte-copy of `src-mv3-overlay/` + FF deltas (manifest, `mdAck`, download `incognito`). Branch `feature/overlay-firefox` | Yes (keep delta minimal — see `Docs/FIREFOX_OVERLAY.md`) |
 | `src-mv3/` | Older MV3 mod (monolithic mass-download inside service/content) | Only if fixing the stable `mv3-version` line |
 | `src/` | Legacy MV2; built by `build.py` | Only for MV2 legacy |
 | `Imagus-Reborn-base/` | Upstream snapshot (hababr/Imagus-Reborn) | **Do not edit** — reference only |

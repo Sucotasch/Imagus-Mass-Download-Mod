@@ -1,0 +1,59 @@
+{
+	"manifest_version": 3,
+
+	"name": "Imagus Reborn MD",
+	"version": "2026.7.25",
+	"description": "__MSG_APP_DESCRIPTION__",
+	"default_locale": "en",
+	"homepage_url": "https://www.reddit.com/r/Imagus",
+	"browser_specific_settings": {
+		"gecko": {
+			"id": "imagus-reborn-md@sucotasch",
+			"strict_min_version": "136.0",
+			"data_collection_permissions": {
+				"required": [ "none" ]
+			}
+		}
+	},
+	"icons": {
+		"128": "common/img/icon.png"
+	},
+
+	"content_scripts": [
+		{
+			"matches": ["<all_urls>"],
+			"js": ["content/relay.js"]
+		}
+	],
+
+	"action": {
+		"default_popup": "options/popup.html"
+	},
+
+	"permissions": [
+		"notifications",
+		"alarms",
+		"downloads",
+		"history",
+		"contextMenus",
+		"storage"
+	],
+
+	"optional_permissions": [
+		"userScripts"
+	],
+	"host_permissions": [
+		"<all_urls>"
+	],
+
+	"incognito": "spanning",
+
+	"background": {
+		"scripts": [ "background/service.js" ]
+	},
+
+	"options_ui": {
+		"page": "options/options.html",
+		"open_in_tab": true
+	}
+}
