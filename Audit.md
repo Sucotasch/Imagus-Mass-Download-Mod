@@ -2,10 +2,10 @@
 
 | Field | Value |
 |-------|--------|
-| **Date** | 2026-08-17 |
+| **Date** | 2026-08-17 (rev 2 — added §2b upstream-core review) |
 | **Branch** | `mv3-version` @ `6f74ecf` (BUG-01…09/12/14 fix commit applied right before this review) |
-| **Scope** | Whole repo, primary depth on active tree `src-mv3-overlay/` |
-| **Method** | Full read of `mass-download/*` + MD sections of `content.js`; wiring checks in `service.js`/`app.js`/`options.js`; `node --check` on all extension JS; `JSON.parse` on all locales/defaults; re-verification of every claim in `Audit/Audit.md` (2026-08-09) |
+| **Scope** | Whole repo: `src-mv3-overlay/` in depth — mass-download subsystem (§2) **and upstream Imagus core** `service.js` upstream half, `app.js`, `relay.js`, `SieveUI.js`, upstream `options.js`/`options.html` paths, upstream parts of `content.js` incl. 7.25-port verification (§2b). Legacy trees (`src/`, `src-mv3/`) not re-audited — reference only |
+| **Method** | Full read of `mass-download/*` + MD sections of `content.js`; full read of `service.js`, `app.js`, `relay.js`, import/export paths of `options.js`; targeted reads of upstream `content.js` (`find`, `winOnMessage`, `key_action`, 7.25 anchors); `node --check` on all extension JS; `JSON.parse` on all locales/defaults; re-verification of every claim in `Audit/Audit.md` (2026-08-09) |
 | **Runtime E2E (Chrome)** | Not run (no automated extension harness in repo) |
 | **Automated tests / lint / CI** | None exist in product tree |
 | **Code changes** | **None** — review + this document only |
@@ -81,6 +81,8 @@ const downloadOnUnknown = da.downloadOnUnknown !== false;   // matches showProgr
 ```
 
 **Why safe:** only replaces falsy-fallback with explicit-null-fallback; defaults preserved for `undefined`; allows documented zero/empty semantics. The `min…Size > 0 &&` guards downstream already treat 0 as "disabled".
+
+> **rev 2 note (scope of this bug):** upstream `updatePrefs` deep-merges `da` with `defaults.json` and repairs missing/wrong-typed subkeys (`service.js:249–259`), so the `downloadOnUnknown === undefined` row is unlikely in practice — the `!== false` change there is defense-in-depth. The **zero `minImageSize`/`minVideoSize` and empty `excludedExtensions` rows are real, reproducible bugs** (values pass the merge type-check and then get clobbered by `||`).
 **Regression:** set min sizes to 0 → small images download; clear excludedExtensions → png/svg download; toggle downloadOnUnknown off → unknown types skipped.
 
 ---
@@ -378,7 +380,82 @@ Currently harmless (no watchdog/id set yet at this point), but it violates the s
 
 ---
 
-## 3. Verified fixed / not-a-bug (do not re-fix)
+## 2b. Upstream-core findings (service.js / app.js / relay.js / SieveUI / options / content.js upstream)
+
+Scope of this section: the **non-mass-download** half of the extension. Verified first, for the record:
+
+- **7.25 port is complete** in `src-mv3-overlay/content/content.js`: `isCursorMoved` threshold (line 374), `PVI.TRG?.IMGS_album` (2930), `cfg.hz.lockedZoom` read+persist via `savePrefs` (3022/3080), tall-media guard `&& !e.target.shadowRoot` in `m_over` (3159), `find` length guard `i < tmp_el.length && i < 5` (1318), `rotate` `if (!PVI.DIV) return` (133), Esc hint + `HZ_SC_CLEAR` in options/locales.
+- `SieveUI.js` renders via `textContent` (no `innerHTML` hits); config import is size-capped (5 MB), `JSON.parse`-guarded, alert on invalid.
+- `Port` has the `chrome.runtime` invalidated-context guard (`app.js:106–108`); Firefox listener shim fine.
+
+### U-01 [P2] `resolve` crashes if the sieve is re-cached mid-session — responses never sent
+
+**Where:** `background/service.js:415` (`case "resolve"`)
+
+```javascript
+const rule = cachedPrefs.sieve[data.params.rule.id];   // rule.id is an INDEX into the cached array
+if (data.params.rule.req_res) { data.params.rule.req_res = cachedSieveRes[...]; }
+...
+if (rule.res === 1) { ... }                            // TypeError if rule === undefined
+```
+
+`data.params.rule.id` is an **array index** assigned by `PVI.find` against the sieve cached *at scan start*. `updatePrefs` → `cacheSieve()` **replaces** `cachedPrefs.sieve`/`cachedSieveRes` (weekly auto-update, options Save, sieve import). Any `resolve` request created before the swap and answered after it indexes into a *different* array: wrong rule at best, `undefined` at worst → `rule.res` throws inside the sync part of the handler → `context.postMessage(data)` never runs → the content side waits out its timeout (`resolutionTimeout`).
+
+**Impact:** hover enlarging silently stops resolving until prefs settle; **during a mass-download scan (minutes long) a weekly sieve update can stall every subsequent sieve resolution** for the rest of the scan. Low frequency, high confusion.
+
+**Fix (guard, no behavior change):**
+
+```javascript
+case "resolve": {
+    const data = { cmd: "resolved", id: msg.id, m: null, params: msg.params };
+    const rule = cachedPrefs.sieve[data.params.rule.id];
+    if (!rule) {                       // sieve was re-cached mid-session
+        console.warn(manifest.name + ": stale resolve request (rule missing) — sieve re-cached?");
+        context.postMessage(data);
+        return;
+    }
+    ...
+```
+
+Optionally wrap the whole `resolve` body in try/catch that responds `data.m = null` — any future throw then degrades to "no match" instead of hanging the sender.
+
+### U-02 [P3] Upstream `download()`: blob object URLs never revoked; `downloadItems` never cleaned on success
+
+**Where:** `service.js:554–614`
+
+`URL.createObjectURL(msg.blob)` URLs are never revoked, and `downloadItems[id]` is only deleted on the error/HTML path — successful downloads leave entries (and blob URLs) for the life of the SW. With the 25 s keep-alive the SW can live long.
+
+**Fix:** in the `onChanged` listener add a `delta.state?.current === "complete"` branch: `delete downloadItems[delta.id]` (mass-download tasks are already excluded — they never enter `downloadItems`), and revoke object URLs after the download starts or completes (keep the URL string on the msg to revoke later).
+
+### U-03 [P3] Upstream `onChanged`: `chrome.downloads.cancel` / `erase` without callbacks
+
+Same unchecked-`lastError` pattern as N-08 (`service.js:604–605`). Add callbacks (`() => {}`).
+
+### U-04 [P3] 7.25 parity gap: `getImages` full-page guard lacks `!el.shadowRoot`
+
+**Where:** `content.js:1132`
+
+```javascript
+if (el.clientWidth > topWinW * 0.8 && el.clientHeight > topWinH * 0.8) return null;
+```
+
+`m_over` got the full 7.25 fix (`&& !e.target.shadowRoot`), this sibling kept the 7.21 form. The 7.25 plan listed it as optional alignment; add `&& !el.shadowRoot` for parity (Shadow-DOM hosts should not count as full-page traps here either). **Upstream file edit — keep it surgical, one token.**
+
+### U-05 [P3] `vdfDpshPtdhhd` window-message bridge is spoofable by the page (accepted upstream model — document it)
+
+**Where:** `common/app.js:58–67`, `content/content.js:3513` (`winOnMessage`), `content/relay.js`
+
+Any page script can `window.postMessage({ vdfDpshPtdhhd: …})`; the magic property name is not a secret (extension code is inspectable) and `event.origin` is the page's own origin, so it cannot be filtered by origin checks. Verified **actual exposure is limited to display behavior**: `winOnMessage` only acts on `"toggle" | "preload" | "isFrame" | "from_frame"`, i.e. a page can at most force-show/position the Imagus popup with a chosen URL/caption, or toggle it off. Mass-download commands (`downloadAll`, `stopScanning`, `download`) travel via `chrome.runtime` messaging, **not** this bridge, and are not reachable from the page.
+
+**Recommendation:** no code change required for the mod (this is inherited upstream behavior); record it in `Docs/MV3_DEVELOPMENT.md` security notes so future contributors don't route new commands through `winOnMessage`. If upstream ever hardens this (nonce per frame), port the fix.
+
+### U-06 [P3] `openUrl` fallback path can produce unhandled rejections
+
+**Where:** `service.js:740–765` — the nested fallback `chrome.windows.create({...}).catch(error => { chrome.windows.create({...}); })` and the second `chrome.tabs.create(tabOptions)` in the catch have no `.catch` of their own. Chain a terminal `.catch(() => {})`.
+
+### U-07 [info] Sieve update mechanics — verified correct, one naming wart
+
+Weekly gate via hourly alarm works (`sieveUpdateNext`, retry with exponential backoff ≤3, fallback to local sieve only when none stored, `_`-prefixed user rules preserved, rules removed upstream kept as `off:1` — I5 respected). Minor wart: `updateSieve` persists `sieveUpdateLast` while the scheduler keys on `sieveUpdateNext`, and `readCfg` fetches `sieveUpdateLast` that nothing reads — cosmetic, fix only when touching this code anyway.
 
 **From `Audit/Audit.md` 2026-08-09 — all re-verified in code at `6f74ecf`:**
 
@@ -407,14 +484,15 @@ Currently harmless (no watchdog/id set yet at this point), but it violates the s
 |---|----|--------|-----------|
 | 1 | **N-01** | S | Settings honesty — users cannot disable size filters today |
 | 2 | **N-02** | S | Cancel completeness (I11) |
-| 3 | **N-03** | S | Dead safety mechanism brought back to life |
-| 4 | **N-04** | S | Wrong+dead data in groups; sync content-block |
-| 5 | **N-05** | S | One-line content guard; sync content-block |
-| 6 | **N-07** | S | Query-string classification; anchor regexes; sync content-block |
-| 7 | **N-11, N-13** | S | Message hygiene / slot invariant |
-| 8 | **N-06, N-08, N-10, N-12** | S | UX/robustness polish |
-| 9 | **N-09** | S | Decide drop vs use — needs a product call on filename-from-ext |
-| 10 | N-14 items, N-15 | S–M | Hygiene, docs |
+| 3 | **U-01** | S | `resolve` crash on sieve re-cache — 5-line guard, protects hover + MD |
+| 4 | **N-03** | S | Dead safety mechanism brought back to life |
+| 5 | **N-04** | S | Wrong+dead data in groups; sync content-block |
+| 6 | **N-05** | S | One-line content guard; sync content-block |
+| 7 | **N-07, U-04** | S | Query-string classification; anchor regexes; 7.25 parity in `getImages`; sync content-block |
+| 8 | **N-11, N-13, U-02, U-03** | S | Message hygiene / slot invariant / upstream download cleanup |
+| 9 | **N-06, N-08, N-10, N-12, U-06** | S | UX/robustness polish |
+| 10 | **N-09** | S | Decide drop vs use — needs a product call on filename-from-ext |
+| 11 | U-05, U-07, N-14 items, N-15 | S–M | Docs / hygiene |
 
 Do **not** mix these with an upstream re-base (per repo convention).
 
@@ -439,6 +517,11 @@ Do **not** mix these with an upstream re-base (per repo convention).
 | N-13 | `service-core.js` (`processDownloadQueue` error branch) |
 | N-14 | per old audit |
 | N-15 | `Docs/README.md` |
+| U-01 | `background/service.js` (`case "resolve"` head) |
+| U-02, U-03 | `background/service.js` (`download()`, upstream `onChanged`) |
+| U-04 | `content/content.js` (`getImages` full-page guard) — upstream file, one-token edit |
+| U-05 | `Docs/MV3_DEVELOPMENT.md` (security note) |
+| U-06 | `background/service.js` (`openUrl`) |
 
 **After every content MD edit:** re-extract the touched section into `content-block.js` and re-run the marker comparison (five `>>>`/`<<<` pairs must stay identical).
 
@@ -527,15 +610,23 @@ Add cases for the N-01 semantics once the fix lands (`minImageSize=0` stays 0). 
 | N-13 | P3 | Bare `activeDownloads--` in download-start error path | **Open** |
 | N-14 | P3 | Carried: BUG-08 stats split, BUG-10 tests, BUG-11 banner, BUG-13 hotkey | **Open** |
 | N-15 | P3 | `Docs/README.md` references deleted 7.21 plan | **Open** |
+| U-01 | P2 | Upstream `resolve` crashes when sieve re-cached mid-session; response hangs | **Open** |
+| U-02 | P3 | Upstream `download()`: object URLs never revoked, `downloadItems` grows | **Open** |
+| U-03 | P3 | Upstream `onChanged`: cancel/erase without callbacks | **Open** |
+| U-04 | P3 | `getImages` full-page guard missing `!el.shadowRoot` (7.25 parity) | **Open** |
+| U-05 | P3 | `vdfDpshPtdhhd` bridge spoofable — display-only impact; document | **Open (docs)** |
+| U-06 | P3 | `openUrl` fallback lacks terminal `.catch` | **Open** |
+| U-07 | info | Sieve update mechanics verified; naming wart `sieveUpdateLast/Next` | Noted |
 | — | — | 2026-08-09 audit BUG-01…09/12/14 + older P1s | **Fixed (verified §3)** |
+| — | — | 7.25 upstream port completeness (all anchors verified) | **Confirmed (§2b preamble)** |
 
 ---
 
 ## 11. Suggested next command
 
 ```text
-Implement Audit.md N-01..N-05 in src-mv3-overlay/mass-download/ (+ content.js & content-block.js for N-04/N-05),
-then run tools/md-unit-smoke.mjs; do not mix with an upstream re-base.
+Implement Audit.md N-01..N-05 plus U-01 in src-mv3-overlay/ (mass-download/, background/service.js,
+content.js & content-block.js for N-04/N-05), then run tools/md-unit-smoke.mjs; do not mix with an upstream re-base.
 ```
 
 ---
