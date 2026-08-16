@@ -9,7 +9,7 @@
 //   - chrome.* APIs
 //
 // Variables (from service-init.js):
-//   - filterQueue, downloadQueue, activeFilters, activeDownloads, scanInProgress
+//   - filterQueue, downloadQueue, activeFilters, activeDownloads, scanInProgress, contentScanDone
 //   - downloadProgress, downloadStats, downloadProgressTabId, downloadInitiatorTabId
 //   - globalProcessedUrls, urlValidationStats, activeControllers
 
@@ -61,6 +61,20 @@ const MIME_TO_EXT = {
     'audio/flac': '.flac', 'audio/aac': '.aac', 'audio/mp4': '.m4a',
 };
 
+const EXT_ALIASES = {
+    '.jpeg': '.jpg',
+    '.jpe': '.jpg',
+    '.tif': '.tiff',
+    '.htm': '.html',
+    '.mpeg': '.mpg',
+};
+
+function normalizeExt(ext) {
+    if (!ext) return '';
+    ext = String(ext).toLowerCase();
+    return EXT_ALIASES[ext] || ext;
+}
+
 function getUrlExtension(url) {
     try {
         const pathname = new URL(url, 'https://dummy.invalid').pathname;
@@ -74,15 +88,66 @@ function getUrlExtension(url) {
 }
 
 function isExcludedType(url, contentType, excludedList) {
-    const urlExtension = getUrlExtension(url);
-    if (urlExtension && excludedList.includes(urlExtension)) return true;
+    const normalizedList = (excludedList || []).map(normalizeExt);
+    const urlExtension = normalizeExt(getUrlExtension(url));
+    if (urlExtension && normalizedList.includes(urlExtension)) return true;
     if (contentType) {
         const mime = contentType.split(';')[0].trim().toLowerCase();
-        const mappedExt = MIME_TO_EXT[mime];
-        if (mappedExt && excludedList.includes(mappedExt)) return true;
-        if (excludedList.includes(mime)) return true;
+        const mappedExt = normalizeExt(MIME_TO_EXT[mime]);
+        if (mappedExt && normalizedList.includes(mappedExt)) return true;
+        if (normalizedList.includes(mime) || (excludedList || []).includes(mime)) return true;
     }
     return false;
+}
+
+function getFilterTimeouts() {
+    const baseSec = Number(cachedPrefs?.da?.resolutionTimeout);
+    const sec = Number.isFinite(baseSec) && baseSec >= 1 ? baseSec : 8;
+    return {
+        headMs: sec * 1000,
+        getMs: Math.max(sec * 2000, 15000)
+    };
+}
+
+const MAX_FALLBACK_SIZE = 10 * 1024 * 1024;
+
+function parseContentLength(headers) {
+    const raw = headers.get('Content-Length');
+    if (raw == null || raw === '') return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+async function readBodyCapped(response, maxBytes) {
+    const known = parseContentLength(response.headers);
+    if (known != null && known > maxBytes) {
+        try { if (response.body) await response.body.cancel(); } catch (_) {}
+        return { tooLarge: true };
+    }
+    if (known != null) {
+        const blob = await response.blob();
+        if (blob.size > maxBytes) return { tooLarge: true };
+        return { blob };
+    }
+    const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+    if (!reader) {
+        try { if (response.body) await response.body.cancel(); } catch (_) {}
+        return { error: 'No response body' };
+    }
+    let received = 0;
+    const chunks = [];
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > maxBytes) {
+            try { await reader.cancel(); } catch (_) {}
+            return { tooLarge: true };
+        }
+        chunks.push(value);
+    }
+    const type = response.headers.get('Content-Type') || '';
+    return { blob: new Blob(chunks, { type }) };
 }
 
 // --- Message Handler Functions ---
@@ -122,12 +187,14 @@ function resetMassDownloadSession() {
     urlValidationStats.circuitBreakerOpen = false;
     filterQueue = [];
     downloadQueue = [];
+    contentScanDone = false;
 }
 
 function handleOpenDownloadProgress(msg, sender) {
     resetMassDownloadSession();
     downloadInitiatorTabId = sender.tab?.id;
     scanInProgress = true;
+    contentScanDone = false;
     const showProgressTab = cachedPrefs?.da?.showProgressTab !== false;
     if (showProgressTab) {
         getOrCreateProgressTab(downloadInitiatorTabId).catch(err => {
@@ -172,7 +239,11 @@ function handleUpdateStatus(msg) {
             console.warn('Failed to send status to progress tab:', err);
         });
     }
-    if (msg.done) scanInProgress = false;
+    if (msg.done) {
+        // Content finished scanning — do not cancel in-flight filter/download.
+        contentScanDone = true;
+        setTimeout(checkAllQueuesEmpty, 100);
+    }
 }
 
 function handleUpdateFilterStats(msg) {
@@ -187,6 +258,7 @@ function handleUpdateFilterStats(msg) {
 
 function handleStopScanning() {
     scanInProgress = false;
+    contentScanDone = true;
 
     filterQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
     downloadQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
@@ -251,6 +323,7 @@ function handleClearAll() {
 
 function handleRetryDownload(msg, sender) {
     if (msg.url) {
+        if (!scanInProgress) scanInProgress = true;
         filterQueue.push({
             url: msg.url,
             referer: msg.referer,
@@ -273,6 +346,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 function checkAllQueuesEmpty() {
     if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
+        if (contentScanDone) scanInProgress = false;
         if (downloadProgressTabId) {
             chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }).catch(() => {
                 downloadProgressTabId = null;
@@ -323,8 +397,9 @@ async function processFilterQueue() {
             ? crypto.randomUUID()
             : String(Date.now()) + ':' + Math.random());
 
+        const { headMs, getMs } = getFilterTimeouts();
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const timeoutId = setTimeout(() => controller.abort(), headMs);
         activeControllers.set(task._id, controller);
 
         try {
@@ -378,7 +453,7 @@ async function processFilterQueue() {
 
             try {
                 const innerController = new AbortController();
-                const innerTimeoutId = setTimeout(() => innerController.abort(), 15000);
+                const innerTimeoutId = setTimeout(() => innerController.abort(), getMs);
                 activeControllers.set(task._id, innerController);
                 let response;
                 try {
@@ -397,15 +472,16 @@ async function processFilterQueue() {
                 if (contentType.startsWith('text/html')) {
                     updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
                 } else {
-                    const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
-                    const MAX_FALLBACK_SIZE = 10 * 1024 * 1024;
-                    if (contentLength > MAX_FALLBACK_SIZE) {
+                    const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
+                    if (capped.tooLarge) {
                         updateDownloadProgress(task.url, 'skipped', 0, 'Too large for fallback', null, task);
                         downloadStats.filtered++;
+                    } else if (capped.error) {
+                        updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
                     } else {
-                        const blob = await response.blob();
+                        const blob = capped.blob;
                         const size = blob.size;
-                        const type = blob.type;
+                        const type = blob.type || contentType;
 
                         if (isExcludedType(task.url, type, excludedExtensions)) {
                             updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
@@ -558,23 +634,28 @@ function calculateUrlHeuristicScore(url) {
 
 async function validateSingleUrlContent(url, referer, timeout = 3000) {
     const controller = new AbortController();
+    const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : String(Date.now()) + ':' + Math.random();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
+    activeControllers.set(id, controller);
     try {
         const response = await fetch(url, {
             signal: controller.signal,
-            headers: { 'Referer': referer }
+            headers: { 'Referer': referer || '' }
         });
-        clearTimeout(timeoutId);
         if (!response.ok) return { url, isValid: false, reason: `HTTP ${response.status}` };
         const contentType = response.headers.get('Content-Type') || '';
-        const contentLength = parseInt(response.headers.get('Content-Length')) || 0;
+        const contentLength = parseContentLength(response.headers) || 0;
         if (contentType.startsWith('text/html')) return { url, isValid: false, reason: 'HTML page' };
         const isValidMedia = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/');
         if (!isValidMedia && contentLength < 1024) return { url, isValid: false, reason: 'too small' };
         return { url, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
     } catch (error) {
-        clearTimeout(timeoutId);
         return { url, isValid: false, reason: error.name === 'AbortError' ? 'timeout' : 'network-error' };
+    } finally {
+        clearTimeout(timeoutId);
+        activeControllers.delete(id);
     }
 }
 

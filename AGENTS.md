@@ -51,7 +51,7 @@ src-mv3-overlay/
 ├── options/                       # options, popup, download-progress, SieveUI
 ├── data/defaults.json             # hz / keys / tls / da
 ├── data/sieve.json                # Site media rules
-└── manifest.json                  # MV3 (version tracks upstream, e.g. 2026.7.21)
+└── manifest.json                  # MV3 (version tracks upstream, currently 2026.7.25)
 ```
 
 ### Service worker wiring
@@ -214,6 +214,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 | `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` | Post-audit dev guide: residual bugs, hooks, anti-patterns |
 | `Docs/PROJECT_STRUCTURE.md` | Components, message bus, dependency map |
 | `Docs/MV3_DEVELOPMENT.md` | MV3 SW, userScripts, migration notes |
+| `Docs/UPSTREAM_725_INTEGRATION_PLAN.md` | Upstream v2026.7.25 integration / re-base checklist |
 | `Docs/DEVELOPMENT_GUIDE.md` | Sieve maintenance, hotkeys, debugging |
 | `Docs/PROJECT_MV2.md` | Legacy `src/` only |
 | `README.md` | User-facing overview (still mentions `src-mv3` install path) |

@@ -643,5 +643,44 @@
   },
   "HZ_SC_FRAMESTEP": {
     "message": "Einen Frame vor/zurück springen"
+  },
+  "HZ_SC_MASS_DOWNLOAD": {
+    "message": "mass-download from the current page"
+  },
+  "DA_MASS_DOWNLOAD": {
+    "message": "Mass Download"
+  },
+  "DA_MAX_FILTERS": {
+    "message": "Max Concurrent Filters"
+  },
+  "DA_MAX_DOWNLOADS": {
+    "message": "Max Concurrent Downloads"
+  },
+  "DA_MIN_IMAGE_SIZE": {
+    "message": "Min Image Size (KB)"
+  },
+  "DA_MIN_VIDEO_SIZE": {
+    "message": "Min Video Size (MB)"
+  },
+  "DA_EXCL_EXT": {
+    "message": "Excluded Extensions"
+  },
+  "DA_EXCL_KEYWORDS": {
+    "message": "Excluded Keywords (CSS/Text)"
+  },
+  "DA_UNKNOWN": {
+    "message": "Download Unknown Types"
+  },
+  "DA_TIMEOUT": {
+    "message": "Resolution Timeout (s)"
+  },
+  "DA_SHOW_PROGRESS_TAB": {
+    "message": "Show Progress Tab"
+  },
+  "DA_MAX_PROGRESS_RECORDS": {
+    "message": "Max Progress Records"
+  },
+  "HZ_SC_CLEAR": {
+    "message": "to clear a focused hotkey on this page"
   }
 }

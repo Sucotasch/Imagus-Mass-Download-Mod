@@ -7,7 +7,10 @@ var filterQueue = [];
 var downloadQueue = [];
 var activeFilters = 0;
 var activeDownloads = 0;
+// scanInProgress = user session still accepting filter/download work.
+// contentScanDone = content finished DOM/sieve scan (NOT the same as cancel).
 var scanInProgress = false;
+var contentScanDone = false;
 
 // --- Mass Download Progress and Stats ---
 var downloadProgress = {};

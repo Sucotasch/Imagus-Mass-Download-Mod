@@ -643,5 +643,44 @@
   },
   "HZ_SC_FRAMESTEP": {
     "message": "Перемотати на один кадр назад/вперед"
+  },
+  "HZ_SC_MASS_DOWNLOAD": {
+    "message": "массовая загрузка с текущей страницы"
+  },
+  "DA_MASS_DOWNLOAD": {
+    "message": "Массовая загрузка"
+  },
+  "DA_MAX_FILTERS": {
+    "message": "Макс. параллельных фильтров"
+  },
+  "DA_MAX_DOWNLOADS": {
+    "message": "Макс. параллельных загрузок"
+  },
+  "DA_MIN_IMAGE_SIZE": {
+    "message": "Мин. размер изображения (КБ)"
+  },
+  "DA_MIN_VIDEO_SIZE": {
+    "message": "Мин. размер видео (МБ)"
+  },
+  "DA_EXCL_EXT": {
+    "message": "Искл. расширения"
+  },
+  "DA_EXCL_KEYWORDS": {
+    "message": "Искл. ключевые слова (CSS/Text)"
+  },
+  "DA_UNKNOWN": {
+    "message": "Загружать неизвестные типы"
+  },
+  "DA_TIMEOUT": {
+    "message": "Таймаут разрешения (с)"
+  },
+  "DA_SHOW_PROGRESS_TAB": {
+    "message": "Показывать вкладку прогресса"
+  },
+  "DA_MAX_PROGRESS_RECORDS": {
+    "message": "Макс. записей прогресса"
+  },
+  "HZ_SC_CLEAR": {
+    "message": "очистить активную горячую клавишу на этой странице"
   }
 }

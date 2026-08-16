@@ -3732,7 +3732,7 @@
                     PVI.downloadAllQueue = [];
                     PVI.ambiguousUrlGroups = [];
                     if (PVI._cleanupMonkeyPatch) PVI._cleanupMonkeyPatch();
-                    PVI._updateDownloadAllStatus('<strong style="color: #ff8a80;">Scan canceled by user</strong>');
+                    PVI._updateDownloadAllStatus('Scan canceled by user');
                     setTimeout(PVI._stopKeepAwake, 3000);
                 }
             } else if (d.cmd === 'downloadAll') {
@@ -3903,8 +3903,13 @@
                 style.transition = 'opacity 0.5s';
                 doc.body.appendChild(PVI.downloadAllStatusEl);
             }
-            const warningText = '<strong>Do not leave this page until scanning is complete!</strong>';
-            PVI.downloadAllStatusEl.innerHTML = `${warningText}<br><span style="font-size: 14px;">${progressText}</span>`;
+            PVI.downloadAllStatusEl.textContent = '';
+            const warning = doc.createElement('strong');
+            warning.textContent = 'Do not leave this page until scanning is complete!';
+            const line = doc.createElement('div');
+            line.style.fontSize = '14px';
+            line.textContent = String(progressText == null ? '' : progressText);
+            PVI.downloadAllStatusEl.append(warning, doc.createElement('br'), line);
         },
 
         _startKeepAwake: function () {
@@ -3922,7 +3927,11 @@
                 PVI.downloadAllAudioEl = null;
             }
             if (PVI.downloadAllStatusEl) {
-                PVI.downloadAllStatusEl.innerHTML = `<strong style="color: #a5d6a7;">${finalMessage}</strong>`;
+                PVI.downloadAllStatusEl.textContent = '';
+                const done = doc.createElement('strong');
+                done.style.color = '#a5d6a7';
+                done.textContent = String(finalMessage == null ? '' : finalMessage);
+                PVI.downloadAllStatusEl.appendChild(done);
                 setTimeout(() => {
                     if (PVI.downloadAllStatusEl) {
                         PVI.downloadAllStatusEl.style.opacity = '0';
@@ -4075,7 +4084,11 @@
                     return;
                 }
 
-                if (result) {
+                try {
+                    if (result == null || result === false) {
+                        setTimeout(PVI.processNextInQueue, 10);
+                        return;
+                    }
                     if (Array.isArray(result) && result.length > 1) {
                         PVI.ambiguousUrlGroups.push({
                             urls: result,
@@ -4090,7 +4103,13 @@
                         return;
                     }
 
-                    let url = Array.isArray(result) ? (result.find(u => u[0] === '#') || result[0]) : result;
+                    let url = Array.isArray(result)
+                        ? (result.find(u => typeof u === 'string' && u[0] === '#') || result[0])
+                        : result;
+                    if (typeof url !== 'string' || !url) {
+                        setTimeout(PVI.processNextInQueue, 10);
+                        return;
+                    }
                     url = url.replace(/^#/, '');
 
                     if (url && !PVI.downloadAllUniqueUrls.has(url)) {
@@ -4108,6 +4127,8 @@
                         setTimeout(PVI.processNextInQueue, 500);
                         return;
                     }
+                } catch (err) {
+                    console.error('Mass Download onResolved error:', err);
                 }
                 setTimeout(PVI.processNextInQueue, 10);
             };
