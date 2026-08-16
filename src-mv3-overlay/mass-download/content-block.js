@@ -53,13 +53,8 @@
             }
         });
     };
-
-    function _getMediaExt(url) {
-        var base = url.split(/[?#]/)[0];
-        if (/\.(?:m(?:4[abprv]|p[34])|og[agv]|webm|avi|mov|mkv)/i.test(base)) return 'mp4';
-        if (/\.(?:mp3|wav|flac|aac|ogg|m4a|opus)/i.test(base)) return 'mp3';
-        return 'jpg';
-    }
+    // NOTE: _getMediaExt removed (Audit N-09) — its result fed only the
+    // `ext`/`priorityExt` task fields that the service worker never read.
     // <<< MASS-DOWNLOAD-HELPERS
 
 
@@ -337,14 +332,13 @@
                         return;
                     }
                     if (Array.isArray(result) && result.length > 1) {
+                        // Audit N-04: elementInfo dropped — it read PVI.TRG
+                        // AFTER cleanup() had restored the pre-scan value, so
+                        // it always described the wrong element, and the SW
+                        // never consumed it anyway.
                         PVI.ambiguousUrlGroups.push({
                             urls: result,
-                            referer: window.location.href,
-                            elementInfo: {
-                                tagName: (PVI.TRG && PVI.TRG.tagName) || 'unknown',
-                                className: (PVI.TRG && PVI.TRG.className) || '',
-                                src: (PVI.TRG && (PVI.TRG.src || PVI.TRG.href)) || ''
-                            }
+                            referer: window.location.href
                         });
                         setTimeout(PVI.processNextInQueue, 100);
                         return;
@@ -365,10 +359,7 @@
                         Port.send({
                             cmd: 'downloadMass',
                             url: url,
-                            referer: window.location.href,
-                            priorityExt: (url.match(/#([\da-z]{3,4})$/) || [])[1],
-                            ext: _getMediaExt(url),
-                            isSingle: true
+                            referer: window.location.href
                         });
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
                         setTimeout(PVI.processNextInQueue, 500);
@@ -413,6 +404,9 @@
         },
 
         handleGroupAnalysisComplete: function (processedCount) {
+            // Audit N-05: after a user cancel the SW loop still finishes and
+            // sends this message — do not claim "Analysis complete" then.
+            if (!PVI.downloadAllActive) return;
             const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
             PVI._updateDownloadAllStatus(finalMessage);
             Port.send({ cmd: 'updateStatus', status: finalMessage, done: true });

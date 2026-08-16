@@ -17,24 +17,16 @@ document.addEventListener('DOMContentLoaded', function () {
                     statusDiv.textContent = 'Error: Could not connect to the page. Please refresh the page and ensure Developer Mode is on.';
                     downloadBtn.disabled = false;
                 } else {
-                    statusDiv.innerHTML = '<span style="color: green;">Scan initiated!</span> Opening progress tab...';
+                    // Audit N-10: the popup never receives updateStatus (the SW
+                    // pushes status only to the progress tab) and it closes
+                    // itself below — constant string via textContent.
+                    statusDiv.textContent = 'Scan initiated! Opening progress tab...';
                     setTimeout(window.close, 2000);
                 }
             });
         } catch (err) {
             statusDiv.textContent = 'Error: ' + err.message;
             downloadBtn.disabled = false;
-        }
-    });
-
-    // Listen for status updates from content script or background
-    chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
-        if (request.cmd === 'updateStatus') {
-            statusDiv.textContent = request.status;
-            if (request.done) {
-                downloadBtn.disabled = false;
-                downloadBtn.textContent = 'Start New Scan';
-            }
         }
     });
 });

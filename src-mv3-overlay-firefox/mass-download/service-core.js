@@ -180,7 +180,9 @@ function resetMassDownloadSession() {
         }
     }
     downloadProgress = preserved;
-    downloadStats = { found: 0, filtered: 0, downloaded: 0 };
+    downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
+    userCanceled = false;
+    completionNotified = false;
     urlValidationStats.totalValidations = 0;
     urlValidationStats.successfulValidations = 0;
     urlValidationStats.recentFailures = [];
@@ -211,26 +213,28 @@ function handleRegisterProgressTab(msg, sender) {
     chrome.tabs.sendMessage(downloadProgressTabId, {
         cmd: 'updateStatus',
         status: scanInProgress ? 'Scanning...' : '',
-        items: downloadProgress,
+        items: serializeAllProgress(),
         stats: downloadStats
     }).catch(() => {});
 }
 
 function handleDownloadMass(msg, sender) {
-    if (!scanInProgress) scanInProgress = true;
+    // Do NOT revive a stopped session here (Audit N-02): a downloadMass racing
+    // with stopScanning would reopen scanInProgress and start downloads after
+    // the user canceled. Tasks arriving while !scanInProgress are marked
+    // canceled by the filter guards. Only handleOpenDownloadProgress (session
+    // start) and handleRetryDownload (explicit user action) may set it.
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
-        priorityExt: msg.priorityExt,
-        ext: msg.ext,
         isPrivate: sender.tab?.incognito
     });
     processFilterQueue();
 }
 
-function handleResolveGroups(msg) {
-    if (!scanInProgress) scanInProgress = true;
-    processUrlGroupsWithValidation(msg.groups, msg.referer);
+function handleResolveGroups(msg, sender) {
+    // See handleDownloadMass: no session revive (Audit N-02).
+    processUrlGroupsWithValidation(msg.groups, msg.referer, sender);
 }
 
 function handleUpdateStatus(msg) {
@@ -248,7 +252,9 @@ function handleUpdateStatus(msg) {
 
 function handleUpdateFilterStats(msg) {
     downloadStats.found += (msg.found || 0);
-    downloadStats.filtered += (msg.filtered || 0);
+    // Content's DOM pre-filter rejects vs SW's size/type skips are separate
+    // counters now (Audit BUG-08); the message shape from content is unchanged.
+    downloadStats.prefiltered += (msg.filtered || 0);
     if (downloadProgressTabId) {
         chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
             console.warn(manifest.name + ': Failed to send stats to progress tab');
@@ -259,6 +265,7 @@ function handleUpdateFilterStats(msg) {
 function handleStopScanning() {
     scanInProgress = false;
     contentScanDone = true;
+    userCanceled = true;
 
     filterQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
     downloadQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
@@ -268,7 +275,7 @@ function handleStopScanning() {
     for (let url in downloadProgress) {
         if (downloadProgress[url].status === 'downloading' && downloadProgress[url].downloadId) {
             const task = downloadProgress[url].task;
-            chrome.downloads.cancel(downloadProgress[url].downloadId);
+            chrome.downloads.cancel(downloadProgress[url].downloadId, () => {});
             updateDownloadProgress(url, 'canceled', 0, 'Download canceled', downloadProgress[url].downloadId, task);
             releaseDownloadSlot(task);
         }
@@ -286,7 +293,7 @@ function handleStopScanning() {
 
 function handleGetDownloadStatus(msg, sendResponse) {
     const maxRecords = (cachedPrefs.da && cachedPrefs.da.maxProgressRecords) || 100;
-    sendResponse({ items: downloadProgress, stats: downloadStats, maxRecords: maxRecords });
+    sendResponse({ items: serializeAllProgress(), stats: downloadStats, maxRecords: maxRecords });
 }
 
 // --- Download Slot Management ---
@@ -316,9 +323,15 @@ function handleClearCompleted() {
 function handleClearAll() {
     handleStopScanning();
     downloadProgress = {};
-    downloadStats = { found: 0, filtered: 0, downloaded: 0 };
+    downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
     globalProcessedUrls.clear();
     downloadIdToTask.clear();
+    // Reset validation state too (Audit N-12): a tripped circuit breaker must
+    // not leak from the cleared session into the next one.
+    urlValidationStats.totalValidations = 0;
+    urlValidationStats.successfulValidations = 0;
+    urlValidationStats.recentFailures = [];
+    urlValidationStats.circuitBreakerOpen = false;
 }
 
 function handleRetryDownload(msg, sender) {
@@ -347,7 +360,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 function checkAllQueuesEmpty() {
     if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
         if (contentScanDone) scanInProgress = false;
-        if (downloadProgressTabId) {
+        // Notify only on natural completion, once per session (Audit N-06):
+        // after a user cancel (userCanceled) or repeated drain timers we must
+        // not claim "all downloads completed".
+        if (downloadProgressTabId && contentScanDone && !userCanceled && !completionNotified) {
+            completionNotified = true;
             chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }).catch(() => {
                 downloadProgressTabId = null;
             });
@@ -355,12 +372,36 @@ function checkAllQueuesEmpty() {
     }
 }
 
+// Serializable view of a progress entry for the progress tab (Audit N-11):
+// the live `task` object carries SW internals (_watchdog timer id, _downloadId,
+// _slotReleased, _id) that must not cross the message boundary.
+function serializeProgressEntry(entry) {
+    return {
+        url: entry.url,
+        status: entry.status,
+        progress: entry.progress,
+        error: entry.error,
+        downloadId: entry.downloadId,
+        timestamp: entry.timestamp,
+        referer: entry.task ? entry.task.referer : null
+    };
+}
+
+function serializeAllProgress() {
+    const items = {};
+    for (const url in downloadProgress) {
+        items[url] = serializeProgressEntry(downloadProgress[url]);
+    }
+    return items;
+}
+
 function updateDownloadProgress(url, status, progress, error, downloadId, task) {
     if (downloadProgressTabId) {
         chrome.tabs.sendMessage(downloadProgressTabId, {
             cmd: 'updateDownloadStatus',
             url: url, status: status, progress: progress,
-            error: error, downloadId: downloadId, task: task
+            error: error, downloadId: downloadId,
+            referer: task ? task.referer : null
         }).catch(() => { downloadProgressTabId = null; });
     }
     downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
@@ -388,10 +429,17 @@ async function processFilterQueue() {
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
-        const excludedExtensions = ((cachedPrefs.da && cachedPrefs.da.excludedExtensions) || '.png, .svg, .ico, .gif').split(',').map(s => s.trim().toLowerCase());
-        const minImageSize = ((cachedPrefs.da && cachedPrefs.da.minImageSize) || 45) * 1024;
-        const minVideoSize = ((cachedPrefs.da && cachedPrefs.da.minVideoSize) || 2) * 1024 * 1024;
-        const downloadOnUnknown = (cachedPrefs.da) ? cachedPrefs.da.downloadOnUnknown : true;
+        // Audit N-01: explicit null-checks instead of `||` so that VALID
+        // falsy user settings survive — minImageSize=0 / minVideoSize=0 mean
+        // "no size limit" (guards below test > 0) and excludedExtensions=""
+        // means "exclude nothing". `||` silently replaced all of these with
+        // defaults.
+        const da = cachedPrefs.da || {};
+        const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.png, .svg, .ico, .gif')
+            .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        const minImageSize = (da.minImageSize != null ? da.minImageSize : 45) * 1024;
+        const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
+        const downloadOnUnknown = da.downloadOnUnknown !== false;
 
         task._id = task._id || (typeof crypto !== 'undefined' && crypto.randomUUID
             ? crypto.randomUUID()
@@ -422,7 +470,7 @@ async function processFilterQueue() {
 
             if (isExcludedType(task.url, contentType, excludedExtensions)) {
                 updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
-                downloadStats.filtered++;
+                downloadStats.skipped++;
             } else {
                 let passed = true;
                 if (contentType.startsWith('image/')) {
@@ -436,14 +484,14 @@ async function processFilterQueue() {
                 if (passed) {
                     if (!scanInProgress) {
                         updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                        downloadStats.filtered++;
+                        downloadStats.skipped++;
                         continue;
                     }
                     downloadQueue.push(task);
                     processDownloadQueue();
                 } else {
                     updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
-                    downloadStats.filtered++;
+                    downloadStats.skipped++;
                 }
             }
         } catch (error) {
@@ -475,7 +523,7 @@ async function processFilterQueue() {
                     const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
                     if (capped.tooLarge) {
                         updateDownloadProgress(task.url, 'skipped', 0, 'Too large for fallback', null, task);
-                        downloadStats.filtered++;
+                        downloadStats.skipped++;
                     } else if (capped.error) {
                         updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
                     } else {
@@ -485,7 +533,7 @@ async function processFilterQueue() {
 
                         if (isExcludedType(task.url, type, excludedExtensions)) {
                             updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
-                            downloadStats.filtered++;
+                            downloadStats.skipped++;
                         } else {
                             let passed = true;
                             if (type.startsWith('image/')) {
@@ -499,14 +547,14 @@ async function processFilterQueue() {
                             if (passed) {
                                 if (!scanInProgress) {
                                     updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                                    downloadStats.filtered++;
+                                    downloadStats.skipped++;
                                 } else {
                                     downloadQueue.push(task);
                                     processDownloadQueue();
                                 }
                             } else {
                                 updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
-                                downloadStats.filtered++;
+                                downloadStats.skipped++;
                             }
                         }
                     }
@@ -562,9 +610,7 @@ function processDownloadQueue() {
         }, function (downloadId) {
             if (chrome.runtime.lastError) {
                 updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
-                activeDownloads--;
-                processDownloadQueue();
-                setTimeout(checkAllQueuesEmpty, 100);
+                releaseDownloadSlot(task);
             } else {
                 task._downloadId = downloadId;
                 downloadIdToTask.set(downloadId, task);
@@ -672,31 +718,29 @@ async function findBestUrlWithValidation(urlArray, referer) {
     }
     const scoredUrls = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
     const candidatesToValidate = scoredUrls.slice(0, Math.min(5, scoredUrls.length));
-    try {
-        const results = await Promise.allSettled(candidatesToValidate.map(({ url }) => validateSingleUrlContent(url, referer, 1500)));
-        const validUrls = results.filter(r => r.status === 'fulfilled' && r.value.isValid).map(r => r.value).sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
-        urlValidationStats.totalValidations++;
-        if (validUrls.length > 0) {
-            urlValidationStats.successfulValidations++;
-            urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
-            urlValidationStats.circuitBreakerOpen = false;
-            return validUrls[0].url;
-        }
-        urlValidationStats.recentFailures.push(Date.now());
-        urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
-        return scoredUrls[0].url;
-    } catch (error) {
-        urlValidationStats.recentFailures.push(Date.now());
-        urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
-        if (urlValidationStats.recentFailures.length >= 8) {
-            urlValidationStats.circuitBreakerOpen = true;
-            setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
-        }
-        return scoredUrls[0].url;
+    // Audit N-03: Promise.allSettled never rejects and validateSingleUrlContent
+    // catches its own errors, so a try/catch here was DEAD code — the only
+    // place that set circuitBreakerOpen could never run. Failure accounting
+    // now lives on the main path.
+    const results = await Promise.allSettled(candidatesToValidate.map(({ url }) => validateSingleUrlContent(url, referer, 1500)));
+    const validUrls = results.filter(r => r.status === 'fulfilled' && r.value.isValid).map(r => r.value).sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
+    urlValidationStats.totalValidations++;
+    if (validUrls.length > 0) {
+        urlValidationStats.successfulValidations++;
+        urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
+        urlValidationStats.circuitBreakerOpen = false;
+        return validUrls[0].url;
     }
+    urlValidationStats.recentFailures.push(Date.now());
+    urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
+    if (urlValidationStats.recentFailures.length >= 8) {
+        urlValidationStats.circuitBreakerOpen = true;
+        setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
+    }
+    return scoredUrls[0].url;
 }
 
-async function processUrlGroupsWithValidation(groups, referer) {
+async function processUrlGroupsWithValidation(groups, referer, sender) {
     if (!groups || groups.length === 0) {
         setTimeout(checkAllQueuesEmpty, 500);
         return;
@@ -710,18 +754,14 @@ async function processUrlGroupsWithValidation(groups, referer) {
             if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
                 globalProcessedUrls.add(bestUrl);
                 foundUrls++;
+                // Audit N-09: ext/priorityExt/isFromArray/originalArraySize were
+                // carried on the task but never read anywhere — dropped.
+                // isPrivate matters for Firefox private-window downloads
+                // (see processDownloadQueue platform branch).
                 const task = {
                     url: bestUrl,
                     referer: referer,
-                    priorityExt: (bestUrl.match(/#([\da-z]{3,4})$/) || [])[1],
-                    ext: (function () {
-                        var base = bestUrl.split(/[?#]/)[0];
-                        if (/\.(?:m(?:4[abprv]|p[34])|og[agv]|webm|avi|mov|mkv)/i.test(base)) return 'mp4';
-                        if (/\.(?:mp3|wav|flac|aac|ogg|m4a|opus)/i.test(base)) return 'mp3';
-                        return 'jpg';
-                    })(),
-                    isFromArray: true,
-                    originalArraySize: group.urls.length
+                    isPrivate: sender?.tab?.incognito === true
                 };
                 filterQueue.push(task);
                 processFilterQueue();

@@ -8,7 +8,8 @@
     const failedFilesEl = document.getElementById('failedFiles');
     const canceledFilesEl = document.getElementById('canceledFiles');
     const statsFoundEl = document.getElementById('stats-found');
-    const statsFilteredEl = document.getElementById('stats-filtered');
+    const statsPrefilteredEl = document.getElementById('stats-prefiltered');
+    const statsSkippedEl = document.getElementById('stats-skipped');
     const refreshBtn = document.getElementById('refreshBtn');
     const clearBtn = document.getElementById('clearBtn');
     const clearAllBtn = document.getElementById('clearAllBtn');
@@ -174,10 +175,13 @@
         }
     }
 
-    // Update the global stats display (found, filtered)
+    // Update the global stats display (found, prefiltered, skipped).
+    // Audit BUG-08: the old single `filtered` counter conflated content DOM
+    // pre-filter rejects with SW size/type skips.
     function updateGlobalStats(stats) {
         if (stats.found !== undefined) statsFoundEl.textContent = stats.found;
-        if (stats.filtered !== undefined) statsFilteredEl.textContent = stats.filtered;
+        if (stats.prefiltered !== undefined && statsPrefilteredEl) statsPrefilteredEl.textContent = stats.prefiltered;
+        if (stats.skipped !== undefined && statsSkippedEl) statsSkippedEl.textContent = stats.skipped;
     }
 
     // Update the entire display
@@ -266,10 +270,17 @@
         }
     }
 
+    // Audit N-07: classify by PATHNAME, not the full URL — `photo.jpg?w=100`
+    // previously fell through to 'file' (broken thumbnails, wrong icon).
+    function getUrlPath(url) {
+        try { return new URL(url).pathname; } catch (e) { return String(url).split(/[?#]/)[0]; }
+    }
+
     function getFileType(url) {
-        if (/\.(jpg|jpeg|png|gif|bmp|webp|svg)$/i.test(url)) return 'image';
-        if (/\.(mp4|webm|ogg|avi|mov)$/i.test(url)) return 'video';
-        if (/\.(mp3|wav|ogg)$/i.test(url)) return 'audio';
+        const p = getUrlPath(url);
+        if (/\.(jpg|jpeg|png|gif|bmp|webp|svg)$/i.test(p)) return 'image';
+        if (/\.(mp4|m4v|webm|ogv|avi|mov|mkv)$/i.test(p)) return 'video';
+        if (/\.(mp3|wav|ogg|flac|aac|m4a|opus)$/i.test(p)) return 'audio';
         return 'file';
     }
 
@@ -326,10 +337,12 @@
             item.progress = 0;
             item.error = null;
             item.timestamp = Date.now();
+            // Audit N-11: referer now arrives as a top-level field on every
+            // progress update (the full task object is no longer shipped).
             chrome.runtime.sendMessage({
                 cmd: 'retryDownload',
                 url: item.url,
-                referer: item.referer || (item.task && item.task.referer)
+                referer: item.referer || ''
             });
             updateDisplay();
         }

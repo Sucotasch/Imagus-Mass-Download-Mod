@@ -54,6 +54,18 @@ User-facing strings for the mod are added to `_locales/[lang]/messages.json` wit
 
 ---
 
+## Security note: the `vdfDpshPtdhhd` window-message bridge (Audit U-05)
+
+`common/app.js` accepts window messages carrying the `vdfDpPshPtdhhd` marker and
+`content.js winOnMessage` acts on `toggle | preload | isFrame | from_frame | relay`.
+The marker is **not a secret** (extension code is inspectable) and page scripts
+share the same `window`, so a page CAN forge these — the practical exposure is
+limited to display behavior (forcing the popup to show/hide with a chosen URL).
+Mass-download commands travel via `chrome.runtime` messaging and are NOT
+reachable through this bridge. **Do not route new commands through
+`winOnMessage`;** if upstream ever hardens this bridge (per-frame nonce), port
+the fix.
+
 ## 4. Working with Referers
 
 MV3 significantly restricts header modification.

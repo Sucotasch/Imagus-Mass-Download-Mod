@@ -593,29 +593,43 @@ Add cases for the N-01 semantics once the fix lands (`minImageSize=0` stays 0). 
 
 ## 10. Summary table
 
+> **Status update 2026-08-17 (fix pass):** N-01…N-13, U-01…U-04, U-06 and the
+> BUG-08/BUG-10/BUG-11 items of N-14 are **FIXED** in both trees
+> (`src-mv3-overlay/` + `src-mv3-overlay-firefox/`, FF delta still exactly
+> manifest + `mdAck` + download `incognito`). U-05 documented in
+> `Docs/MV3_DEVELOPMENT.md`. N-15 fixed earlier. Remaining open: **BUG-13**
+> (hotkey default collision — documented, product call) and the §8 product
+> decisions. Verification: `node --check` all changed files, marker sync 5/5
+> in both trees, `tools/md-unit-smoke.mjs` green, FF tree `diff -rq` clean.
+>
+> **Found during the fix pass (fixed along the way):** Firefox group downloads
+> from `resolveAndDownloadGroups` never carried `isPrivate`, so they would fail
+> in a private window even with the incognito fix — `sender` is now threaded
+> through `handleResolveGroups → processUrlGroupsWithValidation → task.isPrivate`.
+
 | ID | Sev | Title | Status |
 |----|-----|-------|--------|
-| N-01 | P2 | `||` fallbacks make zero/empty `da` settings impossible | **Open — fix first** |
-| N-02 | P2 | Late `downloadMass`/`resolveAndDownloadGroups` revive canceled session | **Open** |
-| N-03 | P2 | Circuit-breaker `catch` dead code; flag never set | **Open** |
-| N-04 | P2 | `elementInfo` captures restored TRG; dead+wrong | **Open** |
-| N-05 | P3 | "Analysis complete" after cancel | **Open** |
-| N-06 | P3 | `allDownloadsComplete` fires after cancel / repeatedly | **Open** |
-| N-07 | P3 | Query-string breaks progress type detection; unanchored `_getMediaExt` | **Open** |
-| N-08 | P3 | `downloads.cancel` without callback | **Open** |
-| N-09 | P3 | Dead `ext`/`priorityExt` fields | **Open (product call)** |
-| N-10 | P3 | Dead popup listener + static innerHTML | **Open** |
-| N-11 | P3 | Full task (with internals) sent to progress tab | **Open** |
-| N-12 | P3 | Clear All skips `urlValidationStats` reset | **Open** |
-| N-13 | P3 | Bare `activeDownloads--` in download-start error path | **Open** |
-| N-14 | P3 | Carried: BUG-08 stats split, BUG-10 tests, BUG-11 banner, BUG-13 hotkey | **Open** |
-| N-15 | P3 | `Docs/README.md` references deleted 7.21 plan | **Open** |
-| U-01 | P2 | Upstream `resolve` crashes when sieve re-cached mid-session; response hangs | **Open** |
-| U-02 | P3 | Upstream `download()`: object URLs never revoked, `downloadItems` grows | **Open** |
-| U-03 | P3 | Upstream `onChanged`: cancel/erase without callbacks | **Open** |
-| U-04 | P3 | `getImages` full-page guard missing `!el.shadowRoot` (7.25 parity) | **Open** |
-| U-05 | P3 | `vdfDpshPtdhhd` bridge spoofable — display-only impact; document | **Open (docs)** |
-| U-06 | P3 | `openUrl` fallback lacks terminal `.catch` | **Open** |
+| N-01 | P2 | `\|\|` fallbacks make zero/empty `da` settings impossible | **Fixed** |
+| N-02 | P2 | Late `downloadMass`/`resolveAndDownloadGroups` revive canceled session | **Fixed** |
+| N-03 | P2 | Circuit-breaker `catch` dead code; flag never set | **Fixed** |
+| N-04 | P2 | `elementInfo` captures restored TRG; dead+wrong | **Fixed (dropped)** |
+| N-05 | P3 | "Analysis complete" after cancel | **Fixed** |
+| N-06 | P3 | `allDownloadsComplete` fires after cancel / repeatedly | **Fixed** (`userCanceled` + `completionNotified`) |
+| N-07 | P3 | Query-string breaks progress type detection; unanchored `_getMediaExt` | **Fixed** (`_getMediaExt` removed with N-09) |
+| N-08 | P3 | `downloads.cancel` without callback | **Fixed** |
+| N-09 | P3 | Dead `ext`/`priorityExt` fields | **Fixed (dropped both ends)** |
+| N-10 | P3 | Dead popup listener + static innerHTML | **Fixed** |
+| N-11 | P3 | Full task (with internals) sent to progress tab | **Fixed** (`serializeProgressEntry`) |
+| N-12 | P3 | Clear All skips `urlValidationStats` reset | **Fixed** |
+| N-13 | P3 | Bare `activeDownloads--` in download-start error path | **Fixed** (`releaseDownloadSlot`) |
+| N-14 | P3 | BUG-08 stats split / BUG-10 tests / BUG-11 banner / BUG-13 hotkey | BUG-08/10/11 **Fixed**; BUG-13 **Open (documented)** |
+| N-15 | P3 | `Docs/README.md` references deleted 7.21 plan | **Fixed** |
+| U-01 | P2 | Upstream `resolve` crashes when sieve re-cached mid-session | **Fixed** (guard + warn) |
+| U-02 | P3 | Upstream `download()`: object URLs never revoked, `downloadItems` grows | **Fixed** (terminal-state cleanup) |
+| U-03 | P3 | Upstream `onChanged`: cancel/erase without callbacks | **Fixed** |
+| U-04 | P3 | `getImages` full-page guard missing `!el.shadowRoot` (7.25 parity) | **Fixed** |
+| U-05 | P3 | `vdfDpshPtdhhd` bridge spoofable — display-only impact; document | **Documented** (`Docs/MV3_DEVELOPMENT.md`) |
+| U-06 | P3 | `openUrl` fallback lacks terminal `.catch` | **Fixed** |
 | U-07 | info | Sieve update mechanics verified; naming wart `sieveUpdateLast/Next` | Noted |
 | — | — | 2026-08-09 audit BUG-01…09/12/14 + older P1s | **Fixed (verified §3)** |
 | — | — | 7.25 upstream port completeness (all anchors verified) | **Confirmed (§2b preamble)** |

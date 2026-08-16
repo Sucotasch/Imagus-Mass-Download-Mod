@@ -414,6 +414,16 @@ function handleMessage(message, sender, sendResponse) {
             };
             const rule = cachedPrefs.sieve[data.params.rule.id];
 
+            // Audit U-01: rule.id indexes the sieve cached at scan start; a
+            // re-cache (weekly update / options save) can shift or drop the
+            // index. Without this guard `rule.res` throws, the response is
+            // never sent, and the content side waits out its timeout.
+            if (!rule) {
+                console.warn(chrome.runtime.getManifest().name + ": stale resolve request (rule " + data.params.rule.id + " gone — sieve re-cached?)");
+                if (context) context.postMessage(data);
+                return;
+            }
+
             if (data.params.rule.req_res) {
                 data.params.rule.req_res = cachedSieveRes[data.params.rule.id];
             }
@@ -513,7 +523,7 @@ function handleMessage(message, sender, sendResponse) {
             handleDownloadMass(msg, sender);
             break;
         case 'resolveAndDownloadGroups':
-            handleResolveGroups(msg);
+            handleResolveGroups(msg, sender);
             break;
         case 'updateStatus':
             handleUpdateStatus(msg);
@@ -562,8 +572,11 @@ async function download(msg, tab, sendResponse) {
             ? `${msg.filename}.${ext}`
             : msg.urlName;
 
+    // Audit U-02: keep the object URL so it can be revoked once the download
+    // reaches a terminal state (see onChanged below).
+    const objectUrl = msg.blob ? URL.createObjectURL(msg.blob) : null;
     const params = {
-        url: msg.blob ? URL.createObjectURL(msg.blob) : msg.url,
+        url: objectUrl || msg.url,
         filename: filename ? sanitizeFilename(filename) : undefined,
         conflictAction: "uniquify"
     };
@@ -578,6 +591,7 @@ async function download(msg, tab, sendResponse) {
     if (!msg.alterDownload) {
         msg.tabId = tab.id;
         msg.sendResponse = sendResponse;
+        msg._objectUrl = objectUrl;
         downloadItems[id] = msg;
     }
 }
@@ -597,18 +611,30 @@ chrome.downloads.onDeterminingFilename?.addListener(function (item, suggest) {
 }); */
 
 chrome.downloads.onChanged.addListener(function (delta) {
-    if (!downloadItems[delta.id]) return;
+    const msg = downloadItems[delta.id];
+    if (!msg) return;
+
+    // Audit U-02/U-03: clean up entries and object URLs on terminal states;
+    // cancel/erase get callbacks so chrome.runtime.lastError stays checked.
+    const cleanup = () => {
+        if (msg._objectUrl) URL.revokeObjectURL(msg._objectUrl);
+        delete downloadItems[delta.id];
+    };
+
+    if (delta.state?.current === "complete") {
+        cleanup();
+        return;
+    }
 
     if (delta.error || /\.html?$/.exec(delta.filename?.current)) {
         // calceling download of HTML files, most probably an error page
-        chrome.downloads.cancel(delta.id);
-        chrome.downloads.erase({ id: delta.id });
-        const msg = downloadItems[delta.id];
+        chrome.downloads.cancel(delta.id, () => {});
+        chrome.downloads.erase({ id: delta.id }, () => {});
 
         // request alternative download method
         msg.alterDownload = true;
-        msg.sendResponse(msg);
-        delete downloadItems[delta.id];
+        if (typeof msg.sendResponse === "function") msg.sendResponse(msg);
+        cleanup();
         // chrome.tabs.sendMessage(msg.tabId, msg);
     }
 });
@@ -749,7 +775,7 @@ function openUrl(msg, sender) {
                 chrome.windows.create({
                     type: "popup",
                     url: url,
-                })
+                }).catch(() => {});
             });
 
         } else {
@@ -761,7 +787,7 @@ function openUrl(msg, sender) {
             chrome.tabs.create(tabOptions)
             .catch(error => {
                 delete tabOptions.openerTabId;
-                chrome.tabs.create(tabOptions);
+                chrome.tabs.create(tabOptions).catch(() => {});
             });
         }
     }

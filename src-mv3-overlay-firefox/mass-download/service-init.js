@@ -11,10 +11,18 @@ var activeDownloads = 0;
 // contentScanDone = content finished DOM/sieve scan (NOT the same as cancel).
 var scanInProgress = false;
 var contentScanDone = false;
+// Audit N-06: userCanceled distinguishes an explicit stop from a natural
+// completion; completionNotified makes the "allDownloadsComplete" message
+// fire at most once per session. Both reset in resetMassDownloadSession().
+var userCanceled = false;
+var completionNotified = false;
 
 // --- Mass Download Progress and Stats ---
 var downloadProgress = {};
-var downloadStats = { found: 0, filtered: 0, downloaded: 0 };
+// Audit BUG-08: `prefiltered` = DOM pre-filter rejects (content side),
+// `skipped` = size/type rejects (SW side). They were previously conflated
+// in one `filtered` counter.
+var downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
 var downloadProgressTabId = null;
 var downloadInitiatorTabId = null;
 
