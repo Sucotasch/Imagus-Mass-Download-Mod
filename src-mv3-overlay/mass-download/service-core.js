@@ -634,8 +634,9 @@ function deriveFilename(task) {
 
 // Sieve-resolved cross-origin URLs often fail with chrome.downloads.download
 // because the API does not send a Referer header in MV3.  Work around this
-// by fetching the content in the SW (where we control headers), creating a
-// blob URL, and passing that to chrome.downloads.download.
+// by fetching the content in the SW (where we control headers), converting to
+// a data: URL, and passing that to chrome.downloads.download.
+// NOTE: MV3 service workers lack URL.createObjectURL, so we use data: URLs.
 async function downloadWithReferer(task) {
     const referer = task.referer || '';
     const filename = deriveFilename(task);
@@ -657,17 +658,25 @@ async function downloadWithReferer(task) {
             return;
         }
 
-        const blob = await response.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        task._blobUrl = blobUrl;
+        // Read as ArrayBuffer, then convert to base64 data: URL.
+        // MV3 SW has no URL.createObjectURL, no FileReader — manual base64.
+        const buffer = await response.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        const contentType = response.headers.get('content-type') || 'application/octet-stream';
+        let base64 = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+            base64 += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        base64 = self.btoa(base64);
+        const dataUrl = 'data:' + contentType + ';base64,' + base64;
 
         chrome.downloads.download({
-            url: blobUrl,
+            url: dataUrl,
             filename: filename,
             conflictAction: 'uniquify'
         }, function (downloadId) {
             if (chrome.runtime.lastError) {
-                URL.revokeObjectURL(blobUrl);
                 updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
                 releaseDownloadSlot(task);
             } else {
@@ -754,11 +763,6 @@ chrome.downloads.onChanged.addListener(function (delta) {
 
         if (delta.state) {
             if (delta.state.current === 'complete') {
-                // Revoke blob URL created by downloadWithReferer (sieve-resolved path)
-                if (existingTask._blobUrl) {
-                    URL.revokeObjectURL(existingTask._blobUrl);
-                    existingTask._blobUrl = null;
-                }
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 if (downloadProgressTabId) {
@@ -768,10 +772,6 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 }
                 releaseDownloadSlot(existingTask);
             } else if (delta.state.current === 'interrupted') {
-                if (existingTask._blobUrl) {
-                    URL.revokeObjectURL(existingTask._blobUrl);
-                    existingTask._blobUrl = null;
-                }
                 const alreadyCanceled = existingTask && downloadProgress[url]
                     && downloadProgress[url].status === 'canceled';
                 if (!alreadyCanceled) {

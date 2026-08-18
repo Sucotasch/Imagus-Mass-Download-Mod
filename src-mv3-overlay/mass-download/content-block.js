@@ -86,8 +86,16 @@
             if (/background(-image)?\s*:\s*url\(/i.test(style)) {
                 seen.add(a); results.push(a); return;
             }
+            // Check computed background-image for CSS-class-based thumbnails
+            // (e.g. e-hentai gdtl uses class-set backgrounds, not inline style)
+            try {
+                var bgImg = getComputedStyle(a).backgroundImage;
+                if (bgImg && bgImg !== 'none' && bgImg.indexOf('url(') !== -1) {
+                    seen.add(a); results.push(a); return;
+                }
+            } catch (_e) { /* ignore */ }
             var cls = (a.className || '').toString();
-            if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image)\b/i.test(cls)) {
+            if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image|gdtl|gdtm)\b/i.test(cls)) {
                 seen.add(a); results.push(a);
             }
         });
@@ -100,6 +108,26 @@
         });
 
         return results;
+    };
+
+    // Flatten nested sieve results into a flat list of URL strings.
+    // Sieves like e-hentai return [[[url1, url2], title]] which must be
+    // unwound before onResolved can route them to ambiguousUrlGroups.
+    var _flattenSieveUrls = function (result, depth) {
+        if (depth === undefined) depth = 0;
+        if (depth > 6) return [];
+        if (typeof result === 'string') return [result];
+        if (!Array.isArray(result)) return [];
+        var out = [];
+        for (var i = 0; i < result.length; i++) {
+            var item = result[i];
+            if (typeof item === 'string') {
+                out.push(item);
+            } else if (Array.isArray(item)) {
+                out = out.concat(_flattenSieveUrls(item, depth + 1));
+            }
+        }
+        return out;
     };
     // <<< MASS-DOWNLOAD-HELPERS
 
@@ -384,22 +412,24 @@
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
                     }
-                    if (Array.isArray(result) && result.length > 1) {
-                        // Audit N-04: elementInfo dropped — it read PVI.TRG
-                        // AFTER cleanup() had restored the pre-scan value, so
-                        // it always described the wrong element, and the SW
-                        // never consumed it anyway.
+                    // Flatten nested sieve results (e.g. e-hentai returns
+                    // [[[download_url, image_url], title]] which becomes
+                    // [[download_url, image_url]] after upstream processing).
+                    var flatUrls = _flattenSieveUrls(result);
+                    if (flatUrls.length > 1) {
                         PVI.ambiguousUrlGroups.push({
-                            urls: result,
+                            urls: flatUrls,
                             referer: window.location.href
                         });
                         setTimeout(PVI.processNextInQueue, 100);
                         return;
                     }
 
-                    let url = Array.isArray(result)
-                        ? (result.find(u => typeof u === 'string' && u[0] === '#') || result[0])
-                        : result;
+                    let url = flatUrls.length === 1
+                        ? flatUrls[0]
+                        : (Array.isArray(result)
+                            ? (result.find(u => typeof u === 'string' && u[0] === '#') || result[0])
+                            : result);
                     if (typeof url !== 'string' || !url) {
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
