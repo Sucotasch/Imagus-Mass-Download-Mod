@@ -251,7 +251,9 @@
             PVI._updateDownloadAllStatus(`Found ${PVI.downloadAllTotal} potential items. Starting filtering...`);
             PVI._startKeepAwake();
 
-            Port.send({ cmd: 'openDownloadProgress', tab: sender ? sender.tab : null });
+            // Audit N-23: the `tab` payload was never read by the SW (it
+            // derives the initiator from the runtime sender) — dropped.
+            Port.send({ cmd: 'openDownloadProgress' });
 
             PVI.filterQueueAsynchronously(allElements);
         },

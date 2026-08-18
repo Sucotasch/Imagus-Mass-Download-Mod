@@ -190,6 +190,15 @@ function resetMassDownloadSession() {
     filterQueue = [];
     downloadQueue = [];
     contentScanDone = false;
+    // Audit N-19: orphaned validation requests from a previous session must
+    // not survive into the new one — they can keep writing progress rows for
+    // the new session, and a stuck activeFilters counter would stall the new
+    // scan entirely (while-loop guard below). handleStopScanning aborts these
+    // on cancel; this covers the "new scan without explicit stop" path.
+    activeControllers.forEach(ctrl => ctrl.abort());
+    activeControllers.clear();
+    activeFilters = 0;
+    activeDownloads = 0;
 }
 
 function handleOpenDownloadProgress(msg, sender) {
@@ -292,7 +301,10 @@ function handleStopScanning() {
 }
 
 function handleGetDownloadStatus(msg, sendResponse) {
-    const maxRecords = (cachedPrefs.da && cachedPrefs.da.maxProgressRecords) || 100;
+    // Audit N-24: explicit null-check (same pattern as N-01); 0 is not
+    // reachable through the UI (min 10) but the `||` form silently replaced
+    // any falsy value with 100.
+    const maxRecords = cachedPrefs.da?.maxProgressRecords != null ? cachedPrefs.da.maxProgressRecords : 100;
     sendResponse({ items: serializeAllProgress(), stats: downloadStats, maxRecords: maxRecords });
 }
 
@@ -337,6 +349,11 @@ function handleClearAll() {
 function handleRetryDownload(msg, sender) {
     if (msg.url) {
         if (!scanInProgress) scanInProgress = true;
+        // Audit N-21: a retry is explicit user activity — clear the cancel
+        // flags so a natural "all downloads completed" can still be announced
+        // when the retried work finishes.
+        userCanceled = false;
+        completionNotified = false;
         filterQueue.push({
             url: msg.url,
             referer: msg.referer,
@@ -406,7 +423,8 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
     }
     downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
 
-    const maxRecords = (cachedPrefs.da && cachedPrefs.da.maxProgressRecords) || 100;
+    // Audit N-24: same explicit null-check as handleGetDownloadStatus.
+    const maxRecords = cachedPrefs.da?.maxProgressRecords != null ? cachedPrefs.da.maxProgressRecords : 100;
     const keys = Object.keys(downloadProgress);
     if (keys.length > maxRecords) {
         const sorted = keys.sort((a, b) => {
@@ -483,8 +501,9 @@ async function processFilterQueue() {
 
                 if (passed) {
                     if (!scanInProgress) {
+                        // Audit N-22: a user cancel is not a size/type skip —
+                        // the task is already marked 'canceled'.
                         updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                        downloadStats.skipped++;
                         continue;
                     }
                     downloadQueue.push(task);
@@ -546,8 +565,9 @@ async function processFilterQueue() {
 
                             if (passed) {
                                 if (!scanInProgress) {
+                                    // Audit N-22: see HEAD path — canceled is
+                                    // not a skip.
                                     updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                                    downloadStats.skipped++;
                                 } else {
                                     downloadQueue.push(task);
                                     processDownloadQueue();
@@ -617,7 +637,9 @@ function processDownloadQueue() {
                 updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
                 const WATCHDOG_MS = 5 * 60 * 1000;
                 const watchdog = setTimeout(() => {
-                    try { chrome.downloads.cancel(downloadId); } catch (_) {}
+                    // Audit N-16: callback consumes chrome.runtime.lastError when
+                    // the download already reached a terminal state.
+                    chrome.downloads.cancel(downloadId, () => {});
                     updateDownloadProgress(task.url, 'failed', 0, 'Download timed out', downloadId, task);
                     releaseDownloadSlot(task);
                 }, WATCHDOG_MS);

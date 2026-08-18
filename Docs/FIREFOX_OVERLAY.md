@@ -49,7 +49,9 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 | `background/service.js` | `mdAck()` — синхронный `sendResponse({})` во всех fire-and-forget MD-кейсах. В Gecko неотвеченный `sendMessage` **реджектится** ("message port closed"); синхронный ack чинит это без blanket `return true` (I4) |
 | `mass-download/service-core.js` | `processDownloadQueue`: для Firefox передаёт `incognito: task.isPrivate === true` в `chrome.downloads.download` — иначе массовая загрузка в приватном окне падает (зеркалит platform-ветку upstream `download()`) |
 
-Всё остальное (content.js + маркеры, mass-download, options, локали, sieve) — **байт-в-байт как в Chrome-дереве**.
+Всё остальное (content.js + маркеры, mass-download, options, локали, sieve) — **семантически байт-в-байт как в Chrome-дереве** (Audit N-20).
+
+> **N-20 (2026-08-18):** `diff -rq` между деревьями показывает **16 файлов**, хотя осмысленная дельта — ровно 3 файла выше. Остальные 13 (`_locales/*/messages.json` × 11, `lib/videojs_mod.js`, `lib/videojs_mod.css`) отличаются **только переносами строк** (CRLF в FF-дереве vs LF в Chrome) — содержимое после нормализации идентично. Поэтому проверка §5 шаг 5 должна игнорировать CRLF: `git diff --no-index --ignore-cr-at-eol` или `diff -rq` после `dos2unix`. Не «чинить» это заменой переносов во всём FF-дереве — шумный дифф без функционального эффекта.
 
 ## 3. Установка и тест
 
@@ -79,7 +81,7 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 2. `cp -r src-mv3-overlay/* src-mv3-overlay-firefox/` (кроме `manifest.json` FF-дерева — сохранить).
 3. Восстановить FF-манифест: обновить `version`, сверить разрешения с новым upstream `manifest_firefox.json`.
 4. Заново применить 2 кодовые дельты (`mdAck` в service.js, `incognito` в processDownloadQueue) — grep `Firefox note` / `platform === "firefox"` в `mass-download/`.
-5. `diff -rq src-mv3-overlay src-mv3-overlay-firefox` — должно быть ровно 3 файла + отсутствие `manifest_firefox.json`.
+5. Сверка дельты: `git diff --no-index --ignore-cr-at-eol src-mv3-overlay src-mv3-overlay-firefox` (или `diff -rq` после нормализации CRLF) — должно быть ровно 3 файла + отсутствие `manifest_firefox.json`. Плоский `diff -rq` показывает 13 лишних файлов из-за CRLF-шума (N-20) — не считать это расхождением.
 6. Smoke §3.
 
 ## 6. Известные ограничения / заметки

@@ -399,7 +399,8 @@ function handleMessage(message, sender, sendResponse) {
         case "get_file":
             fetch(`${chrome.runtime.getURL(message.file)}`)
                 .then(r => r.text())
-                .then(text => sendResponse(text));
+                .then(text => sendResponse(text))
+                .catch(() => {});   // Audit N-23: no unhandled rejection on 404/network error
             return true;
 
         case "open":
@@ -506,6 +507,12 @@ function handleMessage(message, sender, sendResponse) {
                         console.info(chrome.runtime.getManifest().name + ": no match for " + data.params.rule.id);
                     }
                     context.postMessage(data);
+                })
+                .catch((error) => {
+                    // Audit N-17: a network failure must not leave the sender
+                    // hanging for its resolutionTimeout — fail fast as "no match".
+                    console.warn(manifest.name + ": resolve fetch failed: " + (error && error.message));
+                    context?.postMessage({ cmd: "resolved", id: msg.id, m: null, params: msg.params });
                 });
             return true;
         }
@@ -585,7 +592,15 @@ async function download(msg, tab, sendResponse) {
         params.incognito = tab.incognito;
     }
 
-    let id = await chrome.downloads.download(params);
+    let id;
+    try {
+        id = await chrome.downloads.download(params);
+    } catch (error) {
+        // Audit N-18: a rejected download must not leave the sender waiting
+        // for a response that never comes.
+        if (typeof sendResponse === "function") sendResponse({ error: (error && error.message) || "Download failed" });
+        return;
+    }
 
     // save info in case we need to use alternative downloading method
     if (!msg.alterDownload) {
