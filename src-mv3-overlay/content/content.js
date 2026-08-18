@@ -116,18 +116,22 @@
     // `ext`/`priorityExt` task fields that the service worker never read.
 
     // downloadAllMode "media": collect only elements that are objectively
-    // media or lead to media files (img, video, links with media children
-    // or media-file extensions).  Mode "broad" keeps the original wide
+    // media or lead to media files.  Mode "broad" keeps the original wide
     // selector (a[href], img, video, [onclick], button, [role="button"]).
+    //
+    // IMPORTANT: <a> elements are collected FIRST.  Standalone <img>/<video>
+    // are collected only if they are NOT inside an already-collected <a>.
+    // This prevents double-processing: many sieves (e-hentai, etc.) match
+    // the <a> link and paginate through the target page.  If we also
+    // collected the <img> inside that <a>, PVI.find would walk up to the
+    // same <a>, trigger the sieve a second time, and race with the first
+    // invocation (consuming this.res / this.loop state).
     var _collectMediaElements = function (doc) {
         var seen = new Set();
         var results = [];
         var MEDIA_RE = /\.(jpe?g|png|webp|gif|bmp|tiff|avif|mp4|webm|ogv|avi|mov|mkv|mp3|wav|ogg|flac|m4a|opus)(\?|#|$)/i;
 
-        doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {
-            if (!seen.has(el)) { seen.add(el); results.push(el); }
-        });
-
+        // 1. Links — primary targets for Imagus sieves
         doc.querySelectorAll('a[href]').forEach(function (a) {
             if (seen.has(a)) return;
             if (a.querySelector('img, video, picture, canvas')) {
@@ -145,6 +149,13 @@
             if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image)\b/i.test(cls)) {
                 seen.add(a); results.push(a);
             }
+        });
+
+        // 2. Standalone media tags — only if NOT inside a collected <a>
+        doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {
+            if (seen.has(el)) return;
+            if (el.closest('a[href]')) return;  // parent <a> already queued
+            seen.add(el); results.push(el);
         });
 
         return results;
