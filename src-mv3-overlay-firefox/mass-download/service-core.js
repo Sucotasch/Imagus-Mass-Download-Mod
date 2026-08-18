@@ -484,21 +484,17 @@ async function processFilterQueue() {
 
             // HEAD failed (403, 404, etc.) — size unknown but don't skip.
             // The download may still work via Referer fallback in processDownloadQueue.
-            // Only skip if we got an HTML page (definitely not a media file).
+            // Do NOT check Content-Type here: error pages (403) often return
+            // text/html but the actual media download can still succeed.
             if (!response.ok) {
-                if (contentType.startsWith('text/html')) {
-                    updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
-                } else if (isExcludedType(task.url, contentType, excludedExtensions)) {
+                if (!scanInProgress) {
+                    updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                } else if (isExcludedType(task.url, '', excludedExtensions)) {
                     updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
                     downloadStats.skipped++;
                 } else {
-                    // Size unknown — proceed to download (Referer fallback may help)
-                    if (!scanInProgress) {
-                        updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                    } else {
-                        downloadQueue.push(task);
-                        processDownloadQueue();
-                    }
+                    downloadQueue.push(task);
+                    processDownloadQueue();
                 }
                 activeFilters--;
                 setTimeout(checkAllQueuesEmpty, 100);
