@@ -533,24 +533,7 @@ async function processFilterQueue() {
                     activeControllers.delete(task._id);
                 }
                 if (!scanInProgress) continue;
-                if (!response.ok) {
-                    // Both HEAD and GET failed with 403. Push to
-                    // downloadQueue — processDownloadQueue will try
-                    // chrome.downloads which also fails, then falls back
-                    // to downloadWithReferer in the content script.
-                    if (task.referer && downloadInitiatorTabId && /403|forbidden/i.test(String(response.status))) {
-                        if (!scanInProgress) {
-                            updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                        } else {
-                            downloadQueue.push(task);
-                            processDownloadQueue();
-                        }
-                        activeFilters--;
-                        setTimeout(checkAllQueuesEmpty, 100);
-                        continue;
-                    }
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
                 const contentType = response.headers.get('Content-Type') || '';
                 if (contentType.startsWith('text/html')) {
@@ -640,25 +623,13 @@ function processDownloadQueue() {
         chrome.downloads.download({
             url: task.url,
             filename: filename,
-            conflictAction: "uniquify"
+            conflictAction: "uniquify",
+            // Firefox ignores downloads from a private window unless this is set
+            // (mirrors the upstream download() platform branch); Chrome does not accept it.
+            ...(platform === "firefox" ? { incognito: task.isPrivate === true } : {})
         }, function (downloadId) {
             if (chrome.runtime.lastError) {
-                const errMsg = chrome.runtime.lastError.message || '';
-                // Hotlink-protection 403: fall back to content-script download
-                // which can send a Referer header via fetch().
-                if (task.referer && downloadInitiatorTabId && /403|forbidden|invalid/i.test(errMsg)) {
-                    chrome.tabs.sendMessage(downloadInitiatorTabId, {
-                        cmd: 'downloadWithReferer',
-                        url: task.url,
-                        referer: task.referer,
-                        filename: filename
-                    }).catch(() => {
-                        updateDownloadProgress(task.url, 'failed', 0, errMsg, null, task);
-                        releaseDownloadSlot(task);
-                    });
-                    return;
-                }
-                updateDownloadProgress(task.url, 'failed', 0, errMsg, null, task);
+                updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
                 releaseDownloadSlot(task);
             } else {
                 task._downloadId = downloadId;

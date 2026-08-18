@@ -71,7 +71,7 @@ function withBaseURI(base, relative, secure) {
     }
 }
 
-async function updateSieve(local, retryCount = 0, force = false) {
+async function updateSieve(local, retryCount = 0) {
     const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
@@ -80,25 +80,10 @@ async function updateSieve(local, retryCount = 0, force = false) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-        const fetchOpts = { signal: controller.signal };
-        // If-Modified-Since: skip re-download when sieve hasn't changed.
-        // Only for auto-updates (alarm/startup), not manual user requests
-        // (user may have deleted rules and wants a fresh copy).
-        if (!local && !force) {
-            const { sieveUpdateLast } = await cfg.get('sieveUpdateLast') || {};
-            if (sieveUpdateLast) {
-                fetchOpts.headers = { 'If-Modified-Since': new Date(sieveUpdateLast).toUTCString() };
-            }
-        }
-
-        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, fetchOpts);
+        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, {
+            signal: controller.signal
+        });
         clearTimeout(timeoutId);
-
-        // 304 Not Modified: sieve unchanged, return current.
-        if (response.status === 304) {
-            console.info(manifest.name + ": Sieve unchanged (304 Not Modified).");
-            return { updated_sieve: curSieve };
-        }
 
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
@@ -346,6 +331,13 @@ function handleMessage(message, sender, sendResponse) {
     }
     if (!msg.cmd) return;
 
+    // Firefox note: fire-and-forget mass-download cases below call mdAck()
+    // synchronously — in Gecko an unanswered sendMessage promise REJECTS
+    // ("message port closed"), which the abandoned feature/mv3-firefox-port
+    // branch worked around with ad-hoc "Silent Handover" handlers. A sync ack
+    // keeps the channel clean without blanket `return true` (invariant I4).
+    const mdAck = typeof sendResponse === "function" ? () => sendResponse({}) : () => {};
+
     switch (msg.cmd) {
         case "hello": {
             initTab(sender, sendResponse);
@@ -388,7 +380,7 @@ function handleMessage(message, sender, sendResponse) {
             updatePrefs(msg.prefs, function () { context.postMessage({}); });
             return true;
         case "update_sieve":
-            updateSieve(msg.local, 0, true).then(context.postMessage);
+            updateSieve(msg.local).then(context.postMessage);
             return true;
         case "loadScripts":
             registerContentScripts();
@@ -537,48 +529,46 @@ function handleMessage(message, sender, sendResponse) {
             return handleDownloadAll(msg, sender, sendResponse);
         case 'openDownloadProgress':
             handleOpenDownloadProgress(msg, sender);
+            mdAck();
             break;
         case 'registerProgressTab':
             handleRegisterProgressTab(msg, sender);
+            mdAck();
             break;
         case 'downloadMass':
             handleDownloadMass(msg, sender);
+            mdAck();
             break;
         case 'resolveAndDownloadGroups':
             handleResolveGroups(msg, sender);
+            mdAck();
             break;
         case 'updateStatus':
             handleUpdateStatus(msg);
+            mdAck();
             break;
         case 'updateFilterStats':
             handleUpdateFilterStats(msg);
+            mdAck();
             break;
         case 'stopScanning':
             handleStopScanning();
+            mdAck();
             break;
         case 'getDownloadStatus':
             handleGetDownloadStatus(msg, sendResponse);
             break;
         case 'clearCompletedDownloads':
             handleClearCompleted();
+            mdAck();
             break;
         case 'clearAllDownloads':
             handleClearAll();
+            mdAck();
             break;
         case 'retryDownload':
             handleRetryDownload(msg, sender);
-            break;
-        case 'downloadStarted':
-            // Content script reported a successful download via downloadWithReferer.
-            // The download is now tracked by chrome.downloads.onChanged.
-            break;
-        case 'downloadFailed':
-            // Content script reported a failed downloadWithReferer attempt.
-            // Do NOT call releaseDownloadSlot — the download was initiated
-            // from the filter phase, not processDownloadQueue.
-            if (msg.url) {
-                updateDownloadProgress(msg.url, 'failed', 0, msg.error || 'Content script download failed', null, null);
-            }
+            mdAck();
             break;
     }
 }

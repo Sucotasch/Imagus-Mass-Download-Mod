@@ -3737,37 +3737,6 @@
                 if (PVI.handleGroupAnalysisComplete) {
                     PVI.handleGroupAnalysisComplete(d.processedCount || 0);
                 }
-            } else if (d.cmd === 'downloadWithReferer') {
-                // Download via content script: fetch with Referer, create blob
-                // URL, pass to chrome.downloads.download.  Used for sites with
-                // hotlink protection (rule34.xxx CDN, etc.) that reject requests
-                // without a valid Referer header.
-                // Referer is set automatically by the browser from page
-                // context — do NOT set it explicitly (forbidden header in
-                // Fetch API, causes 'Failed to fetch').
-                fetch(d.url)
-                    .then(function (response) {
-                        if (!response.ok) throw new Error('HTTP ' + response.status);
-                        return response.blob();
-                    })
-                    .then(function (blob) {
-                        var blobUrl = URL.createObjectURL(blob);
-                        chrome.downloads.download({
-                            url: blobUrl,
-                            filename: d.filename || undefined,
-                            conflictAction: 'uniquify'
-                        }, function (downloadId) {
-                            setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 60000);
-                            if (chrome.runtime.lastError) {
-                                Port.send({ cmd: 'downloadFailed', url: d.url, error: chrome.runtime.lastError.message });
-                            } else {
-                                Port.send({ cmd: 'downloadStarted', url: d.url, downloadId: downloadId });
-                            }
-                        });
-                    })
-                    .catch(function (err) {
-                        Port.send({ cmd: 'downloadFailed', url: d.url, error: err.message });
-                    });
             }
             // <<< MASS-DOWNLOAD-MESSAGES
         },
@@ -4023,23 +3992,7 @@
             }
             PVI.downloadAllActive = true;
 
-            // Collect all candidate elements, then deduplicate: skip <img>
-            // (and similar media tags) that live inside an already-collected
-            // <a>.  If the parent <a> matches a sieve, the <img> is a
-            // thumbnail whose full-size version will be resolved via the <a>.
-            const rawEls = doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]');
-            const allElements = [];
-            const aSet = new Set();
-            rawEls.forEach(function (el) {
-                if (el.localName === 'a') { aSet.add(el); }
-            });
-            rawEls.forEach(function (el) {
-                if (el.localName !== 'a') {
-                    var parentA = el.closest('a[href]');
-                    if (parentA && aSet.has(parentA)) return; // thumbnail — skip
-                }
-                allElements.push(el);
-            });
+            const allElements = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
 
             PVI.downloadAllTotal = allElements.length;
             PVI.downloadAllFound = 0;
