@@ -359,7 +359,7 @@ function handleRetryDownload(msg, sender) {
             url: msg.url,
             referer: msg.referer,
             isPrivate: sender.tab?.incognito,
-            isSieveResolved: true   // retry URL is already resolved
+            isSieveResolved: true
         });
         processFilterQueue();
     }
@@ -449,11 +449,9 @@ async function processFilterQueue() {
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
-        // Sieve-resolved URLs: skip HEAD validation entirely.  The Imagus
-        // sieve (PVI.find + PVI.load) already resolved this URL through
-        // its own content negotiation — it is a known-good target.  This
-        // avoids 403 errors from hotlink protection (rule34.xxx, etc.) and
-        // significantly accelerates scanning on sieve-heavy sites.
+        // Sieve-resolved URLs: skip HEAD validation.  The Imagus sieve
+        // (PVI.find + PVI.load) already resolved this URL through its own
+        // content negotiation — it is a known-good target.
         if (task.isSieveResolved) {
             if (!scanInProgress) {
                 updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
@@ -617,92 +615,6 @@ async function processFilterQueue() {
     }
 }
 
-function deriveFilename(task) {
-    const rawFilename = task.filename || (() => {
-        try {
-            const pathname = new URL(task.url).pathname;
-            const name = pathname.split('/').pop();
-            return name || undefined;
-        } catch (_) {
-            return undefined;
-        }
-    })();
-    return typeof rawFilename === 'string'
-        ? rawFilename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_')
-        : rawFilename;
-}
-
-// Sieve-resolved cross-origin URLs often fail with chrome.downloads.download
-// because the API does not send a Referer header in MV3.  Work around this
-// by fetching the content in the SW (where we control headers), converting to
-// a data: URL, and passing that to chrome.downloads.download.
-// NOTE: MV3 service workers lack URL.createObjectURL, so we use data: URLs.
-async function downloadWithReferer(task) {
-    const referer = task.referer || '';
-    const filename = deriveFilename(task);
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
-        activeControllers.set(task._id || task.url, controller);
-
-        const response = await fetch(task.url, {
-            headers: { 'Referer': referer },
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        activeControllers.delete(task._id || task.url);
-
-        if (!response.ok) {
-            updateDownloadProgress(task.url, 'failed', 0, 'HTTP ' + response.status, null, task);
-            releaseDownloadSlot(task);
-            return;
-        }
-
-        // Read as ArrayBuffer, then convert to base64 data: URL.
-        // MV3 SW has no URL.createObjectURL, no FileReader — manual base64.
-        const buffer = await response.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        const contentType = response.headers.get('content-type') || 'application/octet-stream';
-        let base64 = '';
-        const chunkSize = 8192;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-            base64 += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-        }
-        base64 = self.btoa(base64);
-        const dataUrl = 'data:' + contentType + ';base64,' + base64;
-
-        chrome.downloads.download({
-            url: dataUrl,
-            filename: filename,
-            conflictAction: 'uniquify'
-        }, function (downloadId) {
-            if (chrome.runtime.lastError) {
-                updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
-                releaseDownloadSlot(task);
-            } else {
-                task._downloadId = downloadId;
-                downloadIdToTask.set(downloadId, task);
-                updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
-                const WATCHDOG_MS = 5 * 60 * 1000;
-                const watchdog = setTimeout(() => {
-                    chrome.downloads.cancel(downloadId, () => {});
-                    updateDownloadProgress(task.url, 'failed', 0, 'Download timed out', downloadId, task);
-                    releaseDownloadSlot(task);
-                }, WATCHDOG_MS);
-                task._watchdog = watchdog;
-            }
-        });
-    } catch (error) {
-        activeControllers.delete(task._id || task.url);
-        if (!scanInProgress) {
-            updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-        } else {
-            updateDownloadProgress(task.url, 'failed', 0, error.message || 'Download failed', null, task);
-        }
-        releaseDownloadSlot(task);
-    }
-}
-
 function processDownloadQueue() {
     let maxConcurrentDownloads = Number(cachedPrefs.da?.maxConcurrentDownloads) || 3;
     if (!Number.isFinite(maxConcurrentDownloads) || maxConcurrentDownloads < 1) maxConcurrentDownloads = 3;
@@ -712,18 +624,18 @@ function processDownloadQueue() {
         activeDownloads++;
         updateDownloadProgress(task.url, 'downloading', 0, null, null, task);
 
-        // Sieve-resolved cross-origin URLs: fetch with Referer first to
-        // avoid hotlink-protection 403 errors (e.g. rule34.xxx CDN).
-        // chrome.downloads.download in MV3 cannot send custom headers.
-        if (task.isSieveResolved && task.referer) {
-            task._id = task._id || (typeof crypto !== 'undefined' && crypto.randomUUID
-                ? crypto.randomUUID()
-                : String(Date.now()) + ':' + Math.random());
-            downloadWithReferer(task);
-            continue;
-        }
-
-        const filename = deriveFilename(task);
+        const rawFilename = task.filename || (() => {
+            try {
+                const pathname = new URL(task.url).pathname;
+                const name = pathname.split('/').pop();
+                return name || undefined;
+            } catch (_) {
+                return undefined;
+            }
+        })();
+        const filename = typeof rawFilename === 'string'
+            ? rawFilename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_')
+            : rawFilename;
 
         chrome.downloads.download({
             url: task.url,
@@ -731,7 +643,22 @@ function processDownloadQueue() {
             conflictAction: "uniquify"
         }, function (downloadId) {
             if (chrome.runtime.lastError) {
-                updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
+                const errMsg = chrome.runtime.lastError.message || '';
+                // Hotlink-protection 403: fall back to content-script download
+                // which can send a Referer header via fetch().
+                if (task.referer && downloadInitiatorTabId && /403|forbidden|invalid/i.test(errMsg)) {
+                    chrome.tabs.sendMessage(downloadInitiatorTabId, {
+                        cmd: 'downloadWithReferer',
+                        url: task.url,
+                        referer: task.referer,
+                        filename: filename
+                    }).catch(() => {
+                        updateDownloadProgress(task.url, 'failed', 0, errMsg, null, task);
+                        releaseDownloadSlot(task);
+                    });
+                    return;
+                }
+                updateDownloadProgress(task.url, 'failed', 0, errMsg, null, task);
                 releaseDownloadSlot(task);
             } else {
                 task._downloadId = downloadId;
@@ -886,7 +813,7 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                     url: bestUrl,
                     referer: referer,
                     isPrivate: sender?.tab?.incognito === true,
-                    isSieveResolved: true   // bestUrl was chosen by findBestUrlWithValidation
+                    isSieveResolved: true
                 };
                 filterQueue.push(task);
                 processFilterQueue();

@@ -14,16 +14,7 @@
 //   5. PVI methods (add at end of PVI object, before closing `};`)
 //
 // Markers match content.js exactly:
-//   // >>> MASS-DOWNLOAD-<SECTION>
-//   // <<< MASS-DOWNLOAD-<SECTION>
-
-
-// ============================================================
-// SECTION 1: Helper functions
-// Location: After IIFE opening `(function (win, doc) {`, before `var flip`
-// ============================================================
-
-// >>> MASS-DOWNLOAD-HELPERS
+//   // >>> MASS-DOWNLOAD-HELPERS
     var _isElementVisible = function (el) {
         if (!el) return false;
         if (!el.isConnected) return false;
@@ -58,45 +49,16 @@
 
     // downloadAllMode "media": collect only elements that are objectively
     // media or lead to media files.  Mode "broad" keeps the original wide
-    // selector (a[href], img, video, [onclick], button, [role="button"]).
+    // selector.
     //
     // IMPORTANT: <a> elements are collected FIRST.  Standalone <img>/<video>
-    // are collected only if they are NOT inside an already-collected <a>.
-    // This prevents double-processing: many sieves (e-hentai, etc.) match
-    // the <a> link and paginate through the target page.  If we also
-    // collected the <img> inside that <a>, PVI.find would walk up to the
-    // same <a>, trigger the sieve a second time, and race with the first
-    // invocation (consuming this.res / this.loop state).
+    // are collected only if NOT inside an already-collected <a>.
     var _collectMediaElements = function (doc) {
         var seen = new Set();
         var results = [];
         var MEDIA_RE = /\.(jpe?g|png|webp|gif|bmp|tiff|avif|mp4|webm|ogv|avi|mov|mkv|mp3|wav|ogg|flac|m4a|opus)(\?|#|$)/i;
-        var SKIP_RE = /\.(svg|mng|xcf|psd|ai|eps|raw|cr2|nef)(\?|#|$)/i;
-        var MIN_SIZE = 32; // ignore tiny decorative elements (icons, separators)
+        var SKIP_RE = /\.(svg|ico|mng|xcf|psd|ai|eps)(\?|#|$)/i;
 
-        // Check if an image src points to a non-media file (SVG icons, etc.)
-        var _isMediaSrc = function (src) {
-            if (!src) return false;
-            if (SKIP_RE.test(src)) return false;
-            if (/^data:/i.test(src)) {
-                // data URI — allow image/* and video/*, skip SVG data URIs
-                if (/data:image\/svg/i.test(src)) return false;
-                return /data:(image|video|audio)/i.test(src);
-            }
-            return MEDIA_RE.test(src) || !/^(?:https?:)?\/\//.test(src);
-            // relative URLs without extension — keep (sieve may know them)
-        };
-
-        // Check if an element is large enough to be real content (not an icon)
-        var _isLargeEnough = function (el) {
-            try {
-                var w = el.offsetWidth || el.naturalWidth || 0;
-                var h = el.offsetHeight || el.naturalHeight || 0;
-                return w >= MIN_SIZE || h >= MIN_SIZE;
-            } catch (_e) { return true; }
-        };
-
-        // 1. Links — primary targets for Imagus sieves
         doc.querySelectorAll('a[href]').forEach(function (a) {
             if (seen.has(a)) return;
             if (a.querySelector('img, video, picture, canvas')) {
@@ -106,27 +68,19 @@
             if (MEDIA_RE.test(href) && !SKIP_RE.test(href)) {
                 seen.add(a); results.push(a); return;
             }
-            var style = a.getAttribute('style') || '';
-            if (/background(-image)?\s*:\s*url\(/i.test(style)) {
-                var m = style.match(/url\(["']?([^"')]+)["']?\)/);
-                if (m && _isMediaSrc(m[1])) {
-                    seen.add(a); results.push(a); return;
-                }
-            }
             var cls = (a.className || '').toString();
             if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image|gdtl|gdtm)\b/i.test(cls)) {
                 seen.add(a); results.push(a);
             }
         });
 
-        // 2. Standalone media tags — only if NOT inside a collected <a>
         doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {
             if (seen.has(el)) return;
-            if (el.closest('a[href]')) return;  // parent <a> already queued
-            // Filter: skip SVG icons, tiny decorative elements, data-URI SVGs
+            if (el.closest('a[href]')) return;
             if (el.localName === 'img') {
-                if (!_isMediaSrc(el.src || el.getAttribute('src') || '')) return;
-                if (!_isLargeEnough(el)) return;
+                var src = el.src || el.getAttribute('src') || '';
+                if (SKIP_RE.test(src)) return;
+                if (/^data:image\/svg/i.test(src)) return;
             }
             seen.add(el); results.push(el);
         });
@@ -145,22 +99,12 @@
         var out = [];
         for (var i = 0; i < result.length; i++) {
             var item = result[i];
-            if (typeof item === 'string') {
-                out.push(item);
-            } else if (Array.isArray(item)) {
-                out = out.concat(_flattenSieveUrls(item, depth + 1));
-            }
+            if (typeof item === 'string') out.push(item);
+            else if (Array.isArray(item)) out = out.concat(_flattenSieveUrls(item, depth + 1));
         }
         return out;
     };
     // <<< MASS-DOWNLOAD-HELPERS
-
-
-// ============================================================
-// SECTION 2: PVI properties
-// Location: Inside PVI object literal, after `palette` block
-// grep-pattern: `pile_bg: "rgb(255, 255, 0)",`
-// ============================================================
 
 // >>> MASS-DOWNLOAD-PROPERTIES
         downloadAllActive: false,
@@ -175,12 +119,6 @@
         ambiguousUrlGroups: [],
         // <<< MASS-DOWNLOAD-PROPERTIES
 
-
-// ============================================================
-// SECTION 3: Hotkey handler
-// Location: Inside PVI.key_action, before the final `else pv = false;`
-// ============================================================
-
 // >>> MASS-DOWNLOAD-HOTKEY
             } else if (key === cfg.keys.downloadAll) {
                 if (e.shiftKey || e.ctrlKey) {
@@ -188,12 +126,6 @@
                     pv = true;
                 } else pv = false;
             // <<< MASS-DOWNLOAD-HOTKEY
-
-
-// ============================================================
-// SECTION 4: Message handlers
-// Location: Inside PVI.onMessage, after `download(d)`
-// ============================================================
 
 // >>> MASS-DOWNLOAD-MESSAGES
             } else if (d.cmd === 'stopScanning') {
@@ -212,15 +144,37 @@
                 if (PVI.handleGroupAnalysisComplete) {
                     PVI.handleGroupAnalysisComplete(d.processedCount || 0);
                 }
+            } else if (d.cmd === 'downloadWithReferer') {
+                // Download via content script: fetch with Referer, create blob
+                // URL, pass to chrome.downloads.download.  Used for sites with
+                // hotlink protection (rule34.xxx CDN) that reject requests
+                // without a valid Referer header.
+                fetch(d.url, { headers: { 'Referer': d.referer || '' } })
+                    .then(function (response) {
+                        if (!response.ok) throw new Error('HTTP ' + response.status);
+                        return response.blob();
+                    })
+                    .then(function (blob) {
+                        var blobUrl = URL.createObjectURL(blob);
+                        chrome.downloads.download({
+                            url: blobUrl,
+                            filename: d.filename || undefined,
+                            conflictAction: 'uniquify'
+                        }, function (downloadId) {
+                            // Revoke after delay — download may need the URL briefly
+                            setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 60000);
+                            if (chrome.runtime.lastError) {
+                                Port.send({ cmd: 'downloadFailed', url: d.url, error: chrome.runtime.lastError.message });
+                            } else {
+                                Port.send({ cmd: 'downloadStarted', url: d.url, downloadId: downloadId });
+                            }
+                        });
+                    })
+                    .catch(function (err) {
+                        Port.send({ cmd: 'downloadFailed', url: d.url, error: err.message });
+                    });
             }
             // <<< MASS-DOWNLOAD-MESSAGES
-
-
-// ============================================================
-// SECTION 5: PVI methods
-// Location: At end of PVI object, before closing `};`
-// grep-pattern: `window.addEventListener("mousemove"`
-// ============================================================
 
 // >>> MASS-DOWNLOAD-METHODS
         _updateDownloadAllStatus: function (progressText) {
@@ -337,8 +291,6 @@
             }
             PVI.downloadAllActive = true;
 
-            // downloadAllMode: "media" = only media-bearing elements
-            // (recommended, faster); "broad" = original wide selector.
             const mode = (cfg.da && cfg.da.downloadAllMode) || 'media';
             const allElements = mode === 'media'
                 ? _collectMediaElements(doc)
@@ -524,3 +476,4 @@
             if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
         },
         // <<< MASS-DOWNLOAD-METHODS
+

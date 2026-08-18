@@ -96,7 +96,6 @@
 		"downloadAll": "Q"
 	},
 	"da": {
-		"downloadAllMode": "media",
 		"maxConcurrentFilters": 5,
 		"maxConcurrentDownloads": 3,
 		"minImageSize": 45,
@@ -106,7 +105,8 @@
 		"downloadOnUnknown": true,
 		"resolutionTimeout": 8,
 		"showProgressTab": true,
-		"maxProgressRecords": 100
+		"maxProgressRecords": 100,
+		"downloadAllMode": "media"
 	},
 	"grants": [],
 	"grantUrls": [],
