@@ -124,47 +124,20 @@
     var _collectMediaElements = function (doc) {
         var seen = new Set();
         var results = [];
-        var MEDIA_RE = /\.(jpe?g|png|webp|gif|bmp|tiff|avif|mp4|webm|ogv|avi|mov|mkv|mp3|wav|ogg|flac|m4a|opus)(\?|#|$)/i;
         var SKIP_RE = /\.(svg|ico|mng|xcf|psd|ai|eps)(\?|#|$)/i;
 
-        // Collect <a> elements: both a[href] and a[onclick].
-        // a[onclick] catches JS-navigated thumbnails (e-henti gallery).
-        doc.querySelectorAll('a[href], a[onclick]').forEach(function (a) {
-            if (seen.has(a)) return;
-            if (a.querySelector('img, video, picture, canvas')) {
-                seen.add(a); results.push(a); return;
-            }
-            var href = a.href || '';
-            if (MEDIA_RE.test(href) && !SKIP_RE.test(href)) {
-                seen.add(a); results.push(a); return;
-            }
-            var cls = (a.className || '').toString();
-            if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image|gdtl|gdtm)\b/i.test(cls)) {
-                seen.add(a); results.push(a); return;
-            }
-            // CSS-class-based thumbnails (e.g. e-henti gdtl sets background
-            // via stylesheet, not inline style).  Check computed background
-            // ONLY for <a> elements to avoid collecting CSS icons/buttons.
-            try {
-                var bg = getComputedStyle(a).backgroundImage;
-                if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
-                    var bgUrl = bg.match(/url\(["']?([^"')]+)["']?\)/);
-                    if (bgUrl && /\.(jpe?g|png|webp|gif|bmp|avif|mp4|webm)(\?|#|$)/i.test(bgUrl[1])) {
-                        seen.add(a); results.push(a);
-                    }
-                }
-            } catch (_e) { /* ignore */ }
-        });
-
-        doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {
+        // Collect ALL elements that PVI.find can process.
+        // Media mode's job is NOT to replicate sieve logic — it just
+        // reduces the scan set vs broad mode by dropping non-link elements
+        // (<button>, <[role="button"]>, standalone <[onclick]> that are not
+        // links).  The sieve itself decides what matches.
+        doc.querySelectorAll('a[href], a[onclick], img, video, audio, picture').forEach(function (el) {
             if (seen.has(el)) return;
-            // Skip if inside any <a> (with href or onclick) — the <a> is already queued
-            if (el.closest('a[href], a[onclick]')) return;
-            if (el.localName === 'img') {
-                var src = el.src || el.getAttribute('src') || '';
-                if (SKIP_RE.test(src)) return;
-                if (/^data:image\/svg/i.test(src)) return;
-            }
+            // Pre-filter: skip known non-media extensions on URLs we can see
+            var url = el.href || el.src || el.getAttribute('src') || '';
+            if (url && SKIP_RE.test(url)) return;
+            // Skip inline SVG data-URIs
+            if (/^data:image\/svg/i.test(url)) return;
             seen.add(el); results.push(el);
         });
 

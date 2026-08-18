@@ -461,24 +461,6 @@ async function processFilterQueue() {
         const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
         const downloadOnUnknown = da.downloadOnUnknown !== false;
 
-        // Sieve-resolved URLs: skip HEAD validation (sieve already confirmed
-        // the URL), but still apply user's excludedExtensions filter.
-        // Size check is skipped — no Content-Length without HEAD.
-        if (task.isSieveResolved) {
-            if (!scanInProgress) {
-                updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-            } else if (isExcludedType(task.url, '', excludedExtensions)) {
-                updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
-                downloadStats.skipped++;
-            } else {
-                downloadQueue.push(task);
-                processDownloadQueue();
-            }
-            activeFilters--;
-            setTimeout(checkAllQueuesEmpty, 100);
-            continue;
-        }
-
         task._id = task._id || (typeof crypto !== 'undefined' && crypto.randomUUID
             ? crypto.randomUUID()
             : String(Date.now()) + ':' + Math.random());
@@ -500,7 +482,30 @@ async function processFilterQueue() {
             const contentType = response.headers.get('Content-Type') || '';
             const contentLength = response.headers.get('Content-Length');
 
-            if (!response.ok || !contentLength || contentType.startsWith('text/html')) {
+            // HEAD failed (403, 404, etc.) — size unknown but don't skip.
+            // The download may still work via Referer fallback in processDownloadQueue.
+            // Only skip if we got an HTML page (definitely not a media file).
+            if (!response.ok) {
+                if (contentType.startsWith('text/html')) {
+                    updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
+                } else if (isExcludedType(task.url, contentType, excludedExtensions)) {
+                    updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                    downloadStats.skipped++;
+                } else {
+                    // Size unknown — proceed to download (Referer fallback may help)
+                    if (!scanInProgress) {
+                        updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                    } else {
+                        downloadQueue.push(task);
+                        processDownloadQueue();
+                    }
+                }
+                activeFilters--;
+                setTimeout(checkAllQueuesEmpty, 100);
+                continue;
+            }
+
+            if (!contentLength || contentType.startsWith('text/html')) {
                 throw new Error('Fallback to GET');
             }
 
