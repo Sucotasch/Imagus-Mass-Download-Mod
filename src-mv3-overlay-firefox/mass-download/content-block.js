@@ -71,6 +71,30 @@
         var seen = new Set();
         var results = [];
         var MEDIA_RE = /\.(jpe?g|png|webp|gif|bmp|tiff|avif|mp4|webm|ogv|avi|mov|mkv|mp3|wav|ogg|flac|m4a|opus)(\?|#|$)/i;
+        var SKIP_RE = /\.(svg|mng|xcf|psd|ai|eps|raw|cr2|nef)(\?|#|$)/i;
+        var MIN_SIZE = 32; // ignore tiny decorative elements (icons, separators)
+
+        // Check if an image src points to a non-media file (SVG icons, etc.)
+        var _isMediaSrc = function (src) {
+            if (!src) return false;
+            if (SKIP_RE.test(src)) return false;
+            if (/^data:/i.test(src)) {
+                // data URI — allow image/* and video/*, skip SVG data URIs
+                if (/data:image\/svg/i.test(src)) return false;
+                return /data:(image|video|audio)/i.test(src);
+            }
+            return MEDIA_RE.test(src) || !/^(?:https?:)?\/\//.test(src);
+            // relative URLs without extension — keep (sieve may know them)
+        };
+
+        // Check if an element is large enough to be real content (not an icon)
+        var _isLargeEnough = function (el) {
+            try {
+                var w = el.offsetWidth || el.naturalWidth || 0;
+                var h = el.offsetHeight || el.naturalHeight || 0;
+                return w >= MIN_SIZE || h >= MIN_SIZE;
+            } catch (_e) { return true; }
+        };
 
         // 1. Links — primary targets for Imagus sieves
         doc.querySelectorAll('a[href]').forEach(function (a) {
@@ -79,21 +103,16 @@
                 seen.add(a); results.push(a); return;
             }
             var href = a.href || '';
-            if (MEDIA_RE.test(href)) {
+            if (MEDIA_RE.test(href) && !SKIP_RE.test(href)) {
                 seen.add(a); results.push(a); return;
             }
             var style = a.getAttribute('style') || '';
             if (/background(-image)?\s*:\s*url\(/i.test(style)) {
-                seen.add(a); results.push(a); return;
-            }
-            // Check computed background-image for CSS-class-based thumbnails
-            // (e.g. e-hentai gdtl uses class-set backgrounds, not inline style)
-            try {
-                var bgImg = getComputedStyle(a).backgroundImage;
-                if (bgImg && bgImg !== 'none' && bgImg.indexOf('url(') !== -1) {
+                var m = style.match(/url\(["']?([^"')]+)["']?\)/);
+                if (m && _isMediaSrc(m[1])) {
                     seen.add(a); results.push(a); return;
                 }
-            } catch (_e) { /* ignore */ }
+            }
             var cls = (a.className || '').toString();
             if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image|gdtl|gdtm)\b/i.test(cls)) {
                 seen.add(a); results.push(a);
@@ -104,6 +123,11 @@
         doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {
             if (seen.has(el)) return;
             if (el.closest('a[href]')) return;  // parent <a> already queued
+            // Filter: skip SVG icons, tiny decorative elements, data-URI SVGs
+            if (el.localName === 'img') {
+                if (!_isMediaSrc(el.src || el.getAttribute('src') || '')) return;
+                if (!_isLargeEnough(el)) return;
+            }
             seen.add(el); results.push(el);
         });
 
