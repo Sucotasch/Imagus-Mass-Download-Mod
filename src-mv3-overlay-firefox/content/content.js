@@ -138,8 +138,20 @@
             }
             var cls = (a.className || '').toString();
             if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image|gdtl|gdtm)\b/i.test(cls)) {
-                seen.add(a); results.push(a);
+                seen.add(a); results.push(a); return;
             }
+            // CSS-class-based thumbnails (e.g. e-henti gdtl sets background
+            // via stylesheet, not inline style).  Check computed background
+            // ONLY for <a> elements to avoid collecting CSS icons/buttons.
+            try {
+                var bg = getComputedStyle(a).backgroundImage;
+                if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) {
+                    var bgUrl = bg.match(/url\(["']?([^"')]+)["']?\)/);
+                    if (bgUrl && /\.(jpe?g|png|webp|gif|bmp|avif|mp4|webm)(\?|#|$)/i.test(bgUrl[1])) {
+                        seen.add(a); results.push(a);
+                    }
+                }
+            } catch (_e) { /* ignore */ }
         });
 
         doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {

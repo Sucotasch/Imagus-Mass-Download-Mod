@@ -449,21 +449,6 @@ async function processFilterQueue() {
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
-        // Sieve-resolved URLs: skip HEAD validation.  The Imagus sieve
-        // (PVI.find + PVI.load) already resolved this URL through its own
-        // content negotiation — it is a known-good target.
-        if (task.isSieveResolved) {
-            if (!scanInProgress) {
-                updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-            } else {
-                downloadQueue.push(task);
-                processDownloadQueue();
-            }
-            activeFilters--;
-            setTimeout(checkAllQueuesEmpty, 100);
-            continue;
-        }
-
         // Audit N-01: explicit null-checks instead of `||` so that VALID
         // falsy user settings survive — minImageSize=0 / minVideoSize=0 mean
         // "no size limit" (guards below test > 0) and excludedExtensions=""
@@ -475,6 +460,24 @@ async function processFilterQueue() {
         const minImageSize = (da.minImageSize != null ? da.minImageSize : 45) * 1024;
         const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
         const downloadOnUnknown = da.downloadOnUnknown !== false;
+
+        // Sieve-resolved URLs: skip HEAD validation (sieve already confirmed
+        // the URL), but still apply user's excludedExtensions filter.
+        // Size check is skipped — no Content-Length without HEAD.
+        if (task.isSieveResolved) {
+            if (!scanInProgress) {
+                updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+            } else if (isExcludedType(task.url, '', excludedExtensions)) {
+                updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
+                downloadStats.skipped++;
+            } else {
+                downloadQueue.push(task);
+                processDownloadQueue();
+            }
+            activeFilters--;
+            setTimeout(checkAllQueuesEmpty, 100);
+            continue;
+        }
 
         task._id = task._id || (typeof crypto !== 'undefined' && crypto.randomUUID
             ? crypto.randomUUID()
