@@ -119,7 +119,10 @@ var _isElementVisible = function (el) {
                 // URL, pass to chrome.downloads.download.  Used for sites with
                 // hotlink protection (rule34.xxx CDN, etc.) that reject requests
                 // without a valid Referer header.
-                fetch(d.url, { headers: { 'Referer': d.referer || '' } })
+                // Referer is set automatically by the browser from page
+                // context — do NOT set it explicitly (forbidden header in
+                // Fetch API, causes 'Failed to fetch').
+                fetch(d.url)
                     .then(function (response) {
                         if (!response.ok) throw new Error('HTTP ' + response.status);
                         return response.blob();

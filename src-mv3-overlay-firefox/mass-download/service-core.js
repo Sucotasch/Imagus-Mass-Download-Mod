@@ -533,7 +533,24 @@ async function processFilterQueue() {
                     activeControllers.delete(task._id);
                 }
                 if (!scanInProgress) continue;
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                if (!response.ok) {
+                    // Both HEAD and GET failed with 403. Push to
+                    // downloadQueue — processDownloadQueue will try
+                    // chrome.downloads which also fails, then falls back
+                    // to downloadWithReferer in the content script.
+                    if (task.referer && downloadInitiatorTabId && /403|forbidden/i.test(String(response.status))) {
+                        if (!scanInProgress) {
+                            updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+                        } else {
+                            downloadQueue.push(task);
+                            processDownloadQueue();
+                        }
+                        activeFilters--;
+                        setTimeout(checkAllQueuesEmpty, 100);
+                        continue;
+                    }
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
 
                 const contentType = response.headers.get('Content-Type') || '';
                 if (contentType.startsWith('text/html')) {

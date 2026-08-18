@@ -574,9 +574,10 @@ function handleMessage(message, sender, sendResponse) {
             break;
         case 'downloadFailed':
             // Content script reported a failed downloadWithReferer attempt.
+            // Do NOT call releaseDownloadSlot — the download was initiated
+            // from the filter phase, not processDownloadQueue.
             if (msg.url) {
                 updateDownloadProgress(msg.url, 'failed', 0, msg.error || 'Content script download failed', null, null);
-                releaseDownloadSlot({ url: msg.url });
             }
             break;
     }
