@@ -358,7 +358,8 @@ function handleRetryDownload(msg, sender) {
         filterQueue.push({
             url: msg.url,
             referer: msg.referer,
-            isPrivate: sender.tab?.incognito
+            isPrivate: sender.tab?.incognito,
+            isSieveResolved: true   // retry URL is already resolved
         });
         processFilterQueue();
     }
@@ -706,6 +707,9 @@ function processDownloadQueue() {
         // avoid hotlink-protection 403 errors (e.g. rule34.xxx CDN).
         // chrome.downloads.download in MV3 cannot send custom headers.
         if (task.isSieveResolved && task.referer) {
+            task._id = task._id || (typeof crypto !== 'undefined' && crypto.randomUUID
+                ? crypto.randomUUID()
+                : String(Date.now()) + ':' + Math.random());
             downloadWithReferer(task);
             continue;
         }
@@ -881,7 +885,8 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                 const task = {
                     url: bestUrl,
                     referer: referer,
-                    isPrivate: sender?.tab?.incognito === true
+                    isPrivate: sender?.tab?.incognito === true,
+                    isSieveResolved: true   // bestUrl was chosen by findBestUrlWithValidation
                 };
                 filterQueue.push(task);
                 processFilterQueue();
