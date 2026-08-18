@@ -59,7 +59,9 @@
         var MEDIA_RE = /\.(jpe?g|png|webp|gif|bmp|tiff|avif|mp4|webm|ogv|avi|mov|mkv|mp3|wav|ogg|flac|m4a|opus)(\?|#|$)/i;
         var SKIP_RE = /\.(svg|ico|mng|xcf|psd|ai|eps)(\?|#|$)/i;
 
-        doc.querySelectorAll('a[href]').forEach(function (a) {
+        // Collect <a> elements: both a[href] and a[onclick].
+        // a[onclick] catches JS-navigated thumbnails (e-henti gallery).
+        doc.querySelectorAll('a[href], a[onclick]').forEach(function (a) {
             if (seen.has(a)) return;
             if (a.querySelector('img, video, picture, canvas')) {
                 seen.add(a); results.push(a); return;
@@ -88,7 +90,8 @@
 
         doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {
             if (seen.has(el)) return;
-            if (el.closest('a[href]')) return;
+            // Skip if inside any <a> (with href or onclick) — the <a> is already queued
+            if (el.closest('a[href], a[onclick]')) return;
             if (el.localName === 'img') {
                 var src = el.src || el.getAttribute('src') || '';
                 if (SKIP_RE.test(src)) return;
@@ -488,5 +491,6 @@
             if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
         },
         // <<< MASS-DOWNLOAD-METHODS
+
 
 
