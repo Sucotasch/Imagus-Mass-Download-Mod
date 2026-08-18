@@ -324,7 +324,7 @@ Download is delegated to the **content script**, which has DOM access:
 
 1. SW detects download failure (403/forbidden) + task has `referer`
 2. SW sends `downloadWithReferer` message to content script via `chrome.tabs.sendMessage`
-3. Content script: `fetch(url, {headers: {Referer}})` → `response.blob()` → `URL.createObjectURL(blob)` → `chrome.downloads.download({url: blobUrl})`
+3. Content script: `fetch(url)` → browser auto-sets Referer from page → `response.blob()` → `URL.createObjectURL(blob)` → `chrome.downloads.download({url: blobUrl})`
 4. Content script reports `downloadStarted`/`downloadFailed` back to SW
 
 ### Key files
@@ -334,7 +334,7 @@ Download is delegated to the **content script**, which has DOM access:
 
 ### Why this works
 - Content scripts run in page context → have `URL.createObjectURL`
-- Content scripts can `fetch()` with custom headers (Referer inherits from page)
+- Content scripts can `fetch()` — browser automatically sends Referer from page context (do NOT set it explicitly — Referer is a forbidden header in Fetch API)
 - `chrome.downloads.download` accepts blob URLs from any context
 - SW still tracks the download via `downloadIdToTask` (reports back from content script)
 
