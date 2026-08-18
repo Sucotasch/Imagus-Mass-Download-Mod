@@ -71,32 +71,33 @@ function withBaseURI(base, relative, secure) {
     }
 }
 
-async function updateSieve(local, retryCount = 0, force) {
+async function updateSieve(local, retryCount = 0, force = false) {
     const MAX_RETRIES = 3;
-    const { sieve: curSieve, sieveRepository: sieveRepoUrl, sieveUpdateLast } = await cfg.get(["sieveRepository", "sieve", "sieveUpdateLast"]);
+    const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
 
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-        // If-Modified-Since: only for auto-updates (alarm, startup),
-        // NOT for user-triggered updates — user may have deleted filters
-        // and needs a full re-fetch even if the remote file is unchanged.
-        const headers = {};
-        if (!local && !force && sieveUpdateLast) {
-            headers['If-Modified-Since'] = new Date(sieveUpdateLast).toUTCString();
+        const fetchOpts = { signal: controller.signal };
+        // If-Modified-Since: skip re-download when sieve hasn't changed.
+        // Only for auto-updates (alarm/startup), not manual user requests
+        // (user may have deleted rules and wants a fresh copy).
+        if (!local && !force) {
+            const { sieveUpdateLast } = await cfg.get('sieveUpdateLast') || {};
+            if (sieveUpdateLast) {
+                fetchOpts.headers = { 'If-Modified-Since': new Date(sieveUpdateLast).toUTCString() };
+            }
         }
 
-        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, {
-            signal: controller.signal,
-            headers
-        });
+        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, fetchOpts);
         clearTimeout(timeoutId);
 
+        // 304 Not Modified: sieve unchanged, return current.
         if (response.status === 304) {
-            console.info(manifest.name + ": Sieve not modified (304) — skipping.");
-            return { updated_sieve: curSieve || {} };
+            console.info(manifest.name + ": Sieve unchanged (304 Not Modified).");
+            return { updated_sieve: curSieve };
         }
 
         if (!response.ok) {

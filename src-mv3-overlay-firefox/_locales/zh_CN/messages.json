@@ -682,14 +682,5 @@
   },
   "HZ_SC_CLEAR": {
     "message": "to clear a focused hotkey on this page"
-  },
-  "DA_DOWNLOAD_MODE": {
-    "message": "批量下载模式"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "仅媒体"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "广泛（所有元素）"
   }
 }

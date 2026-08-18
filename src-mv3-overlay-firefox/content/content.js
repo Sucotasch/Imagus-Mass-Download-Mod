@@ -114,52 +114,6 @@
     };
     // NOTE: _getMediaExt removed (Audit N-09) — its result fed only the
     // `ext`/`priorityExt` task fields that the service worker never read.
-
-    // downloadAllMode "media": collect only elements that are objectively
-    // media or lead to media files.  Mode "broad" keeps the original wide
-    // selector.
-    //
-    // IMPORTANT: <a> elements are collected FIRST.  Standalone <img>/<video>
-    // are collected only if NOT inside an already-collected <a>.
-    var _collectMediaElements = function (doc) {
-        var seen = new Set();
-        var results = [];
-        var SKIP_RE = /\.(svg|ico|mng|xcf|psd|ai|eps)(\?|#|$)/i;
-
-        // Collect ALL elements that PVI.find can process.
-        // Media mode's job is NOT to replicate sieve logic — it just
-        // reduces the scan set vs broad mode by dropping non-link elements
-        // (<button>, <[role="button"]>, standalone <[onclick]> that are not
-        // links).  The sieve itself decides what matches.
-        doc.querySelectorAll('a[href], a[onclick], img, video, audio, picture').forEach(function (el) {
-            if (seen.has(el)) return;
-            // Pre-filter: skip known non-media extensions on URLs we can see
-            var url = el.href || el.src || el.getAttribute('src') || '';
-            if (url && SKIP_RE.test(url)) return;
-            // Skip inline SVG data-URIs
-            if (/^data:image\/svg/i.test(url)) return;
-            seen.add(el); results.push(el);
-        });
-
-        return results;
-    };
-
-    // Flatten nested sieve results into a flat list of URL strings.
-    // Sieves like e-hentai return [[[url1, url2], title]] which must be
-    // unwound before onResolved can route them to ambiguousUrlGroups.
-    var _flattenSieveUrls = function (result, depth) {
-        if (depth === undefined) depth = 0;
-        if (depth > 6) return [];
-        if (typeof result === 'string') return [result];
-        if (!Array.isArray(result)) return [];
-        var out = [];
-        for (var i = 0; i < result.length; i++) {
-            var item = result[i];
-            if (typeof item === 'string') out.push(item);
-            else if (Array.isArray(item)) out = out.concat(_flattenSieveUrls(item, depth + 1));
-        }
-        return out;
-    };
     // <<< MASS-DOWNLOAD-HELPERS
 
     var flip = function (el, ori) {
@@ -3786,7 +3740,7 @@
             } else if (d.cmd === 'downloadWithReferer') {
                 // Download via content script: fetch with Referer, create blob
                 // URL, pass to chrome.downloads.download.  Used for sites with
-                // hotlink protection (rule34.xxx CDN) that reject requests
+                // hotlink protection (rule34.xxx CDN, etc.) that reject requests
                 // without a valid Referer header.
                 fetch(d.url, { headers: { 'Referer': d.referer || '' } })
                     .then(function (response) {
@@ -3800,7 +3754,6 @@
                             filename: d.filename || undefined,
                             conflictAction: 'uniquify'
                         }, function (downloadId) {
-                            // Revoke after delay — download may need the URL briefly
                             setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 60000);
                             if (chrome.runtime.lastError) {
                                 Port.send({ cmd: 'downloadFailed', url: d.url, error: chrome.runtime.lastError.message });
@@ -4067,10 +4020,23 @@
             }
             PVI.downloadAllActive = true;
 
-            const mode = (cfg.da && cfg.da.downloadAllMode) || 'media';
-            const allElements = mode === 'media'
-                ? _collectMediaElements(doc)
-                : Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
+            // Collect all candidate elements, then deduplicate: skip <img>
+            // (and similar media tags) that live inside an already-collected
+            // <a>.  If the parent <a> matches a sieve, the <img> is a
+            // thumbnail whose full-size version will be resolved via the <a>.
+            const rawEls = doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]');
+            const allElements = [];
+            const aSet = new Set();
+            rawEls.forEach(function (el) {
+                if (el.localName === 'a') { aSet.add(el); }
+            });
+            rawEls.forEach(function (el) {
+                if (el.localName !== 'a') {
+                    var parentA = el.closest('a[href]');
+                    if (parentA && aSet.has(parentA)) return; // thumbnail — skip
+                }
+                allElements.push(el);
+            });
 
             PVI.downloadAllTotal = allElements.length;
             PVI.downloadAllFound = 0;
@@ -4164,24 +4130,22 @@
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
                     }
-                    // Flatten nested sieve results (e.g. e-hentai returns
-                    // [[[download_url, image_url], title]] which becomes
-                    // [[download_url, image_url]] after upstream processing).
-                    var flatUrls = _flattenSieveUrls(result);
-                    if (flatUrls.length > 1) {
+                    if (Array.isArray(result) && result.length > 1) {
+                        // Audit N-04: elementInfo dropped — it read PVI.TRG
+                        // AFTER cleanup() had restored the pre-scan value, so
+                        // it always described the wrong element, and the SW
+                        // never consumed it anyway.
                         PVI.ambiguousUrlGroups.push({
-                            urls: flatUrls,
+                            urls: result,
                             referer: window.location.href
                         });
                         setTimeout(PVI.processNextInQueue, 100);
                         return;
                     }
 
-                    let url = flatUrls.length === 1
-                        ? flatUrls[0]
-                        : (Array.isArray(result)
-                            ? (result.find(u => typeof u === 'string' && u[0] === '#') || result[0])
-                            : result);
+                    let url = Array.isArray(result)
+                        ? (result.find(u => typeof u === 'string' && u[0] === '#') || result[0])
+                        : result;
                     if (typeof url !== 'string' || !url) {
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
@@ -4194,8 +4158,7 @@
                         Port.send({
                             cmd: 'downloadMass',
                             url: url,
-                            referer: window.location.href,
-                            isSieveResolved: true
+                            referer: window.location.href
                         });
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
                         setTimeout(PVI.processNextInQueue, 500);

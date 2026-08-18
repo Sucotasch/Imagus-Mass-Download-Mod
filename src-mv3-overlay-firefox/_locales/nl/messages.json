@@ -682,14 +682,5 @@
   },
   "HZ_SC_CLEAR": {
     "message": "to clear a focused hotkey on this page"
-  },
-  "DA_DOWNLOAD_MODE": {
-    "message": "Alles downloaden modus"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "Alleen media"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "Breed (alle elementen)"
   }
 }

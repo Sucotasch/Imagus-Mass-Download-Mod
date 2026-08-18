@@ -682,14 +682,5 @@
   },
   "HZ_SC_CLEAR": {
     "message": "to clear a focused hotkey on this page"
-  },
-  "DA_DOWNLOAD_MODE": {
-    "message": "Režim hromadného stahování"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "Pouze média"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "Široký (všechny prvky)"
   }
 }

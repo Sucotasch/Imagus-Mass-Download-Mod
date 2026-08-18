@@ -682,14 +682,5 @@
   },
   "HZ_SC_CLEAR": {
     "message": "to clear a focused hotkey on this page"
-  },
-  "DA_DOWNLOAD_MODE": {
-    "message": "Tömeges letöltés módja"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "Csak média"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "Széles (minden elem)"
   }
 }

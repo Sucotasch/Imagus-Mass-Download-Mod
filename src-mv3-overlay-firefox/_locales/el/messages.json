@@ -682,14 +682,5 @@
   },
   "HZ_SC_CLEAR": {
     "message": "to clear a focused hotkey on this page"
-  },
-  "DA_DOWNLOAD_MODE": {
-    "message": "Λήψη Όλων"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "Μόνο πολυμέσα"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "Ευρύς (όλα τα στοιχεία)"
   }
 }

@@ -682,14 +682,5 @@
   },
   "HZ_SC_CLEAR": {
     "message": "to clear a focused hotkey on this page"
-  },
-  "DA_DOWNLOAD_MODE": {
-    "message": "Modo de download em massa"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "Apenas mídia"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "Amplo (todos os elementos)"
   }
 }

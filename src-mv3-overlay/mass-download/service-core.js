@@ -236,8 +236,7 @@ function handleDownloadMass(msg, sender) {
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
-        isPrivate: sender.tab?.incognito,
-        isSieveResolved: !!msg.isSieveResolved
+        isPrivate: sender.tab?.incognito
     });
     processFilterQueue();
 }
@@ -358,8 +357,7 @@ function handleRetryDownload(msg, sender) {
         filterQueue.push({
             url: msg.url,
             referer: msg.referer,
-            isPrivate: sender.tab?.incognito,
-            isSieveResolved: true
+            isPrivate: sender.tab?.incognito
         });
         processFilterQueue();
     }
@@ -482,26 +480,7 @@ async function processFilterQueue() {
             const contentType = response.headers.get('Content-Type') || '';
             const contentLength = response.headers.get('Content-Length');
 
-            // HEAD failed (403, 404, etc.) — size unknown but don't skip.
-            // The download may still work via Referer fallback in processDownloadQueue.
-            // Do NOT check Content-Type here: error pages (403) often return
-            // text/html but the actual media download can still succeed.
-            if (!response.ok) {
-                if (!scanInProgress) {
-                    updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
-                } else if (isExcludedType(task.url, '', excludedExtensions)) {
-                    updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
-                    downloadStats.skipped++;
-                } else {
-                    downloadQueue.push(task);
-                    processDownloadQueue();
-                }
-                activeFilters--;
-                setTimeout(checkAllQueuesEmpty, 100);
-                continue;
-            }
-
-            if (!contentLength || contentType.startsWith('text/html')) {
+            if (!response.ok || !contentLength || contentType.startsWith('text/html')) {
                 throw new Error('Fallback to GET');
             }
 
@@ -816,8 +795,7 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                 const task = {
                     url: bestUrl,
                     referer: referer,
-                    isPrivate: sender?.tab?.incognito === true,
-                    isSieveResolved: true
+                    isPrivate: sender?.tab?.incognito === true
                 };
                 filterQueue.push(task);
                 processFilterQueue();

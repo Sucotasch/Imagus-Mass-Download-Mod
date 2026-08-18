@@ -680,15 +680,6 @@
   "DA_MAX_PROGRESS_RECORDS": {
     "message": "Max Progress Records"
   },
-  "DA_DOWNLOAD_MODE": {
-    "message": "Download All Mode"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "Media only"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "Broad (all elements)"
-  },
   "HZ_SC_CLEAR": {
     "message": "to clear a focused hotkey on this page"
   }

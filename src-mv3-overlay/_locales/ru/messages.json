@@ -682,14 +682,5 @@
   },
   "HZ_SC_CLEAR": {
     "message": "очистить активную горячую клавишу на этой странице"
-  },
-  "DA_DOWNLOAD_MODE": {
-    "message": "Режим скачивания"
-  },
-  "DA_DOWNLOAD_MODE_MEDIA": {
-    "message": "Только медиа"
-  },
-  "DA_DOWNLOAD_MODE_BROAD": {
-    "message": "Широкий (все элементы)"
   }
 }
