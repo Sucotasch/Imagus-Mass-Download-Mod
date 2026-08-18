@@ -308,3 +308,40 @@ const maxRecords = cachedPrefs.da?.maxProgressRecords != null ? cachedPrefs.da.m
 **Bottom line:** the previous fix pass (`e08e739`) is real and complete — every N/U disposition was found applied in the current code, markers are in sync in both trees, and the smoke tool is green. The remaining open items are all small P3/info robustness fixes; no P1/P2 defects were found in this pass.
 
 **Suggested next command:** "Release v2026.7.25.2 — bump both manifests, commit the N-16..N-24 fix pass, tag and publish with Chrome + Firefox unpacked zips."
+
+---
+
+## 4. Rule34.xxx Referer — Content Script Download Pattern (v2026.7.25.3+)
+
+### Problem
+CDNs with hotlink protection (rule34.xxx `wimg.*`/`ahrimp4.*`) reject downloads without a valid `Referer` header. In MV3:
+- `chrome.downloads.download` **cannot** send custom headers
+- Service workers **lack** `URL.createObjectURL`
+- `fetch()` in SW **can** send Referer, but there's no way to pass the fetched content to `chrome.downloads.download` (no blob URLs)
+
+### Solution
+Download is delegated to the **content script**, which has DOM access:
+
+1. SW detects download failure (403/forbidden) + task has `referer`
+2. SW sends `downloadWithReferer` message to content script via `chrome.tabs.sendMessage`
+3. Content script: `fetch(url, {headers: {Referer}})` → `response.blob()` → `URL.createObjectURL(blob)` → `chrome.downloads.download({url: blobUrl})`
+4. Content script reports `downloadStarted`/`downloadFailed` back to SW
+
+### Key files
+- `content/content.js` → `downloadWithReferer` message handler (MASS-DOWNLOAD-MESSAGES section)
+- `mass-download/service-core.js` → `processDownloadQueue` error handler (403 fallback)
+- `background/service.js` → `downloadStarted`/`downloadFailed` message cases
+
+### Why this works
+- Content scripts run in page context → have `URL.createObjectURL`
+- Content scripts can `fetch()` with custom headers (Referer inherits from page)
+- `chrome.downloads.download` accepts blob URLs from any context
+- SW still tracks the download via `downloadIdToTask` (reports back from content script)
+
+### When to use this pattern
+Any site where:
+- CDN checks `Referer` header
+- `chrome.downloads.download` fails with 403/forbidden
+- Sieve has already resolved the URL (isSieveResolved = true)
+
+Do NOT use for: sites without hotlink protection (unnecessary overhead).
