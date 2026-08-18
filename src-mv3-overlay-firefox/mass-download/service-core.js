@@ -616,6 +616,83 @@ async function processFilterQueue() {
     }
 }
 
+function deriveFilename(task) {
+    const rawFilename = task.filename || (() => {
+        try {
+            const pathname = new URL(task.url).pathname;
+            const name = pathname.split('/').pop();
+            return name || undefined;
+        } catch (_) {
+            return undefined;
+        }
+    })();
+    return typeof rawFilename === 'string'
+        ? rawFilename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_')
+        : rawFilename;
+}
+
+// Sieve-resolved cross-origin URLs often fail with chrome.downloads.download
+// because the API does not send a Referer header in MV3.  Work around this
+// by fetching the content in the SW (where we control headers), creating a
+// blob URL, and passing that to chrome.downloads.download.
+async function downloadWithReferer(task) {
+    const referer = task.referer || '';
+    const filename = deriveFilename(task);
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        activeControllers.set(task._id || task.url, controller);
+
+        const response = await fetch(task.url, {
+            headers: { 'Referer': referer },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        activeControllers.delete(task._id || task.url);
+
+        if (!response.ok) {
+            updateDownloadProgress(task.url, 'failed', 0, 'HTTP ' + response.status, null, task);
+            releaseDownloadSlot(task);
+            return;
+        }
+
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        task._blobUrl = blobUrl;
+
+        chrome.downloads.download({
+            url: blobUrl,
+            filename: filename,
+            conflictAction: 'uniquify'
+        }, function (downloadId) {
+            if (chrome.runtime.lastError) {
+                URL.revokeObjectURL(blobUrl);
+                updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
+                releaseDownloadSlot(task);
+            } else {
+                task._downloadId = downloadId;
+                downloadIdToTask.set(downloadId, task);
+                updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
+                const WATCHDOG_MS = 5 * 60 * 1000;
+                const watchdog = setTimeout(() => {
+                    chrome.downloads.cancel(downloadId, () => {});
+                    updateDownloadProgress(task.url, 'failed', 0, 'Download timed out', downloadId, task);
+                    releaseDownloadSlot(task);
+                }, WATCHDOG_MS);
+                task._watchdog = watchdog;
+            }
+        });
+    } catch (error) {
+        activeControllers.delete(task._id || task.url);
+        if (!scanInProgress) {
+            updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+        } else {
+            updateDownloadProgress(task.url, 'failed', 0, error.message || 'Download failed', null, task);
+        }
+        releaseDownloadSlot(task);
+    }
+}
+
 function processDownloadQueue() {
     let maxConcurrentDownloads = Number(cachedPrefs.da?.maxConcurrentDownloads) || 3;
     if (!Number.isFinite(maxConcurrentDownloads) || maxConcurrentDownloads < 1) maxConcurrentDownloads = 3;
@@ -625,18 +702,15 @@ function processDownloadQueue() {
         activeDownloads++;
         updateDownloadProgress(task.url, 'downloading', 0, null, null, task);
 
-        const rawFilename = task.filename || (() => {
-            try {
-                const pathname = new URL(task.url).pathname;
-                const name = pathname.split('/').pop();
-                return name || undefined;
-            } catch (_) {
-                return undefined;
-            }
-        })();
-        const filename = typeof rawFilename === 'string'
-            ? rawFilename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_')
-            : rawFilename;
+        // Sieve-resolved cross-origin URLs: fetch with Referer first to
+        // avoid hotlink-protection 403 errors (e.g. rule34.xxx CDN).
+        // chrome.downloads.download in MV3 cannot send custom headers.
+        if (task.isSieveResolved && task.referer) {
+            downloadWithReferer(task);
+            continue;
+        }
+
+        const filename = deriveFilename(task);
 
         chrome.downloads.download({
             url: task.url,
@@ -676,6 +750,11 @@ chrome.downloads.onChanged.addListener(function (delta) {
 
         if (delta.state) {
             if (delta.state.current === 'complete') {
+                // Revoke blob URL created by downloadWithReferer (sieve-resolved path)
+                if (existingTask._blobUrl) {
+                    URL.revokeObjectURL(existingTask._blobUrl);
+                    existingTask._blobUrl = null;
+                }
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 if (downloadProgressTabId) {
@@ -685,6 +764,10 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 }
                 releaseDownloadSlot(existingTask);
             } else if (delta.state.current === 'interrupted') {
+                if (existingTask._blobUrl) {
+                    URL.revokeObjectURL(existingTask._blobUrl);
+                    existingTask._blobUrl = null;
+                }
                 const alreadyCanceled = existingTask && downloadProgress[url]
                     && downloadProgress[url].status === 'canceled';
                 if (!alreadyCanceled) {
