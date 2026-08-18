@@ -73,17 +73,32 @@ function withBaseURI(base, relative, secure) {
 
 async function updateSieve(local, retryCount = 0) {
     const MAX_RETRIES = 3;
-    const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
+    const { sieve: curSieve, sieveRepository: sieveRepoUrl, sieveUpdateLast } = await cfg.get(["sieveRepository", "sieve", "sieveUpdateLast"]);
     local = local || !sieveRepoUrl;
 
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
+        // If-Modified-Since: when the sieve has been fetched before, send
+        // the timestamp so the server can return 304 (no body) when nothing
+        // changed — saves bandwidth and helps with rate-limit (HTTP 429).
+        const headers = {};
+        if (!local && sieveUpdateLast) {
+            headers['If-Modified-Since'] = new Date(sieveUpdateLast).toUTCString();
+        }
+
         const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, {
-            signal: controller.signal
+            signal: controller.signal,
+            headers
         });
         clearTimeout(timeoutId);
+
+        // 304 Not Modified: sieve hasn't changed — skip the update.
+        if (response.status === 304) {
+            console.info(manifest.name + ": Sieve not modified since last update (304) — skipping.");
+            return { updated_sieve: curSieve || {} };
+        }
 
         if (!response.ok) {
             throw new Error("HTTP " + response.status);

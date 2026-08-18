@@ -114,6 +114,41 @@
     };
     // NOTE: _getMediaExt removed (Audit N-09) — its result fed only the
     // `ext`/`priorityExt` task fields that the service worker never read.
+
+    // downloadAllMode "media": collect only elements that are objectively
+    // media or lead to media files (img, video, links with media children
+    // or media-file extensions).  Mode "broad" keeps the original wide
+    // selector (a[href], img, video, [onclick], button, [role="button"]).
+    var _collectMediaElements = function (doc) {
+        var seen = new Set();
+        var results = [];
+        var MEDIA_RE = /\.(jpe?g|png|webp|gif|bmp|tiff|avif|mp4|webm|ogv|avi|mov|mkv|mp3|wav|ogg|flac|m4a|opus)(\?|#|$)/i;
+
+        doc.querySelectorAll('img, video, audio, picture').forEach(function (el) {
+            if (!seen.has(el)) { seen.add(el); results.push(el); }
+        });
+
+        doc.querySelectorAll('a[href]').forEach(function (a) {
+            if (seen.has(a)) return;
+            if (a.querySelector('img, video, picture, canvas')) {
+                seen.add(a); results.push(a); return;
+            }
+            var href = a.href || '';
+            if (MEDIA_RE.test(href)) {
+                seen.add(a); results.push(a); return;
+            }
+            var style = a.getAttribute('style') || '';
+            if (/background(-image)?\s*:\s*url\(/i.test(style)) {
+                seen.add(a); results.push(a); return;
+            }
+            var cls = (a.className || '').toString();
+            if (/\b(thumb|thumbnail|preview|gallery-item|media-item|img-wrap|photo-item|post-image)\b/i.test(cls)) {
+                seen.add(a); results.push(a);
+            }
+        });
+
+        return results;
+    };
     // <<< MASS-DOWNLOAD-HELPERS
 
     var flip = function (el, ori) {
@@ -3992,7 +4027,12 @@
             }
             PVI.downloadAllActive = true;
 
-            const allElements = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
+            // downloadAllMode: "media" = only media-bearing elements
+            // (recommended, faster); "broad" = original wide selector.
+            const mode = (cfg.da && cfg.da.downloadAllMode) || 'media';
+            const allElements = mode === 'media'
+                ? _collectMediaElements(doc)
+                : Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
 
             PVI.downloadAllTotal = allElements.length;
             PVI.downloadAllFound = 0;
@@ -4114,7 +4154,8 @@
                         Port.send({
                             cmd: 'downloadMass',
                             url: url,
-                            referer: window.location.href
+                            referer: window.location.href,
+                            isSieveResolved: true
                         });
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
                         setTimeout(PVI.processNextInQueue, 500);

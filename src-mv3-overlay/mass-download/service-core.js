@@ -236,7 +236,8 @@ function handleDownloadMass(msg, sender) {
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
-        isPrivate: sender.tab?.incognito
+        isPrivate: sender.tab?.incognito,
+        isSieveResolved: !!msg.isSieveResolved
     });
     processFilterQueue();
 }
@@ -446,6 +447,23 @@ async function processFilterQueue() {
         const task = filterQueue.shift();
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
+
+        // Sieve-resolved URLs: skip HEAD validation entirely.  The Imagus
+        // sieve (PVI.find + PVI.load) already resolved this URL through
+        // its own content negotiation — it is a known-good target.  This
+        // avoids 403 errors from hotlink protection (rule34.xxx, etc.) and
+        // significantly accelerates scanning on sieve-heavy sites.
+        if (task.isSieveResolved) {
+            if (!scanInProgress) {
+                updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
+            } else {
+                downloadQueue.push(task);
+                processDownloadQueue();
+            }
+            activeFilters--;
+            setTimeout(checkAllQueuesEmpty, 100);
+            continue;
+        }
 
         // Audit N-01: explicit null-checks instead of `||` so that VALID
         // falsy user settings survive — minImageSize=0 / minVideoSize=0 mean

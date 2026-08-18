@@ -537,6 +537,16 @@
 			<h4 data-lng="DA_MASS_DOWNLOAD">Mass Download</h4>
 
 			<div class="prow">
+				<label for="da_downloadAllMode" data-lng="DA_DOWNLOAD_MODE">Collection mode</label>
+				<span>
+					<select id="da_downloadAllMode" name="da_downloadAllMode">
+						<option value="media" data-lng="DA_DOWNLOAD_MODE_MEDIA">Media only (recommended)</option>
+						<option value="broad" data-lng="DA_DOWNLOAD_MODE_BROAD">All elements (broad scan)</option>
+					</select>
+				</span>
+			</div>
+
+			<div class="prow">
 				<label for="da_maxConcurrentFilters" data-lng="DA_MAX_FILTERS">Max Concurrent Filters</label>
 				<span>
 					<input id="da_maxConcurrentFilters" name="da_maxConcurrentFilters" type="number" step="1" min="1"
