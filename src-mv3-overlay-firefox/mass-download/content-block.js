@@ -361,9 +361,11 @@
                         else { setTimeout(PVI.processNextInQueue, 10); return; }
                     }
                     url = url.replace(/^#/, '');
+                    // Dedup: normalize for key (collapse //, strip query cache buster)
+                    const normUrl = url.replace(/([^:]\/)\/+/g, '$1').split('?')[0];
 
-                    if (url && !PVI.downloadAllUniqueUrls.has(url)) {
-                        PVI.downloadAllUniqueUrls.add(url);
+                    if (normUrl && !PVI.downloadAllUniqueUrls.has(normUrl)) {
+                        PVI.downloadAllUniqueUrls.add(normUrl);
                         PVI.downloadAllFound++;
                         Port.send({
                             cmd: 'downloadMass',
