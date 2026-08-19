@@ -559,7 +559,27 @@ function handleMessage(message, sender, sendResponse) {
             handleGetDownloadStatus(msg, sendResponse);
             break;
         case 'getDownloadLog':
-            sendResponse({ log: serializeAllProgress(), stats: downloadStats });
+            {
+                const items = serializeAllProgress();
+                const da = cachedPrefs?.da || {};
+                sendResponse({
+                    log: Object.values(items),
+                    stats: downloadStats,
+                    version: chrome.runtime.getManifest().version,
+                    sessionStart: sessionStartTime,
+                    settings: {
+                        hiRes: !!(cachedPrefs?.hz?.hiRes),
+                        maxConcurrentFilters: Number(da.maxConcurrentFilters) || 5,
+                        maxConcurrentDownloads: Number(da.maxConcurrentDownloads) || 3,
+                        minImageSizeKB: da.minImageSize != null ? da.minImageSize : 45,
+                        minVideoSizeMB: da.minVideoSize != null ? da.minVideoSize : 2,
+                        downloadOnUnknown: da.downloadOnUnknown !== false,
+                        excludedExtensions: da.excludedExtensions != null ? da.excludedExtensions : '.png, .svg, .ico, .gif',
+                        resolutionTimeout: da.resolutionTimeout != null ? da.resolutionTimeout : 8,
+                        showProgressTab: da.showProgressTab !== false
+                    }
+                });
+            }
             return true;
         case 'clearCompletedDownloads':
             handleClearCompleted();

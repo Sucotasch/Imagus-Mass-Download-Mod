@@ -13,13 +13,6 @@
 //   - downloadProgress, downloadStats, downloadProgressTabId, downloadInitiatorTabId
 //   - globalProcessedUrls, urlValidationStats, activeControllers
 
-// --- URL Normalization for Deduplication ---
-// Collapses double slashes (// → /) for dedup keys only.
-function normalizeUrl(url) {
-    if (!url || typeof url !== 'string') return url;
-    return url.replace(/([^:]\/)\/+/g, '$1');
-}
-
 // --- Progress Tab Management ---
 
 let progressTabPromise = null;
@@ -178,7 +171,6 @@ function handleDownloadAll(msg, sender, sendResponse) {
 
 function resetMassDownloadSession() {
     globalProcessedUrls.clear();
-    normalizedDownloadUrls.clear();
     // Preserve completed/skipped entries from previous scans for history
     const preserved = {};
     for (const url in downloadProgress) {
@@ -198,15 +190,20 @@ function resetMassDownloadSession() {
     filterQueue = [];
     downloadQueue = [];
     contentScanDone = false;
-    // Audit N-19: orphaned validation requests from a previous session must
-    // not survive into the new one — they can keep writing progress rows for
-    // the new session, and a stuck activeFilters counter would stall the new
-    // scan entirely (while-loop guard below). handleStopScanning aborts these
-    // on cancel; this covers the "new scan without explicit stop" path.
+    // Audit N-19 (corrected): orphaned requests from a previous session must
+    // not write rows into the new one. handleStopScanning aborts them on
+    // cancel; this covers the "new scan without explicit stop" path. We abort
+    // and clear the controllers here, but must NOT force-zero
+    // activeFilters/activeDownloads: chrome.downloads.download tasks cannot be
+    // aborted, and every in-flight fetch/download decrements its counter in its
+    // own finally/continuation — zeroing them here would drive the counters
+    // negative (Z-Code), bypass the concurrency caps and break the
+    // allDownloadsComplete gate. Stale tasks are neutralized by the sessionId
+    // guard in processFilterQueue instead.
+    sessionId++;
+    sessionStartTime = Date.now();
     activeControllers.forEach(ctrl => ctrl.abort());
     activeControllers.clear();
-    activeFilters = 0;
-    activeDownloads = 0;
 }
 
 function handleOpenDownloadProgress(msg, sender) {
@@ -241,14 +238,12 @@ function handleDownloadMass(msg, sender) {
     // the user canceled. Tasks arriving while !scanInProgress are marked
     // canceled by the filter guards. Only handleOpenDownloadProgress (session
     // start) and handleRetryDownload (explicit user action) may set it.
-    // Dedup: skip if same normalized URL already entered filterQueue
-    const normUrl = normalizeUrl(msg.url);
-    if (normalizedDownloadUrls.has(normUrl)) return;
-    normalizedDownloadUrls.add(normUrl);
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
         isPrivate: sender.tab?.incognito,
+        source: 'element',
+        isHd: !!msg.isHd,
         elementInfo: msg.elementInfo || null
     });
     processFilterQueue();
@@ -370,7 +365,8 @@ function handleRetryDownload(msg, sender) {
         filterQueue.push({
             url: msg.url,
             referer: msg.referer,
-            isPrivate: sender.tab?.incognito
+            isPrivate: sender.tab?.incognito,
+            source: 'retry'
         });
         processFilterQueue();
     }
@@ -406,7 +402,7 @@ function checkAllQueuesEmpty() {
 // the live `task` object carries SW internals (_watchdog timer id, _downloadId,
 // _slotReleased, _id) that must not cross the message boundary.
 function serializeProgressEntry(entry) {
-    const t = entry.task;
+    const t = entry.task || null;
     return {
         url: entry.url,
         status: entry.status,
@@ -415,10 +411,15 @@ function serializeProgressEntry(entry) {
         downloadId: entry.downloadId,
         timestamp: entry.timestamp,
         referer: t ? t.referer : null,
+        source: t ? t.source : null,
+        isHd: t ? t.isHd : null,
+        elementInfo: t ? t.elementInfo : null,
         contentType: t ? t.contentType : null,
         fileSize: t ? t.fileSize : null,
         filterTimeMs: t ? t.filterTimeMs : null,
-        elementInfo: t ? t.elementInfo : null
+        httpStatus: t ? t.httpStatus : null,
+        filterMethod: t ? t.filterMethod : null,
+        filename: t ? t.filename : null
     };
 }
 
@@ -462,15 +463,10 @@ async function processFilterQueue() {
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
-        // Skip # URLs when hiRes is OFF (Imagus convention — # = HD URL).
-        // Matches normal hover flow at content.js line 3404-3405.
-        if (task.url[0] === '#' && !(cachedPrefs.hz && cachedPrefs.hz.hiRes)) {
-            updateDownloadProgress(task.url, 'skipped', 0, 'Skipped # URL (hiRes off)', null, task);
-            downloadStats.skipped++;
-            setTimeout(checkAllQueuesEmpty, 100);
-            continue;
-        }
+        task._session = sessionId;
         activeFilters++;
+        updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
+        const filterStart = Date.now();
 
         // Audit N-01: explicit null-checks instead of `||` so that VALID
         // falsy user settings survive — minImageSize=0 / minVideoSize=0 mean
@@ -489,7 +485,6 @@ async function processFilterQueue() {
             : String(Date.now()) + ':' + Math.random());
 
         const { headMs, getMs } = getFilterTimeouts();
-        const filterStart = Date.now();
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), headMs);
         activeControllers.set(task._id, controller);
@@ -513,6 +508,8 @@ async function processFilterQueue() {
             const size = parseInt(contentLength, 10);
             task.contentType = contentType;
             task.fileSize = size;
+            task.httpStatus = response.status;
+            task.filterMethod = 'HEAD';
 
             if (isExcludedType(task.url, contentType, excludedExtensions)) {
                 task.filterTimeMs = Date.now() - filterStart;
@@ -547,6 +544,7 @@ async function processFilterQueue() {
         } catch (error) {
             clearTimeout(timeoutId);
             activeControllers.delete(task._id);
+            if (task._session !== sessionId) continue;
             if (!scanInProgress) continue;
 
             try {
@@ -564,20 +562,30 @@ async function processFilterQueue() {
                     activeControllers.delete(task._id);
                 }
                 if (!scanInProgress) continue;
+                if (task._session !== sessionId) continue;
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
                 const contentType = response.headers.get('Content-Type') || '';
                 if (contentType.startsWith('text/html')) {
                     task.filterTimeMs = Date.now() - filterStart;
+                    task.httpStatus = response.status;
+                    task.filterMethod = 'GET';
+                    task.contentType = contentType;
                     updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
                 } else {
                     const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
                     if (capped.tooLarge) {
                         task.filterTimeMs = Date.now() - filterStart;
+                        task.httpStatus = response.status;
+                        task.filterMethod = 'GET';
+                        task.contentType = contentType;
                         updateDownloadProgress(task.url, 'skipped', 0, 'Too large for fallback', null, task);
                         downloadStats.skipped++;
                     } else if (capped.error) {
                         task.filterTimeMs = Date.now() - filterStart;
+                        task.httpStatus = response.status;
+                        task.filterMethod = 'GET';
+                        task.contentType = contentType;
                         updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
                     } else {
                         const blob = capped.blob;
@@ -585,9 +593,11 @@ async function processFilterQueue() {
                         const type = blob.type || contentType;
                         task.contentType = type;
                         task.fileSize = size;
-                        task.filterTimeMs = Date.now() - filterStart;
+                        task.httpStatus = response.status;
+                        task.filterMethod = 'GET';
 
                         if (isExcludedType(task.url, type, excludedExtensions)) {
+                            task.filterTimeMs = Date.now() - filterStart;
                             updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
                             downloadStats.skipped++;
                         } else {
@@ -601,6 +611,7 @@ async function processFilterQueue() {
                             }
 
                             if (passed) {
+                                task.filterTimeMs = Date.now() - filterStart;
                                 if (!scanInProgress) {
                                     // Audit N-22: see HEAD path — canceled is
                                     // not a skip.
@@ -610,6 +621,7 @@ async function processFilterQueue() {
                                     processDownloadQueue();
                                 }
                             } else {
+                                task.filterTimeMs = Date.now() - filterStart;
                                 updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
                                 downloadStats.skipped++;
                             }
@@ -617,15 +629,19 @@ async function processFilterQueue() {
                     }
                 }
             } catch (getError) {
+                if (task._session !== sessionId) continue;
                 if (!scanInProgress) {
                     updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task);
                     return;
                 }
-                task.filterTimeMs = Date.now() - filterStart;
                 if (getError.name === 'AbortError') {
+                    task.filterTimeMs = Date.now() - filterStart;
+                    task.filterMethod = task.filterMethod || 'HEAD';
                     updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout', null, task);
                     return;
                 }
+                task.filterTimeMs = Date.now() - filterStart;
+                task.filterMethod = task.filterMethod || 'HEAD';
                 updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
             }
         } finally {
@@ -657,6 +673,7 @@ function processDownloadQueue() {
         const filename = typeof rawFilename === 'string'
             ? rawFilename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_')
             : rawFilename;
+        task.filename = filename;
 
         chrome.downloads.download({
             url: task.url,
@@ -769,7 +786,10 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
 }
 
 async function findBestUrlWithValidation(urlArray, referer) {
-    const cleanUrlArray = urlArray.filter(url => typeof url === 'string' && url);
+    const cleanUrlArray = urlArray
+        .filter(url => typeof url === 'string' && url)
+        .map(url => url.replace(/^#/, ''))
+        .filter(Boolean);
     if (cleanUrlArray.length === 0) return null;
     const recentFailureRate = urlValidationStats.recentFailures.length / 10;
     if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
@@ -811,16 +831,21 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         if (!scanInProgress) break;
         try {
             const bestUrl = await findBestUrlWithValidation(group.urls, referer);
-            const normUrl = bestUrl ? normalizeUrl(bestUrl) : null;
-            if (bestUrl && !normalizedDownloadUrls.has(normUrl)
-                && !globalProcessedUrls.has(bestUrl)) {
-                normalizedDownloadUrls.add(normUrl);
+            if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
                 globalProcessedUrls.add(bestUrl);
                 foundUrls++;
+                // Audit N-09: ext/priorityExt/isFromArray/originalArraySize were
+                // carried on the task but never read anywhere — dropped.
+                // isPrivate matters for Firefox private-window downloads
+                // (see processDownloadQueue platform branch).
+                const isHd = Array.isArray(group.urls)
+                    && group.urls.some(u => typeof u === 'string' && u[0] === '#');
                 const task = {
                     url: bestUrl,
                     referer: referer,
-                    isPrivate: sender?.tab?.incognito === true
+                    isPrivate: sender?.tab?.incognito === true,
+                    source: 'group',
+                    isHd: !!isHd
                 };
                 filterQueue.push(task);
                 processFilterQueue();

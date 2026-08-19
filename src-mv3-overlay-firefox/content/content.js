@@ -4106,25 +4106,18 @@
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
                     }
-                    // Respect hiRes setting — # prefix = HD URL (line 3404-3405).
-                    // Skip # URLs when hiRes is OFF to avoid duplicates.
-                    if (url[0] === '#' && !(cfg && cfg.hz && cfg.hz.hiRes)) {
-                        const cleanAlt = Array.isArray(result) ? result.find(u => u[0] !== '#') : null;
-                        if (cleanAlt) { url = cleanAlt; }
-                        else { setTimeout(PVI.processNextInQueue, 10); return; }
-                    }
+                    const isHd = url[0] === '#';
                     url = url.replace(/^#/, '');
-                    // Dedup: normalize for key (collapse //, strip query cache buster)
-                    const normUrl = url.replace(/([^:]\/)\/+/g, '$1').split('?')[0];
 
-                    if (normUrl && !PVI.downloadAllUniqueUrls.has(normUrl)) {
-                        PVI.downloadAllUniqueUrls.add(normUrl);
+                    if (url && !PVI.downloadAllUniqueUrls.has(url)) {
+                        PVI.downloadAllUniqueUrls.add(url);
                         PVI.downloadAllFound++;
                         Port.send({
                             cmd: 'downloadMass',
                             url: url,
                             referer: window.location.href,
-                            elementInfo: { tag: el.localName, src: el.href || el.src || '' }
+                            elementInfo: { tag: el.localName, src: el.href || el.src || '' },
+                            isHd: isHd
                         });
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
                         setTimeout(PVI.processNextInQueue, 500);

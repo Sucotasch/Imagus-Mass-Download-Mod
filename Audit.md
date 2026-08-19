@@ -345,3 +345,20 @@ Any site where:
 - Sieve has already resolved the URL (isSieveResolved = true)
 
 Do NOT use for: sites without hotlink protection (unnecessary overhead).
+
+
+
+5. Z-Code comment:
+
+Другая сессия сама заметила EOL-проблему (N-20) и корректно реализовала N-16…N-24, но при мirror в FF-дерево пропустила объявление `normalizedDownloadUrls` в `service-init.js` — а FF `service-core.js` использует его 5 раз → **ReferenceError, mass download в Firefox сломан**. Также вижу последствия N-19-фикса, которые они не учли: force-zero счётчиков при живых загрузках даёт отрицательный дренаж (`activeDownloads--` → −1, −2…) и превышение параллелизма.
+
+### Resolution (2026-07-25, v2026.7.25.6)
+
+Both issues are resolved by rolling both trees back to `v2026.7.25.2` and re-applying only the sound work on top:
+
+- **Baseline:** `git checkout v2026.7.25.2 -- src-mv3-overlay src-mv3-overlay-firefox` — the dedup/normalizeUrl churn (`405c607`…`cde4932`) is gone; the accidental FF `'scanning'` line removal and the missing `normalizedDownloadUrls` declaration are gone with it (that machinery no longer exists).
+- **N-19 fixed correctly:** `sessionId` counter in `service-init.js`; `resetMassDownloadSession()` increments it and aborts/clears `activeControllers` but **no longer force-zeros** `activeFilters`/`activeDownloads`; `processFilterQueue` tags each task with `task._session` and drops stale continuations (`if (task._session !== sessionId) continue;`) in the outer catch, the inner GET path, and the GET-error catch. Keeps the abort-on-new-scan protection without negative counter drain.
+- **Groups-path `#` leak fixed:** `findBestUrlWithValidation` strips a leading `#` from every candidate before scoring/validation, so HD-prefixed sieve URLs can no longer reach `fetch()` as `#https://…` and fail with "Invalid URL". `processUrlGroupsWithValidation` records `source:'group'` + `isHd` on the task.
+- **Save Log restored + enhanced:** `getDownloadLog` handler (async `return true`) returns serialized items + `downloadStats` + version + `sessionStart` + `da`/`hz.hiRes` settings; per-item metadata (`contentType`, `fileSize`, `filterTimeMs`, `httpStatus`, `filterMethod`, `source`, `isHd`, `elementInfo`, `filename`) flows from `processFilterQueue`/`processDownloadQueue` through `serializeProgressEntry`; progress page gets a **Save Log** button producing a plain-text diagnostics file.
+- Kept intact: N-16 watchdog, N-17 resolve fail-fast, N-18 download try/catch, N-21 retry flag reset, N-22 cancel≠skip, N-23/24 maxRecords null-checks.
+- FF overlay delta preserved (3 files only): `service.js` mdAck, `service-core.js` incognito branch, `manifest.json`. 

@@ -11,10 +11,10 @@
     const statsPrefilteredEl = document.getElementById('stats-prefiltered');
     const statsSkippedEl = document.getElementById('stats-skipped');
     const refreshBtn = document.getElementById('refreshBtn');
+    const saveLogBtn = document.getElementById('saveLogBtn');
     const clearBtn = document.getElementById('clearBtn');
     const clearAllBtn = document.getElementById('clearAllBtn');
     const cancelAllBtn = document.getElementById('cancelAllBtn');
-    const saveLogBtn = document.getElementById('saveLogBtn');
 
     // State management
     let downloadItems = {};
@@ -46,6 +46,9 @@
     function init() {
         // Set up event listeners
         refreshBtn.addEventListener('click', refreshDisplay);
+        if (saveLogBtn) {
+            saveLogBtn.addEventListener('click', saveLog);
+        }
         clearBtn.addEventListener('click', clearCompleted);
         if (clearAllBtn) {
             clearAllBtn.addEventListener('click', clearAll);
@@ -54,9 +57,6 @@
             cancelAllBtn.addEventListener('click', () => {
                 chrome.runtime.sendMessage({ cmd: 'stopScanning' });
             });
-        }
-        if (saveLogBtn) {
-            saveLogBtn.addEventListener('click', saveLog);
         }
 
         // Listen for messages from background script
@@ -352,73 +352,81 @@
         }
     }
 
-    function formatLog(log, stats) {
-        const lines = [];
-        lines.push('=== Imagus Mass Download Log ===');
-        lines.push('Date: ' + new Date().toLocaleString());
-        if (stats) {
-            lines.push('Stats: Found=' + (stats.found || 0)
-                + '  Prefiltered=' + (stats.prefiltered || 0)
-                + '  Skipped=' + (stats.skipped || 0)
-                + '  Downloaded=' + (stats.downloaded || 0));
-        }
-        lines.push('');
-
-        const items = Object.values(log);
-        const order = { completed: 0, skipped: 1, failed: 2, canceled: 3, scanning: 4, downloading: 5, pending: 6 };
-        items.sort((a, b) => {
-            const da = order[a.status] ?? 7, db = order[b.status] ?? 7;
-            return da - db || (a.timestamp || 0) - (b.timestamp || 0);
-        });
-
-        lines.push('--- Items (' + items.length + ' total) ---');
-        lines.push('');
-
-        for (const item of items) {
-            const time = item.timestamp ? new Date(item.timestamp).toISOString().replace('T', ' ').slice(0, 23) : '?';
-            const status = (item.status || '?').toUpperCase();
-            const size = item.fileSize != null ? formatSize(item.fileSize) : '';
-            const ctype = item.contentType || '';
-            const ftime = item.filterTimeMs != null ? item.filterTimeMs + 'ms' : '';
-            const elem = item.elementInfo ? '<' + item.elementInfo.tag + '>' : '';
-
-            const meta = [size, ctype, ftime, elem].filter(Boolean).join('  ');
-            lines.push('[' + time + '] ' + status + (meta ? '  ' + meta : ''));
-
-            if (item.error) {
-                lines.push('  Error: ' + item.error);
-            }
-            if (item.referer) {
-                lines.push('  Referer: ' + item.referer);
-            }
-            if (item.downloadId) {
-                lines.push('  DownloadId: ' + item.downloadId);
-            }
-            lines.push('  URL: ' + (item.url || ''));
-            lines.push('');
-        }
-
-        return lines.join('\n');
-    }
-
     function formatSize(bytes) {
-        if (bytes == null) return '';
+        if (!bytes || bytes <= 0) return '-';
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    }
+
+    function fmtTs(ts) {
+        if (!ts) return '-';
+        const d = new Date(ts);
+        if (isNaN(d.getTime())) return String(ts);
+        return d.toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    function formatLog(data) {
+        const items = data.log || [];
+        const stats = data.stats || {};
+        const settings = data.settings || {};
+        const lines = [];
+        lines.push('Imagus Mass Download Log');
+        lines.push('Version: ' + (data.version || '?'));
+        lines.push('Saved: ' + fmtTs(Date.now()));
+        lines.push('Session start: ' + fmtTs(data.sessionStart));
+        lines.push('');
+        lines.push('Settings:');
+        for (const k in settings) {
+            lines.push('  ' + k + ': ' + String(settings[k]));
+        }
+        lines.push('');
+        const byStatus = {};
+        items.forEach(it => { byStatus[it.status] = (byStatus[it.status] || 0) + 1; });
+        lines.push('Stats (live counters): found=' + (stats.found || 0)
+            + ' prefiltered=' + (stats.prefiltered || 0)
+            + ' skipped=' + (stats.skipped || 0)
+            + ' downloaded=' + (stats.downloaded || 0));
+        lines.push('Items by status: '
+            + Object.keys(byStatus).map(s => s + '=' + byStatus[s]).join(', ')
+            + ' (total shown=' + items.length + ')');
+        lines.push('');
+        lines.push('Items:');
+        items.forEach((it, i) => {
+            const num = String(i + 1).padStart(3, '0');
+            const head = '[' + num + '] ' + String(it.status || '-').toUpperCase().padEnd(11)
+                + ' ' + (it.progress || 0) + '% '
+                + formatSize(it.fileSize)
+                + ' ' + (it.filterMethod || '-') + '/' + (it.httpStatus || '-')
+                + ' ' + (it.filterTimeMs != null ? it.filterTimeMs + 'ms' : '-')
+                + ' src=' + (it.source || '-') + ' hd=' + (it.isHd ? 1 : 0);
+            lines.push(head);
+            lines.push('      URL: ' + (it.url || '-'));
+            if (it.filename) lines.push('      file: ' + it.filename);
+            if (it.contentType) lines.push('      type: ' + it.contentType);
+            if (it.referer) lines.push('      referer: ' + it.referer);
+            if (it.elementInfo) lines.push('      element: <' + it.elementInfo.tag + '> ' + (it.elementInfo.src || ''));
+            if (it.error) lines.push('      error: ' + it.error);
+        });
+        return lines.join('\r\n');
     }
 
     function saveLog() {
-        chrome.runtime.sendMessage({ cmd: 'getDownloadLog' }, function (response) {
-            if (!response || !response.log) return;
-            const text = formatLog(response.log, response.stats);
-            const blob = new Blob([text], { type: 'text/plain' });
+        chrome.runtime.sendMessage({ cmd: 'getDownloadLog' }, (response) => {
+            if (chrome.runtime.lastError || !response) {
+                const scanStatusEl = document.getElementById('scanStatus');
+                if (scanStatusEl) scanStatusEl.textContent = 'Save Log failed: no data from service worker';
+                return;
+            }
+            const text = formatLog(response);
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'mass-download-log-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.txt';
+            a.download = 'imagus-mass-download-log-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.txt';
+            document.body.appendChild(a);
             a.click();
-            URL.revokeObjectURL(url);
+            setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
         });
     }
 

@@ -16,10 +16,9 @@ Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + ori
 | **`src-mv3-overlay-firefox/`** | **Active development (Firefox)** — byte-copy of `src-mv3-overlay/` + FF deltas (manifest, `mdAck`, download `incognito`). Branch `feature/overlay-firefox` | Yes (keep delta minimal — see `Docs/FIREFOX_OVERLAY.md`) |
 | `src-mv3/` | Older MV3 mod (monolithic mass-download inside service/content) | Only if fixing the stable `mv3-version` line |
 | `src/` | Legacy MV2; built by `build.py` | Only for MV2 legacy |
-| `Imagus-Reborn-base/` | Upstream snapshot (hababr/Imagus-Reborn) | **Do not edit** — reference only |
+| `Imagus-Reborn-base/` | Upstream snapshot (hababr/Imagus-Reborn) | **Do not edit** — reference only (gitignored) |
 | `Docs/` | Developer docs (algorithm, structure, overlay strategy) | Docs only |
-| `src-mv3-overlay-upd/` | Untracked staging dir for pending re-base | Do not edit — transient |
-| `_tmp_upstream/` | Temporary upstream diff/comparison files | Do not edit — transient |
+| `_tmp_upstream/`, `upstream_v2026.7.21/` | Temporary upstream diff/comparison files | Do not edit — transient (gitignored) |
 | `minified/` / `unminified/` | Pre-built sieve artifacts | Not main source |
 | `Audit/` | External audit reports | Reference |
 
@@ -52,7 +51,7 @@ src-mv3-overlay/
 ├── options/                       # options, popup, download-progress, SieveUI
 ├── data/defaults.json             # hz / keys / tls / da
 ├── data/sieve.json                # Site media rules
-└── manifest.json                  # MV3 (version tracks upstream, currently 2026.7.25.1)
+└── manifest.json                  # MV3 (version tracks upstream, currently 2026.7.25.6)
 ```
 
 ### Service worker wiring
@@ -64,7 +63,9 @@ importScripts('../mass-download/service-init.js', '../mass-download/service-core
 ```
 
 Mass-download `handleMessage` cases (after upstream `resolve`):  
-`downloadAll`, `openDownloadProgress`, `registerProgressTab`, `downloadMass`, `resolveAndDownloadGroups`, `updateStatus`, `updateFilterStats`, `stopScanning`, `getDownloadStatus`, `clearCompletedDownloads`, `clearAllDownloads`, `retryDownload`.
+`downloadAll`, `openDownloadProgress`, `registerProgressTab`, `downloadMass`, `resolveAndDownloadGroups`, `updateStatus`, `updateFilterStats`, `stopScanning`, `getDownloadStatus`, `getDownloadLog`, `clearCompletedDownloads`, `clearAllDownloads`, `retryDownload`.
+
+`getDownloadLog` is the progress-tab **Save Log** path — it returns serialized items (with per-item `contentType`/`fileSize`/`filterTimeMs`/`httpStatus`/`filterMethod`/`source`/`isHd`/`elementInfo`/`filename`) + `downloadStats` + version + `sessionStart` + `da`/`hz.hiRes` settings, and is one of the handlers that must `return true` (async `sendResponse`).
 
 Handlers live in `mass-download/service-core.js` (`handleDownloadAll`, `handleDownloadMass`, …).
 
@@ -108,6 +109,9 @@ Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `sr
 - **Queues are in-memory only** (`filterQueue`, `downloadQueue`, `downloadStats` in SW). Worker restart loses progress; nothing is persisted to `chrome.storage` for queues.
 - **Clean stop:** on `stopScanning` / cancel, mark tasks canceled and abort every entry in `activeControllers` (keys should be unique IDs, not raw URLs).
 - **PVI monkey-patch:** mass download temporarily wraps `PVI.set` / `PVI.show` to capture sieve-resolved URLs.
+- **Dedup is by RAW URL** (`PVI.downloadAllUniqueUrls` in content + `globalProcessedUrls` in SW). The 2026-07-25 attempt to normalize (collapse `//`, strip/keep query) produced an inconsistent content-vs-SW key and was rolled back in v2026.7.25.6. Same-file duplicates via different query/double-slash variants are a **known, deferred** issue — solve it later with one consistent normalization contract across both entry paths. Do not re-add a half-normalized `normalizeUrl`.
+- **`#`-prefixed sieve URLs (HD):** content strips `^#` before `downloadMass`, and `findBestUrlWithValidation` strips it from every candidate in the groups path, so a `#…` URL must never reach `fetch()` ("Invalid URL"). `isHd` is recorded per task for the log. Do not skip `#` URLs when `cfg.hz.hiRes` is off — for many sites (e.g. rule34) the non-`#` sample 404s and only the `#` full-size exists.
+- **Session isolation (N-19 corrected):** `resetMassDownloadSession()` increments `sessionId`, aborts+clears `activeControllers`, but must NOT force-zero `activeFilters`/`activeDownloads` (live downloads can't abort; their continuations decrement the counters — zeroing drives them negative and breaks the concurrency caps). `processFilterQueue` tags `task._session` and drops stale continuations (`if (task._session !== sessionId) continue;`).
 - **Message bus:** `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage`. Only keep the channel open (`return true`) for handlers that call `sendResponse` asynchronously (e.g. `get_file`); do not blanket-`return true`.
 - **User scripts need Developer Mode.**
 - **Sieve rules starting with `_`** are user/local — never overwrite on auto-update.
@@ -134,9 +138,9 @@ Localization: mod strings = `DA_*` in `_locales/[lang]/messages.json`; core Imag
 ## Mass Download Flow (short)
 
 1. **Content:** scan DOM → pre-filter (visibility + stop-words) → resolve via Imagus/PVI sieve (monkey-patch) → group ambiguous URLs → send to SW.  
-2. **SW filter phase:** HEAD/GET validation, size/type filters, circuit breaker on high failure rate.  
+2. **SW filter phase:** dedup by raw URL in `processFilterQueue` / `processUrlGroupsWithValidation` (see gotchas — normalized dedup is deferred) → HEAD/GET validation, size/type filters, circuit breaker on high failure rate.  
 3. **SW download phase:** `chrome.downloads.download`, progress updates to progress tab.  
-4. **UI:** popup / hotkey / options; progress tab registers via `registerProgressTab`.
+4. **UI:** popup / hotkey / options; progress tab registers via `registerProgressTab`; **Save Log** button pulls `getDownloadLog` into a diagnostics .txt.
 
 Details: `Docs/MASS_DOWNLOAD_ALGORITHM.md`, strategy & re-base: `Docs/MASS_DOWNLOAD_STRATEGY.md`.
 
@@ -179,7 +183,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 - No download watchdog / non-abortable inner GET
 - HEAD success ignores `scanInProgress` — guard before `downloadQueue.push`
 - Monkey-patch not restored on cancel — `PVI._cleanupMonkeyPatch` ref
-- No session reset on new scan — `resetMassDownloadSession()` clears all state
+- No session reset on new scan — `resetMassDownloadSession()` resets sessionId + aborts controllers; does NOT force-zero live counters (N-19 correction, v2026.7.25.6)
 
 **Settings / state:**
 - `cfg.da` missing from `initTab` hello prefs — excludedKeywords/resolutionTimeout not applied
@@ -216,9 +220,11 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 | `Docs/PROJECT_STRUCTURE.md` | Components, message bus, dependency map |
 | `Docs/MV3_DEVELOPMENT.md` | MV3 SW, userScripts, migration notes |
 | `Docs/UPSTREAM_725_INTEGRATION_PLAN.md` | Upstream v2026.7.25 integration / re-base checklist |
+| `Docs/FIREFOX_OVERLAY.md` | Firefox overlay deltas (only when working in `src-mv3-overlay-firefox`) |
+| `Docs/HASH_PREFIX_CONVENTION.md` | `#`-prefixed HD URL convention — read before touching dedup/`hiRes` logic |
 | `Docs/DEVELOPMENT_GUIDE.md` | Sieve maintenance, hotkeys, debugging |
 | `Docs/PROJECT_MV2.md` | Legacy `src/` only |
-| `README.md` | User-facing overview (still mentions `src-mv3` install path) |
+| `README.md` | User-facing overview (primary install is `src-mv3-overlay`; a legacy `src-mv3` section remains) |
 
 ## Conventions
 

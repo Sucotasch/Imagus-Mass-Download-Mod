@@ -16,6 +16,13 @@ var contentScanDone = false;
 // fire at most once per session. Both reset in resetMassDownloadSession().
 var userCanceled = false;
 var completionNotified = false;
+// Audit N-19 (corrected): sessionId isolates in-flight work from a previous
+// session. resetMassDownloadSession() increments it; processFilterQueue tags
+// every picked-up task with the session it belongs to and drops stale
+// continuations whose session is no longer current. sessionStartTime feeds
+// the progress-log header.
+var sessionId = 0;
+var sessionStartTime = null;
 
 // --- Mass Download Progress and Stats ---
 var downloadProgress = {};
@@ -40,7 +47,3 @@ const activeControllers = new Map();
 
 // Reverse mapping: chrome.downloads.downloadId -> task object
 const downloadIdToTask = new Map();
-
-// Synchronous dedup: normalized URLs that have entered filterQueue.
-// Cleared per session in resetMassDownloadSession().
-const normalizedDownloadUrls = new Set();
