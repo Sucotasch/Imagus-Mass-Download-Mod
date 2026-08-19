@@ -13,6 +13,14 @@
 //   - downloadProgress, downloadStats, downloadProgressTabId, downloadInitiatorTabId
 //   - globalProcessedUrls, urlValidationStats, activeControllers
 
+// --- URL Normalization for Deduplication ---
+// Collapses double slashes and strips query strings for dedup keys.
+// Original URLs are preserved for actual downloads (CDN compatibility).
+function normalizeUrl(url) {
+    if (!url || typeof url !== 'string') return url;
+    return url.replace(/([^:]\/)\/+/g, '$1').split('?')[0];
+}
+
 // --- Progress Tab Management ---
 
 let progressTabPromise = null;
@@ -236,7 +244,8 @@ function handleDownloadMass(msg, sender) {
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
-        isPrivate: sender.tab?.incognito
+        isPrivate: sender.tab?.incognito,
+        elementInfo: msg.elementInfo || null
     });
     processFilterQueue();
 }
@@ -393,6 +402,7 @@ function checkAllQueuesEmpty() {
 // the live `task` object carries SW internals (_watchdog timer id, _downloadId,
 // _slotReleased, _id) that must not cross the message boundary.
 function serializeProgressEntry(entry) {
+    const t = entry.task;
     return {
         url: entry.url,
         status: entry.status,
@@ -400,7 +410,11 @@ function serializeProgressEntry(entry) {
         error: entry.error,
         downloadId: entry.downloadId,
         timestamp: entry.timestamp,
-        referer: entry.task ? entry.task.referer : null
+        referer: t ? t.referer : null,
+        contentType: t ? t.contentType : null,
+        fileSize: t ? t.fileSize : null,
+        filterTimeMs: t ? t.filterTimeMs : null,
+        elementInfo: t ? t.elementInfo : null
     };
 }
 
@@ -444,8 +458,16 @@ async function processFilterQueue() {
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
+        // Dedup: skip if same normalized URL already processed or in progress
+        const normUrl = normalizeUrl(task.url);
+        if (normUrl && globalProcessedUrls.has(normUrl)) {
+            updateDownloadProgress(task.url, 'skipped', 0, 'Duplicate', null, task);
+            downloadStats.skipped++;
+            setTimeout(checkAllQueuesEmpty, 100);
+            continue;
+        }
+        if (normUrl) globalProcessedUrls.add(normUrl);
         activeFilters++;
-        updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
         // Audit N-01: explicit null-checks instead of `||` so that VALID
         // falsy user settings survive — minImageSize=0 / minVideoSize=0 mean
@@ -464,6 +486,7 @@ async function processFilterQueue() {
             : String(Date.now()) + ':' + Math.random());
 
         const { headMs, getMs } = getFilterTimeouts();
+        const filterStart = Date.now();
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), headMs);
         activeControllers.set(task._id, controller);
@@ -485,8 +508,11 @@ async function processFilterQueue() {
             }
 
             const size = parseInt(contentLength, 10);
+            task.contentType = contentType;
+            task.fileSize = size;
 
             if (isExcludedType(task.url, contentType, excludedExtensions)) {
+                task.filterTimeMs = Date.now() - filterStart;
                 updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
                 downloadStats.skipped++;
             } else {
@@ -500,6 +526,7 @@ async function processFilterQueue() {
                 }
 
                 if (passed) {
+                    task.filterTimeMs = Date.now() - filterStart;
                     if (!scanInProgress) {
                         // Audit N-22: a user cancel is not a size/type skip —
                         // the task is already marked 'canceled'.
@@ -509,6 +536,7 @@ async function processFilterQueue() {
                     downloadQueue.push(task);
                     processDownloadQueue();
                 } else {
+                    task.filterTimeMs = Date.now() - filterStart;
                     updateDownloadProgress(task.url, 'skipped', 0, 'Too small', null, task);
                     downloadStats.skipped++;
                 }
@@ -537,18 +565,24 @@ async function processFilterQueue() {
 
                 const contentType = response.headers.get('Content-Type') || '';
                 if (contentType.startsWith('text/html')) {
+                    task.filterTimeMs = Date.now() - filterStart;
                     updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
                 } else {
                     const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
                     if (capped.tooLarge) {
+                        task.filterTimeMs = Date.now() - filterStart;
                         updateDownloadProgress(task.url, 'skipped', 0, 'Too large for fallback', null, task);
                         downloadStats.skipped++;
                     } else if (capped.error) {
+                        task.filterTimeMs = Date.now() - filterStart;
                         updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
                     } else {
                         const blob = capped.blob;
                         const size = blob.size;
                         const type = blob.type || contentType;
+                        task.contentType = type;
+                        task.fileSize = size;
+                        task.filterTimeMs = Date.now() - filterStart;
 
                         if (isExcludedType(task.url, type, excludedExtensions)) {
                             updateDownloadProgress(task.url, 'skipped', 0, 'Excluded type', null, task);
@@ -584,6 +618,7 @@ async function processFilterQueue() {
                     updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task);
                     return;
                 }
+                task.filterTimeMs = Date.now() - filterStart;
                 if (getError.name === 'AbortError') {
                     updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout', null, task);
                     return;
@@ -773,20 +808,30 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         if (!scanInProgress) break;
         try {
             const bestUrl = await findBestUrlWithValidation(group.urls, referer);
-            if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
-                globalProcessedUrls.add(bestUrl);
+            // Strip Imagus '#' prefix (marks raw/final URLs) — chrome.downloads
+            // rejects URLs starting with '#'.
+            const cleanUrl = bestUrl ? bestUrl.replace(/^#/, '') : null;
+            const normUrl = cleanUrl ? normalizeUrl(cleanUrl) : null;
+            const isDuplicate = (normUrl && globalProcessedUrls.has(normUrl))
+                || (cleanUrl && downloadProgress[cleanUrl])
+                || (normUrl && downloadProgress[normUrl]);
+            if (cleanUrl && !isDuplicate) {
+                if (normUrl) globalProcessedUrls.add(normUrl);
                 foundUrls++;
                 // Audit N-09: ext/priorityExt/isFromArray/originalArraySize were
                 // carried on the task but never read anywhere — dropped.
                 // isPrivate matters for Firefox private-window downloads
                 // (see processDownloadQueue platform branch).
                 const task = {
-                    url: bestUrl,
+                    url: cleanUrl,
                     referer: referer,
                     isPrivate: sender?.tab?.incognito === true
                 };
                 filterQueue.push(task);
                 processFilterQueue();
+            } else if (cleanUrl) {
+                console.info(manifest.name + ': dedup skip: ' + cleanUrl
+                    + (globalProcessedUrls.has(normUrl) ? ' (globalProcessed)' : ' (downloadProgress)'));
             }
         } catch (error) {
             console.warn(manifest.name + ': group resolution failed', error);

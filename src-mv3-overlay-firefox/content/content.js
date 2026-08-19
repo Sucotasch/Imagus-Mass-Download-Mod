@@ -4114,7 +4114,8 @@
                         Port.send({
                             cmd: 'downloadMass',
                             url: url,
-                            referer: window.location.href
+                            referer: window.location.href,
+                            elementInfo: { tag: el.localName, src: el.href || el.src || '' }
                         });
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
                         setTimeout(PVI.processNextInQueue, 500);

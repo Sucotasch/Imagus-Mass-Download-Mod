@@ -558,6 +558,9 @@ function handleMessage(message, sender, sendResponse) {
         case 'getDownloadStatus':
             handleGetDownloadStatus(msg, sendResponse);
             break;
+        case 'getDownloadLog':
+            sendResponse({ log: serializeAllProgress(), stats: downloadStats });
+            return true;
         case 'clearCompletedDownloads':
             handleClearCompleted();
             mdAck();
