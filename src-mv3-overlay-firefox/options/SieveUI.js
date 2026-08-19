@@ -702,27 +702,49 @@ var sieve_sec,
         },
 
         checkUpdate: async function () {
-            // assume that Sieve updates from GitHub repo
-            const [_, user, repo] = /https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)/i.exec(cfg.sieveRepository) || [];
-            if (!user || !repo) return;
-            const conf = await chrome.storage.local.get({ sieveUpdateLast: 0 });
-            const lastCheck = new Date(Number(conf.sieveUpdateLast));
-
-            // get date of last commit
-            const res = await fetch(`https://api.github.com/repos/${user}/${repo}/commits?per_page=1`);
-            if (!res.ok) return;
-            const data = await res.json();
-            const commitDate = new Date(data[0]?.commit?.committer?.date);
-
             const updBtn = sieve_sec.querySelector("[data-action='update-rules']");
             updBtn.title = updBtn.title.split("\n")[0];
-            if (commitDate > lastCheck) {
+            const clear = function () { updBtn.style.outline = ""; updBtn.style.filter = ""; };
+
+            const conf = await chrome.storage.local.get({ sieveEtag: null, sieveUpdateLast: 0 });
+
+            const m = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/i.exec(cfg.sieveRepository) || [];
+            if (!m) { clear(); return; }
+
+            let available = false;
+            let etagDetermined = false;
+
+            // 1) jsDelivr CDN etag — no GitHub API rate limit.
+            try {
+                const mirror = `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}`;
+                const res = await fetch(mirror);
+                const etag = res.headers.get("etag");
+                await res.body?.cancel();
+                if (etag) {
+                    etagDetermined = true;
+                    available = !conf.sieveEtag || etag !== conf.sieveEtag;
+                }
+            } catch (e) { /* jsDelivr unreachable — fall through to GitHub API */ }
+
+            // 2) Fallback: GitHub commits API — kept so a custom GitHub repo
+            //    (even one jsDelivr cannot mirror) still drives the indicator.
+            if (!etagDetermined) {
+                try {
+                    const res = await fetch(`https://api.github.com/repos/${m[1]}/${m[2]}/commits?per_page=1`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        const commitDate = new Date(data[0]?.commit?.committer?.date);
+                        available = commitDate > new Date(Number(conf.sieveUpdateLast));
+                    }
+                } catch (e) { /* ignore */ }
+            }
+
+            if (available) {
                 updBtn.style.outline = "#ffaaaa solid 2px";
                 updBtn.style.filter = "none";
                 updBtn.title += "\nSieve update is available";
             } else {
-                updBtn.style.outline = "";
-                updBtn.title += "\nSieve is up to date";
+                clear();
             }
         }
     };

@@ -80,10 +80,16 @@ function jsDelivrMirror(repoUrl) {
     return `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}`;
 }
 
-async function updateSieve(local, retryCount = 0, useMirror = false) {
+async function updateSieve(local, retryCount = 0, useMirror = false, force = false) {
     const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
+
+    // A local sieve with zero usable rules must never be treated as "up to
+    // date": if the user deleted all rules and wants to re-download them,
+    // If-Modified-Since/304 would silently hand the (now empty) local sieve
+    // back instead of fetching a full copy.
+    const hasLocalRules = !!curSieve && Object.keys(curSieve).some(k => curSieve[k] && (curSieve[k].link || curSieve[k].img));
 
     const primaryUrl = local ? "/data/sieve.json" : sieveRepoUrl;
     const mirrorUrl = (!local && !useMirror) ? jsDelivrMirror(sieveRepoUrl) : null;
@@ -95,7 +101,7 @@ async function updateSieve(local, retryCount = 0, useMirror = false) {
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
         const headers = {};
-        if (!local && !useMirror) {
+        if (!local && !useMirror && !force && hasLocalRules) {
             const { sieveUpdateLast } = await cfg.get("sieveUpdateLast");
             if (sieveUpdateLast) {
                 headers['If-Modified-Since'] = new Date(Number(sieveUpdateLast)).toUTCString();
@@ -106,7 +112,20 @@ async function updateSieve(local, retryCount = 0, useMirror = false) {
         clearTimeout(timeoutId);
 
         if (response.status === 304) {
+            if (force) {
+                // A manual forced update must deliver the full remote content
+                // (e.g. the user deleted rules and wants them back) — never
+                // accept "not modified" on a forced update.
+                throw new Error("HTTP 304 on forced update");
+            }
+            if (!hasLocalRules) {
+                // Empty local sieve + 304 means the conditional request is
+                // misleading — go fetch the full content from the mirror.
+                throw new Error("HTTP 304 with empty local sieve");
+            }
             console.info(manifest.name + ": Sieve is up to date (HTTP 304).");
+            const etag304 = response.headers.get('etag');
+            if (etag304) await cfg.set({ sieveEtag: etag304 });
             return { updated_sieve: curSieve, upToDate: true };
         }
         if (!response.ok) {
@@ -151,7 +170,8 @@ async function updateSieve(local, retryCount = 0, useMirror = false) {
             newSieve = merged;
         }
         await updatePrefs({ sieve: newSieve });
-        await cfg.set({ sieveUpdateLast: Date.now() });
+        const etag = response.headers.get('etag');
+        await cfg.set(etag ? { sieveUpdateLast: Date.now(), sieveEtag: etag } : { sieveUpdateLast: Date.now() });
         console.info(manifest.name + ": Sieve updated from " + (useMirror ? "jsDelivr mirror" : (local ? "local" : "remote")) + " repository.");
         return { updated_sieve: newSieve };
 
@@ -163,19 +183,19 @@ async function updateSieve(local, retryCount = 0, useMirror = false) {
 
         if (!local && !useMirror && mirrorUrl) {
             console.info(manifest.name + ": Trying jsDelivr mirror instead.");
-            return updateSieve(local, retryCount, true);
+            return updateSieve(local, retryCount, true, force);
         }
 
         if (!local && retryCount < MAX_RETRIES) {
             const delay = Math.pow(2, retryCount) * 1000;
             console.info(manifest.name + ": Retrying sieve update in " + delay + "ms (attempt " + (retryCount + 1) + "/" + MAX_RETRIES + ")");
             await new Promise(resolve => setTimeout(resolve, delay));
-            return updateSieve(local, retryCount + 1, useMirror);
+            return updateSieve(local, retryCount + 1, useMirror, force);
         }
 
         if (!local) {
             const data = await cfg.get("sieve");
-            if (!data.sieve) {
+            if (!data.sieve || !hasLocalRules) {
                 return updateSieve(true);
             }
         }
@@ -405,7 +425,7 @@ function handleMessage(message, sender, sendResponse) {
             updatePrefs(msg.prefs, function () { context.postMessage({}); });
             return true;
         case "update_sieve":
-            updateSieve(msg.local).then(context.postMessage);
+            updateSieve(msg.local, 0, false, true).then(context.postMessage);
             return true;
         case "loadScripts":
             registerContentScripts();
