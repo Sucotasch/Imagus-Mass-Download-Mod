@@ -321,6 +321,10 @@ function handleGetDownloadStatus(msg, sendResponse) {
 function releaseDownloadSlot(task) {
     if (!task || task._slotReleased) return;
     task._slotReleased = true;
+    if (task._revokeUrl) {
+        URL.revokeObjectURL(task._revokeUrl);
+        task._revokeUrl = null;
+    }
     if (task._watchdog) {
         clearTimeout(task._watchdog);
         task._watchdog = null;
@@ -370,6 +374,65 @@ function handleRetryDownload(msg, sender) {
         });
         processFilterQueue();
     }
+}
+
+function handleRefererDownloadReady(msg, sender) {
+    if (!msg || !msg.url) return;
+    if (!scanInProgress || userCanceled) {
+        updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, null);
+        return;
+    }
+    const da = cachedPrefs.da || {};
+    const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const minImageSize = (da.minImageSize != null ? da.minImageSize : 45) * 1024;
+    const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
+    const downloadOnUnknown = da.downloadOnUnknown !== false;
+
+    const size = Number(msg.size) || 0;
+    const type = msg.contentType || '';
+
+    if (isExcludedType(msg.url, type, excludedExtensions)) {
+        updateDownloadProgress(msg.url, 'skipped', 0, 'Excluded type', null, null);
+        downloadStats.skipped++;
+        return;
+    }
+    let passed = true;
+    if (type.startsWith('image/')) {
+        if (minImageSize > 0 && size < minImageSize) passed = false;
+    } else if (type.startsWith('video/')) {
+        if (minVideoSize > 0 && size < minVideoSize) passed = false;
+    } else if (!downloadOnUnknown) {
+        passed = false;
+    }
+    if (!passed) {
+        updateDownloadProgress(msg.url, 'skipped', 0, 'Too small', null, null);
+        downloadStats.skipped++;
+        return;
+    }
+
+    const task = {
+        url: msg.url,
+        referer: msg.referer || '',
+        isPrivate: sender?.tab?.incognito === true,
+        source: msg.source || 'referer',
+        isHd: !!msg.isHd,
+        elementInfo: msg.elementInfo || null,
+        contentType: type,
+        fileSize: size,
+        filterMethod: 'REFERRER',
+        httpStatus: 200
+    };
+    task._session = sessionId;
+    if (platform === 'firefox') task._blob = msg.blob;
+    else task._objectUrl = msg.objectUrl;
+    downloadQueue.push(task);
+    processDownloadQueue();
+}
+
+function handleRefererDownloadFailed(msg) {
+    if (!msg || !msg.url) return;
+    updateDownloadProgress(msg.url, 'failed', 0, 'Referer retry failed: ' + (msg.error || 'unknown'), null, null);
 }
 
 // --- Progress Tab Lifecycle ---
@@ -455,6 +518,30 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
         const toRemove = sorted.slice(0, keys.length - maxRecords);
         toRemove.forEach(k => delete downloadProgress[k]);
     }
+}
+
+// Stage 5: the filter phase hit a hard 403/404 (host wants a real
+// browser context) — retry through the page: the content script fetches with
+// auto cookies/Referer and returns a blob, which we download from an object
+// URL (Chrome: objectUrl created in content; Firefox: Blob materialized here).
+function triggerRefererDownload(task) {
+    if (!task || task._session !== sessionId || !scanInProgress) return Promise.resolve();
+    if (!downloadInitiatorTabId) {
+        updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable (no initiator tab)', null, task);
+        return Promise.resolve();
+    }
+    updateDownloadProgress(task.url, 'pending', 0, 'Retrying via page context', null, task);
+    chrome.tabs.sendMessage(downloadInitiatorTabId, {
+        cmd: 'downloadWithReferer',
+        url: task.url,
+        referer: task.referer || '',
+        isHd: !!task.isHd,
+        source: task.source || 'element',
+        elementInfo: task.elementInfo || null
+    }).catch(() => {
+        updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable', null, task);
+    });
+    return Promise.resolve();
 }
 
 async function processFilterQueue() {
@@ -580,6 +667,12 @@ async function processFilterQueue() {
                 if (!response.ok) {
                     task.httpStatus = response.status;
                     task.filterMethod = 'GET';
+                    // Stage 5: 403/404 usually means the host wants cookies /
+                    // a real browser Referer — retry via the page context.
+                    if (response.status === 403 || response.status === 404) {
+                        await triggerRefererDownload(task);
+                        return;
+                    }
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
@@ -693,8 +786,14 @@ function processDownloadQueue() {
             : rawFilename;
         task.filename = filename;
 
+        // Stage 5: referer-retried tasks carry an object URL (Chrome,
+        // created in the content script) or a Blob (Firefox, materialized here
+        // and revoked on release).
+        const dlUrl = task._objectUrl
+            || (task._blob ? (task._revokeUrl = URL.createObjectURL(task._blob)) : task.url);
+
         chrome.downloads.download({
-            url: task.url,
+            url: dlUrl,
             filename: filename,
             conflictAction: "uniquify"
         }, function (downloadId) {

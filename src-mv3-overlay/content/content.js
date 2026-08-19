@@ -3762,6 +3762,8 @@
                 if (PVI.handleGroupAnalysisComplete) {
                     PVI.handleGroupAnalysisComplete(d.processedCount || 0);
                 }
+            } else if (d.cmd === 'downloadWithReferer') {
+                PVI._downloadWithReferer(d);
             }
             // <<< MASS-DOWNLOAD-MESSAGES
         },
@@ -4214,6 +4216,44 @@
             PVI.downloadAllActive = false;
             PVI._stopKeepAwake(finalMessage);
             if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
+        },
+        // Stage 5: fetch a filter-rejected URL (403/404) from the page context
+        // — auto cookies + Referer — and hand the blob back to the service
+        // worker for download. Chrome: objectUrl string; Firefox: the Blob
+        // itself (runtime messaging there supports structured clone).
+        _downloadWithReferer: async function (d) {
+            if (!d || !d.url) return;
+            try {
+                let resp = await fetch(d.url, { credentials: 'include' });
+                if (!resp.ok) {
+                    throw new Error('HTTP ' + resp.status);
+                }
+                const blob = await resp.blob();
+                const name = d.url.split('/').pop().split('#')[0].split('?')[0] || 'download';
+                const msg = {
+                    cmd: 'refererDownloadReady',
+                    url: d.url,
+                    referer: d.referer || location.href,
+                    isHd: !!d.isHd,
+                    source: d.source || 'referer',
+                    elementInfo: d.elementInfo || null,
+                    fileName: name,
+                    contentType: blob.type || (resp.headers.get('Content-Type') || ''),
+                    size: blob.size
+                };
+                if (platform === 'firefox') {
+                    msg.blob = blob;
+                } else {
+                    msg.objectUrl = URL.createObjectURL(blob);
+                }
+                Port.send(msg);
+            } catch (e) {
+                Port.send({
+                    cmd: 'refererDownloadFailed',
+                    url: d.url,
+                    error: (e && e.message) || String(e)
+                });
+            }
         },
         // <<< MASS-DOWNLOAD-METHODS
     };

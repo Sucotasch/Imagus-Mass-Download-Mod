@@ -642,6 +642,12 @@ function handleMessage(message, sender, sendResponse) {
             handleRetryDownload(msg, sender);
             mdAck();
             break;
+        case 'refererDownloadReady':
+            handleRefererDownloadReady(msg, sender);
+            break;
+        case 'refererDownloadFailed':
+            handleRefererDownloadFailed(msg);
+            break;
     }
 }
 
