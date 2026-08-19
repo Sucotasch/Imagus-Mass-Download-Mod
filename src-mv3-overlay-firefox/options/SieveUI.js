@@ -707,6 +707,10 @@ var sieve_sec,
             const clear = function () { updBtn.style.outline = ""; updBtn.style.filter = ""; };
 
             const conf = await chrome.storage.local.get({ sieveEtag: null, sieveUpdateLast: 0 });
+            let storedEtag = conf.sieveEtag;
+            if (typeof storedEtag === "string") {
+                try { storedEtag = JSON.parse(storedEtag); } catch (e) { /* keep raw */ }
+            }
 
             const m = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/i.exec(cfg.sieveRepository) || [];
             if (!m) { clear(); return; }
@@ -722,7 +726,7 @@ var sieve_sec,
                 await res.body?.cancel();
                 if (etag) {
                     etagDetermined = true;
-                    available = !conf.sieveEtag || etag !== conf.sieveEtag;
+                    available = !storedEtag || etag !== storedEtag;
                 }
             } catch (e) { /* jsDelivr unreachable — fall through to GitHub API */ }
 
