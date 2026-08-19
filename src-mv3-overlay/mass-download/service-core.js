@@ -502,6 +502,8 @@ async function processFilterQueue() {
             const contentLength = response.headers.get('Content-Length');
 
             if (!response.ok || !contentLength || contentType.startsWith('text/html')) {
+                task.httpStatus = response.status;
+                task.filterMethod = 'HEAD';
                 throw new Error('Fallback to GET');
             }
 
@@ -563,7 +565,11 @@ async function processFilterQueue() {
                 }
                 if (!scanInProgress) continue;
                 if (task._session !== sessionId) continue;
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                if (!response.ok) {
+                    task.httpStatus = response.status;
+                    task.filterMethod = 'GET';
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
 
                 const contentType = response.headers.get('Content-Type') || '';
                 if (contentType.startsWith('text/html')) {
@@ -636,12 +642,12 @@ async function processFilterQueue() {
                 }
                 if (getError.name === 'AbortError') {
                     task.filterTimeMs = Date.now() - filterStart;
-                    task.filterMethod = task.filterMethod || 'HEAD';
+                    task.filterMethod = 'GET';
                     updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout', null, task);
                     return;
                 }
                 task.filterTimeMs = Date.now() - filterStart;
-                task.filterMethod = task.filterMethod || 'HEAD';
+                task.filterMethod = 'GET';
                 updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
             }
         } finally {
