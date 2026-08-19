@@ -560,7 +560,7 @@ function handleMessage(message, sender, sendResponse) {
                         minImageSizeKB: da.minImageSize != null ? da.minImageSize : 45,
                         minVideoSizeMB: da.minVideoSize != null ? da.minVideoSize : 2,
                         downloadOnUnknown: da.downloadOnUnknown !== false,
-                        excludedExtensions: da.excludedExtensions != null ? da.excludedExtensions : '.png, .svg, .ico, .gif',
+                        excludedExtensions: da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif',
                         resolutionTimeout: da.resolutionTimeout != null ? da.resolutionTimeout : 8,
                         showProgressTab: da.showProgressTab !== false
                     }

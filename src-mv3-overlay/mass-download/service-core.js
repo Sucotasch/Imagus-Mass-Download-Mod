@@ -474,7 +474,7 @@ async function processFilterQueue() {
         // means "exclude nothing". `||` silently replaced all of these with
         // defaults.
         const da = cachedPrefs.da || {};
-        const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.png, .svg, .ico, .gif')
+        const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
             .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
         const minImageSize = (da.minImageSize != null ? da.minImageSize : 45) * 1024;
         const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
