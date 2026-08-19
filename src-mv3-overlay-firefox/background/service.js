@@ -170,7 +170,20 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
             newSieve = merged;
         }
         await updatePrefs({ sieve: newSieve });
-        const etag = response.headers.get('etag');
+        let etag = response.headers.get('etag');
+        if (!etag && mirrorUrl) {
+            // raw.githubusercontent.com sends no etag header — grab it from the
+            // jsDelivr mirror so the options "update available" indicator can
+            // compare against a stable value.
+            try {
+                const etagController = new AbortController();
+                const etagTimeout = setTimeout(() => etagController.abort(), 8000);
+                const mir = await fetch(mirrorUrl, { signal: etagController.signal });
+                clearTimeout(etagTimeout);
+                etag = mir.headers.get('etag');
+                await mir.body?.cancel();
+            } catch (e) { /* leave etag null — indicator degrades gracefully */ }
+        }
         await cfg.set(etag ? { sieveUpdateLast: Date.now(), sieveEtag: etag } : { sieveUpdateLast: Date.now() });
         console.info(manifest.name + ": Sieve updated from " + (useMirror ? "jsDelivr mirror" : (local ? "local" : "remote")) + " repository.");
         return { updated_sieve: newSieve };

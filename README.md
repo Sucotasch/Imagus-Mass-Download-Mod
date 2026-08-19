@@ -324,6 +324,17 @@ The extension includes an embedded **Ace Editor** for modifying sieve rules:
 3. Edit JavaScript transformation rules
 4. Click **Save** to apply
 
+### Sieve Update Source
+
+The URL used for sieve updates is configurable:
+
+1. Go to **Options → Sieves**
+2. Click the **≡** (details) button in the top toolbar of the sieve list
+3. In the revealed panel set **Sieve repository URL** (GitHub raw or jsDelivr mirror)
+4. Click **Save**
+
+Weekly automatic updates use this URL. If GitHub returns HTTP 429 (rate limit), the extension automatically falls back to the jsDelivr mirror of the same repository.
+
 Example Sieve Rule:
 ```javascript
 // Example: Extract high-res image from thumbnail URL
@@ -674,6 +685,17 @@ git checkout mv3-version
 2. Выбрать шаблон сайта
 3. Редактировать JavaScript правила трансформации
 4. Нажать **Сохранить** для применения
+
+### Источник обновления фильтров
+
+Ссылка, из которой обновляются фильтры, настраивается так:
+
+1. Перейти в **Настройки → Сита**
+2. Нажать кнопку **≡** (детали) в верхней панели списка фильтров
+3. В открывшейся панели задать **URL репозитория фильтров** (raw GitHub или зеркало jsDelivr)
+4. Нажать **Сохранить**
+
+Еженедельное автоматическое обновление использует этот URL. При ответе GitHub HTTP 429 (превышение лимита) расширение автоматически переключается на зеркало jsDelivr того же репозитория.
 
 Пример правила сита:
 ```javascript
