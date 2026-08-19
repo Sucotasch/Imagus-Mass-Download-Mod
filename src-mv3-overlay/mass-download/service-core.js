@@ -13,14 +13,6 @@
 //   - downloadProgress, downloadStats, downloadProgressTabId, downloadInitiatorTabId
 //   - globalProcessedUrls, urlValidationStats, activeControllers
 
-// --- URL Normalization for Deduplication ---
-// Collapses double slashes (// → /) for dedup keys only.
-// Original URLs preserved for downloads (CDN compatibility).
-function normalizeUrl(url) {
-    if (!url || typeof url !== 'string') return url;
-    return url.replace(/([^:]\/)\/+/g, '$1');
-}
-
 // --- Progress Tab Management ---
 
 let progressTabPromise = null;
@@ -241,12 +233,6 @@ function handleDownloadMass(msg, sender) {
     // the user canceled. Tasks arriving while !scanInProgress are marked
     // canceled by the filter guards. Only handleOpenDownloadProgress (session
     // start) and handleRetryDownload (explicit user action) may set it.
-    // Dedup: skip if same normalized URL already in downloadProgress
-    // (catches // vs / CDN path variants for the same file).
-    const normUrl = normalizeUrl(msg.url);
-    for (const key in downloadProgress) {
-        if (normalizeUrl(key) === normUrl) return;
-    }
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
@@ -464,6 +450,14 @@ async function processFilterQueue() {
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
+        // Skip # URLs when hiRes is OFF (Imagus convention — # = HD URL).
+        // Matches normal hover flow at content.js line 3404-3405.
+        if (task.url[0] === '#' && !(cachedPrefs.hz && cachedPrefs.hz.hiRes)) {
+            updateDownloadProgress(task.url, 'skipped', 0, 'Skipped # URL (hiRes off)', null, task);
+            downloadStats.skipped++;
+            setTimeout(checkAllQueuesEmpty, 100);
+            continue;
+        }
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
@@ -803,20 +797,11 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         if (!scanInProgress) break;
         try {
             const bestUrl = await findBestUrlWithValidation(group.urls, referer);
-            // Strip Imagus '#' prefix (marks raw/final URLs) — chrome.downloads
-            // rejects URLs starting with '#'.
-            const cleanUrl = bestUrl ? bestUrl.replace(/^#/, '') : null;
-            const normUrl = cleanUrl ? normalizeUrl(cleanUrl) : null;
-            if (cleanUrl && !globalProcessedUrls.has(normUrl) && !downloadProgress[normUrl]
-                && !downloadProgress[cleanUrl]) {
-                if (normUrl) globalProcessedUrls.add(normUrl);
+            if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
+                globalProcessedUrls.add(bestUrl);
                 foundUrls++;
-                // Audit N-09: ext/priorityExt/isFromArray/originalArraySize were
-                // carried on the task but never read anywhere — dropped.
-                // isPrivate matters for Firefox private-window downloads
-                // (see processDownloadQueue platform branch).
                 const task = {
-                    url: cleanUrl,
+                    url: bestUrl,
                     referer: referer,
                     isPrivate: sender?.tab?.incognito === true
                 };

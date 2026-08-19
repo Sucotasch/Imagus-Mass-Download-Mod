@@ -4106,6 +4106,13 @@
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
                     }
+                    // Respect hiRes setting — # prefix = HD URL (line 3404-3405).
+                    // Skip # URLs when hiRes is OFF to avoid duplicates.
+                    if (url[0] === '#' && !(cfg && cfg.hz && cfg.hz.hiRes)) {
+                        const cleanAlt = Array.isArray(result) ? result.find(u => u[0] !== '#') : null;
+                        if (cleanAlt) { url = cleanAlt; }
+                        else { setTimeout(PVI.processNextInQueue, 10); return; }
+                    }
                     url = url.replace(/^#/, '');
 
                     if (url && !PVI.downloadAllUniqueUrls.has(url)) {
