@@ -241,6 +241,12 @@ function handleDownloadMass(msg, sender) {
     // the user canceled. Tasks arriving while !scanInProgress are marked
     // canceled by the filter guards. Only handleOpenDownloadProgress (session
     // start) and handleRetryDownload (explicit user action) may set it.
+    // Dedup: skip if same normalized URL already in downloadProgress
+    // (catches // vs / CDN path variants for the same file).
+    const normUrl = normalizeUrl(msg.url);
+    for (const key in downloadProgress) {
+        if (normalizeUrl(key) === normUrl) return;
+    }
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
