@@ -392,6 +392,9 @@
   "SIV_AUTOUPDATE": {
     "message": "Автоматическое обновление фильтров"
   },
+  "SIV_REPO": {
+    "message": "URL репозитория фильтров (raw GitHub или зеркало jsDelivr)"
+  },
   "ADVANCED": {
     "message": "Расширенные"
   },

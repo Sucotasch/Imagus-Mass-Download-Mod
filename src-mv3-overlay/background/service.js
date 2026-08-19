@@ -71,20 +71,44 @@ function withBaseURI(base, relative, secure) {
     }
 }
 
-async function updateSieve(local, retryCount = 0) {
+function jsDelivrMirror(repoUrl) {
+    // Convert raw.githubusercontent.com/user/repo/branch/path into the jsDelivr
+    // CDN equivalent (no GitHub rate limit):
+    //   cdn.jsdelivr.net/gh/user/repo@branch/path
+    const m = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/i.exec(repoUrl);
+    if (!m) return null;
+    return `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}`;
+}
+
+async function updateSieve(local, retryCount = 0, useMirror = false) {
     const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
+
+    const primaryUrl = local ? "/data/sieve.json" : sieveRepoUrl;
+    const mirrorUrl = (!local && !useMirror) ? jsDelivrMirror(sieveRepoUrl) : null;
+    const url = useMirror ? mirrorUrl : primaryUrl;
+    if (!url) throw new Error("No sieve repository configured");
 
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-        const response = await fetch(local ? "/data/sieve.json" : sieveRepoUrl, {
-            signal: controller.signal
-        });
+        const headers = {};
+        if (!local && !useMirror) {
+            const { sieveUpdateLast } = await cfg.get("sieveUpdateLast");
+            if (sieveUpdateLast) {
+                headers['If-Modified-Since'] = new Date(Number(sieveUpdateLast)).toUTCString();
+            }
+        }
+
+        const response = await fetch(url, { signal: controller.signal, headers });
         clearTimeout(timeoutId);
 
+        if (response.status === 304) {
+            console.info(manifest.name + ": Sieve is up to date (HTTP 304).");
+            return { updated_sieve: curSieve, upToDate: true };
+        }
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
         }
@@ -128,17 +152,25 @@ async function updateSieve(local, retryCount = 0) {
         }
         await updatePrefs({ sieve: newSieve });
         await cfg.set({ sieveUpdateLast: Date.now() });
-        console.info(manifest.name + ": Sieve updated from " + (local ? "local" : "remote") + " repository.");
+        console.info(manifest.name + ": Sieve updated from " + (useMirror ? "jsDelivr mirror" : (local ? "local" : "remote")) + " repository.");
         return { updated_sieve: newSieve };
 
     } catch (error) {
-        console.warn(manifest.name + ": Sieve failed to update from " + (local ? "local" : "remote") + " repository! | ", error.message);
+        const source = useMirror ? "jsDelivr mirror" : (local ? "local" : "remote");
+        const isRateLimit = /429|rate ?limit/i.test(error.message || "");
+        console.warn(manifest.name + ": Sieve failed to update from " + source + " repository"
+            + (isRateLimit ? " (HTTP 429 - GitHub rate limit)" : "") + "! | ", error.message);
+
+        if (!local && !useMirror && mirrorUrl) {
+            console.info(manifest.name + ": Trying jsDelivr mirror instead.");
+            return updateSieve(local, retryCount, true);
+        }
 
         if (!local && retryCount < MAX_RETRIES) {
             const delay = Math.pow(2, retryCount) * 1000;
             console.info(manifest.name + ": Retrying sieve update in " + delay + "ms (attempt " + (retryCount + 1) + "/" + MAX_RETRIES + ")");
             await new Promise(resolve => setTimeout(resolve, delay));
-            return updateSieve(local, retryCount + 1);
+            return updateSieve(local, retryCount + 1, useMirror);
         }
 
         if (!local) {
@@ -148,7 +180,7 @@ async function updateSieve(local, retryCount = 0) {
             }
         }
 
-        return { error: "Error. " + error.message };
+        return { error: "Error. " + error.message + (isRateLimit ? " (HTTP 429 - GitHub rate limit; try again later or use the jsDelivr mirror)" : "") };
     }
 }
 

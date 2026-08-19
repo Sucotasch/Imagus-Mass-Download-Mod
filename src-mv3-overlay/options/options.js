@@ -342,6 +342,11 @@ var load = function () {
         }
     }
 
+    const sieveRepoInput = document.getElementById("sieveRepository");
+    if (sieveRepoInput && cfg.sieveRepository !== undefined) {
+        sieveRepoInput.value = sieveRepoInput.defValue = cfg.sieveRepository;
+    }
+
     const fzExtra = [cfg.keys.mOrig, cfg.keys.mFit, cfg.keys.mFitBoth, cfg.keys.mFitW, cfg.keys.mFitH, cfg.keys.mZoomLock].filter(Boolean).map(k => `<b>${k}</b>`).join(", ");
     document.querySelector("label[for='keys_hz-fullZm'] .extra").innerHTML = fzExtra ? ", " + fzExtra : "";
 };
@@ -406,6 +411,9 @@ var save = async function () {
     }
     // to avoid conflicts with EXTENSION
     prefs.keys.hz_open = "";
+
+    const sieveRepoInput = document.getElementById("sieveRepository");
+    if (sieveRepoInput) prefs.sieveRepository = sieveRepoInput.value.trim();
 
     await Port.send({ cmd: "savePrefs", prefs: prefs });
     await readCfg();

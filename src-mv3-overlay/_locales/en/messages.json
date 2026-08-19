@@ -473,6 +473,9 @@
   "SIV_AUTOUPDATE": {
     "message": "Automatically update Sieve"
   },
+  "SIV_REPO": {
+    "message": "Sieve repository URL (GitHub raw or jsDelivr mirror)"
+  },
   "ADVANCED": {
     "message": "Advanced"
   },
