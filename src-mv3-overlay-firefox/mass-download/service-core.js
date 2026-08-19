@@ -430,33 +430,44 @@ function handleRefererDownloadReady(msg, sender) {
     processDownloadQueue();
 }
 
+// Stage 5 (BROWSER): the content script could not fetch the URL (CORS /
+// HTTP error). Fall back to a browser-context download of the raw URL:
+// chrome.downloads.download sends the browser cookie jar (unlike SW fetch),
+// stays tracked in downloadIdToTask/onChanged, and can never navigate the
+// scanning tab (unlike an anchor click).
 function handleRefererDownloadFailed(msg) {
     if (!msg || !msg.url) return;
-    const existing = downloadProgress[msg.url];
-    const task = existing ? existing.task : null;
-    updateDownloadProgress(msg.url, 'failed', 0, 'Referer retry failed: ' + (msg.error || 'unknown'), null, task);
-}
-
-// Stage 5 (A2): the content script fell back to an anchor click (browser
-// download navigation — cookies + Referer, no CORS). The file lands in the
-// browser download manager; we cannot track it, so the entry is marked
-// completed optimistically.
-function handleRefererDownloadDone(msg) {
-    if (!msg || !msg.url) return;
-    const existing = downloadProgress[msg.url];
-    const task = existing ? existing.task : null;
     if (!scanInProgress || userCanceled) {
-        updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, task);
+        const existing = downloadProgress[msg.url];
+        updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, existing ? existing.task : null);
         return;
     }
-    updateDownloadProgress(msg.url, 'completed', 100, null, null, task);
-    downloadStats.downloaded++;
-    if (downloadProgressTabId) {
-        chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
-            console.warn(manifest.name + ': Failed to send stats to progress tab');
-        });
+    const da = cachedPrefs.da || {};
+    const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (isExcludedType(msg.url, '', excludedExtensions)) {
+        const existing = downloadProgress[msg.url];
+        updateDownloadProgress(msg.url, 'skipped', 0, 'Excluded type', null, existing ? existing.task : null);
+        downloadStats.skipped++;
+        return;
     }
-    setTimeout(checkAllQueuesEmpty, 100);
+    const existing = downloadProgress[msg.url];
+    const base = existing ? existing.task : null;
+    const task = {
+        url: msg.url,
+        referer: msg.referer || (base ? base.referer : ''),
+        isPrivate: base ? base.isPrivate === true : false,
+        source: msg.source || (base ? base.source : 'referer'),
+        isHd: base ? !!base.isHd : !!msg.isHd,
+        elementInfo: base ? base.elementInfo : (msg.elementInfo || null),
+        contentType: '',
+        fileSize: 0,
+        filterMethod: 'BROWSER',
+        httpStatus: msg.error === 'HTTP 403' ? 403 : 0
+    };
+    task._session = sessionId;
+    downloadQueue.push(task);
+    processDownloadQueue();
 }
 
 // --- Progress Tab Lifecycle ---

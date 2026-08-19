@@ -648,9 +648,6 @@ function handleMessage(message, sender, sendResponse) {
         case 'refererDownloadFailed':
             handleRefererDownloadFailed(msg);
             break;
-        case 'refererDownloadDone':
-            handleRefererDownloadDone(msg);
-            break;
     }
 }
 
