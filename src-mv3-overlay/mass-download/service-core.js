@@ -14,11 +14,12 @@
 //   - globalProcessedUrls, urlValidationStats, activeControllers
 
 // --- URL Normalization for Deduplication ---
-// Collapses double slashes and strips query strings for dedup keys.
+// Collapses double slashes only (// → /) for dedup keys.
+// Query strings are preserved — they distinguish different files with same path.
 // Original URLs are preserved for actual downloads (CDN compatibility).
 function normalizeUrl(url) {
     if (!url || typeof url !== 'string') return url;
-    return url.replace(/([^:]\/)\/+/g, '$1').split('?')[0];
+    return url.replace(/([^:]\/)\/+/g, '$1');
 }
 
 // --- Progress Tab Management ---
