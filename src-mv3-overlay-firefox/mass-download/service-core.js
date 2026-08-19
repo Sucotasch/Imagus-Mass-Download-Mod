@@ -432,7 +432,31 @@ function handleRefererDownloadReady(msg, sender) {
 
 function handleRefererDownloadFailed(msg) {
     if (!msg || !msg.url) return;
-    updateDownloadProgress(msg.url, 'failed', 0, 'Referer retry failed: ' + (msg.error || 'unknown'), null, null);
+    const existing = downloadProgress[msg.url];
+    const task = existing ? existing.task : null;
+    updateDownloadProgress(msg.url, 'failed', 0, 'Referer retry failed: ' + (msg.error || 'unknown'), null, task);
+}
+
+// Stage 5 (A2): the content script fell back to an anchor click (browser
+// download navigation — cookies + Referer, no CORS). The file lands in the
+// browser download manager; we cannot track it, so the entry is marked
+// completed optimistically.
+function handleRefererDownloadDone(msg) {
+    if (!msg || !msg.url) return;
+    const existing = downloadProgress[msg.url];
+    const task = existing ? existing.task : null;
+    if (!scanInProgress || userCanceled) {
+        updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, task);
+        return;
+    }
+    updateDownloadProgress(msg.url, 'completed', 100, null, null, task);
+    downloadStats.downloaded++;
+    if (downloadProgressTabId) {
+        chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
+            console.warn(manifest.name + ': Failed to send stats to progress tab');
+        });
+    }
+    setTimeout(checkAllQueuesEmpty, 100);
 }
 
 // --- Progress Tab Lifecycle ---
