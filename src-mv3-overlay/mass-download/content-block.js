@@ -53,6 +53,30 @@
             }
         });
     };
+    // Stage 4a: dedup key shared with the service worker's
+    // normalizeUrlKey — strip HD '#', collapse '//' (keeping protocol-relative
+    // and host boundaries), drop the query string, treat .jpeg as .jpg.
+    var _normalizeUrlKey = function (url) {
+        if (typeof url !== 'string') return '';
+        url = url.trim().replace(/^#/, '');
+        if (!url) return '';
+        try {
+            var schemeEnd = url.indexOf('://');
+            var isProtoRel = (schemeEnd === -1 && url.indexOf('//') === 0);
+            var scheme = (schemeEnd > -1) ? url.slice(0, schemeEnd + 3) : '';
+            var rest0 = (schemeEnd > -1) ? url.slice(schemeEnd + 3) : (isProtoRel ? url.slice(2) : url);
+            var slash = rest0.indexOf('/');
+            var host = (slash > -1) ? rest0.slice(0, slash) : rest0;
+            var path = (slash > -1) ? rest0.slice(slash) : '';
+            var q = path.indexOf('?');
+            if (q > -1) path = path.slice(0, q);
+            path = path.replace(/\/{2,}/g, '/');
+            return scheme + (host ? (isProtoRel ? '//' : '') + host : '') + path.replace(/\.jpeg$/i, '.jpg');
+        } catch (_) {
+            return url;
+        }
+    };
+
     // NOTE: _getMediaExt removed (Audit N-09) — its result fed only the
     // `ext`/`priorityExt` task fields that the service worker never read.
     // <<< MASS-DOWNLOAD-HELPERS
@@ -71,6 +95,7 @@
         downloadAllFound: 0,
         downloadAllFiltered: 0,
         downloadAllUniqueUrls: new Set(),
+        downloadAllCoveredElements: new Set(),
         downloadAllSendResponse: null,
         downloadAllStatusEl: null,
         downloadAllAudioEl: null,
@@ -245,6 +270,7 @@
             PVI.downloadAllFound = 0;
             PVI.downloadAllFiltered = 0;
             PVI.downloadAllUniqueUrls.clear();
+            PVI.downloadAllCoveredElements.clear();
             PVI.ambiguousUrlGroups = [];
             PVI.downloadAllSendResponse = sendResponse || null;
 
@@ -292,6 +318,12 @@
                 if (PVI.downloadAllQueue.length > 0 || PVI.downloadAllActive) {
                     setTimeout(PVI.processNextInQueue, 10);
                 }
+                return;
+            }
+            // Stage 4b: nested media under a resolved container (anchor/button/
+            // [onclick] holder) is the same item — skip it.
+            if (PVI.downloadAllCoveredElements.has(el)) {
+                setTimeout(PVI.processNextInQueue, 10);
                 return;
             }
             const itemsLeft = PVI.downloadAllQueue.length;
@@ -356,9 +388,19 @@
                     const isHd = url[0] === '#';
                     url = url.replace(/^#/, '');
 
-                    if (url && !PVI.downloadAllUniqueUrls.has(url)) {
-                        PVI.downloadAllUniqueUrls.add(url);
+                    // Stage 4a: dedup by normalized key — '.jpeg?18505719' and
+                    // '.jpg' for the same file collapse to one item. Content and
+                    // SW share this contract (content: _normalizeUrlKey, SW:
+                    // normalizeUrlKey).
+                    const normKey = _normalizeUrlKey(url);
+                    if (normKey && !PVI.downloadAllUniqueUrls.has(normKey)) {
+                        PVI.downloadAllUniqueUrls.add(normKey);
                         PVI.downloadAllFound++;
+                        // Stage 4b: a container element that resolves to a media
+                        // item covers its nested <img>/<video> — same item.
+                        if (el.localName !== 'img' && el.localName !== 'video' && el.querySelectorAll) {
+                            el.querySelectorAll('img, video').forEach(child => PVI.downloadAllCoveredElements.add(child));
+                        }
                         Port.send({
                             cmd: 'downloadMass',
                             url: url,

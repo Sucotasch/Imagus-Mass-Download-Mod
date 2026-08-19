@@ -463,6 +463,18 @@ async function processFilterQueue() {
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
+        // Stage 4a: SW-side dedup by normalized key (cross-path: element and
+        // group resolutions can collide). Explicit retries bypass the set — they
+        // re-download a previously processed URL on purpose.
+        if (task.source !== 'retry') {
+            const dupKey = normalizeUrlKey(task.url);
+            if (globalProcessedUrls.has(dupKey)) {
+                downloadStats.skipped++;
+                updateDownloadProgress(task.url, 'skipped', 0, 'Duplicate (same file)', null, task);
+                continue;
+            }
+            globalProcessedUrls.add(dupKey);
+        }
         task._session = sessionId;
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
@@ -747,6 +759,31 @@ chrome.downloads.onChanged.addListener(function (delta) {
 
 // --- URL Heuristic Scoring and Validation ---
 
+// Stage 4a: dedup key shared with content's _normalizeUrlKey — strip the HD '#'
+// marker, collapse '//' (keeping protocol-relative and host boundaries), drop
+// the query string, treat .jpeg as .jpg. Used by processFilterQueue and
+// processUrlGroupsWithValidation so both entry paths agree on "same file".
+function normalizeUrlKey(url) {
+    if (typeof url !== 'string') return '';
+    url = url.trim().replace(/^#/, '');
+    if (!url) return '';
+    try {
+        const schemeEnd = url.indexOf('://');
+        const isProtoRel = (schemeEnd === -1 && url.indexOf('//') === 0);
+        const scheme = (schemeEnd > -1) ? url.slice(0, schemeEnd + 3) : '';
+        const rest0 = (schemeEnd > -1) ? url.slice(schemeEnd + 3) : (isProtoRel ? url.slice(2) : url);
+        const slash = rest0.indexOf('/');
+        const host = (slash > -1) ? rest0.slice(0, slash) : rest0;
+        let path = (slash > -1) ? rest0.slice(slash) : '';
+        const q = path.indexOf('?');
+        if (q > -1) path = path.slice(0, q);
+        path = path.replace(/\/{2,}/g, '/');
+        return scheme + (host ? (isProtoRel ? '//' : '') + host : '') + path.replace(/\.jpeg$/i, '.jpg');
+    } catch (_) {
+        return url;
+    }
+}
+
 function calculateUrlHeuristicScore(url) {
     let score = 0;
     if (/\.(jpg|jpeg|png|gif|webp|mp4|webm|avi|mov)$/i.test(url)) score += 50;
@@ -837,8 +874,11 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         if (!scanInProgress) break;
         try {
             const bestUrl = await findBestUrlWithValidation(group.urls, referer);
-            if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
-                globalProcessedUrls.add(bestUrl);
+            const key = normalizeUrlKey(bestUrl || '');
+            // Stage 4a: normalized key so '.jpeg?query' vs '.jpg' group
+            // resolutions collapse to one item. The add happens in
+            // processFilterQueue (single owner of globalProcessedUrls).
+            if (bestUrl && !globalProcessedUrls.has(key) && !downloadProgress[bestUrl]) {
                 foundUrls++;
                 // Audit N-09: ext/priorityExt/isFromArray/originalArraySize were
                 // carried on the task but never read anywhere — dropped.
