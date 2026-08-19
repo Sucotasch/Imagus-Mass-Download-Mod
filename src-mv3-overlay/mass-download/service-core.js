@@ -14,9 +14,8 @@
 //   - globalProcessedUrls, urlValidationStats, activeControllers
 
 // --- URL Normalization for Deduplication ---
-// Collapses double slashes only (// → /) for dedup keys.
-// Query strings are preserved — they distinguish different files with same path.
-// Original URLs are preserved for actual downloads (CDN compatibility).
+// Collapses double slashes (// → /) for dedup keys only.
+// Original URLs preserved for downloads (CDN compatibility).
 function normalizeUrl(url) {
     if (!url || typeof url !== 'string') return url;
     return url.replace(/([^:]\/)\/+/g, '$1');
@@ -459,15 +458,6 @@ async function processFilterQueue() {
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
-        // Dedup: skip if same normalized URL already processed or in progress
-        const normUrl = normalizeUrl(task.url);
-        if (normUrl && globalProcessedUrls.has(normUrl)) {
-            updateDownloadProgress(task.url, 'skipped', 0, 'Duplicate', null, task);
-            downloadStats.skipped++;
-            setTimeout(checkAllQueuesEmpty, 100);
-            continue;
-        }
-        if (normUrl) globalProcessedUrls.add(normUrl);
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
 
@@ -811,10 +801,8 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
             // rejects URLs starting with '#'.
             const cleanUrl = bestUrl ? bestUrl.replace(/^#/, '') : null;
             const normUrl = cleanUrl ? normalizeUrl(cleanUrl) : null;
-            const isDuplicate = (normUrl && globalProcessedUrls.has(normUrl))
-                || (cleanUrl && downloadProgress[cleanUrl])
-                || (normUrl && downloadProgress[normUrl]);
-            if (cleanUrl && !isDuplicate) {
+            if (cleanUrl && !globalProcessedUrls.has(normUrl) && !downloadProgress[normUrl]
+                && !downloadProgress[cleanUrl]) {
                 if (normUrl) globalProcessedUrls.add(normUrl);
                 foundUrls++;
                 // Audit N-09: ext/priorityExt/isFromArray/originalArraySize were
@@ -828,9 +816,6 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                 };
                 filterQueue.push(task);
                 processFilterQueue();
-            } else if (cleanUrl) {
-                console.info(manifest.name + ': dedup skip: ' + cleanUrl
-                    + (globalProcessedUrls.has(normUrl) ? ' (globalProcessed)' : ' (downloadProgress)'));
             }
         } catch (error) {
             console.warn(manifest.name + ': group resolution failed', error);
