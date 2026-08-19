@@ -40,3 +40,7 @@ const activeControllers = new Map();
 
 // Reverse mapping: chrome.downloads.downloadId -> task object
 const downloadIdToTask = new Map();
+
+// Synchronous dedup: normalized URLs that have entered filterQueue.
+// Cleared per session in resetMassDownloadSession().
+const normalizedDownloadUrls = new Set();

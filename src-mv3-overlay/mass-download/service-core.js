@@ -13,6 +13,13 @@
 //   - downloadProgress, downloadStats, downloadProgressTabId, downloadInitiatorTabId
 //   - globalProcessedUrls, urlValidationStats, activeControllers
 
+// --- URL Normalization for Deduplication ---
+// Collapses double slashes (// → /) for dedup keys only.
+function normalizeUrl(url) {
+    if (!url || typeof url !== 'string') return url;
+    return url.replace(/([^:]\/)\/+/g, '$1');
+}
+
 // --- Progress Tab Management ---
 
 let progressTabPromise = null;
@@ -171,6 +178,7 @@ function handleDownloadAll(msg, sender, sendResponse) {
 
 function resetMassDownloadSession() {
     globalProcessedUrls.clear();
+    normalizedDownloadUrls.clear();
     // Preserve completed/skipped entries from previous scans for history
     const preserved = {};
     for (const url in downloadProgress) {
@@ -233,6 +241,10 @@ function handleDownloadMass(msg, sender) {
     // the user canceled. Tasks arriving while !scanInProgress are marked
     // canceled by the filter guards. Only handleOpenDownloadProgress (session
     // start) and handleRetryDownload (explicit user action) may set it.
+    // Dedup: skip if same normalized URL already entered filterQueue
+    const normUrl = normalizeUrl(msg.url);
+    if (normalizedDownloadUrls.has(normUrl)) return;
+    normalizedDownloadUrls.add(normUrl);
     filterQueue.push({
         url: msg.url,
         referer: msg.referer,
@@ -797,7 +809,10 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         if (!scanInProgress) break;
         try {
             const bestUrl = await findBestUrlWithValidation(group.urls, referer);
-            if (bestUrl && !globalProcessedUrls.has(bestUrl) && !downloadProgress[bestUrl]) {
+            const normUrl = bestUrl ? normalizeUrl(bestUrl) : null;
+            if (bestUrl && !normalizedDownloadUrls.has(normUrl)
+                && !globalProcessedUrls.has(bestUrl)) {
+                normalizedDownloadUrls.add(normUrl);
                 globalProcessedUrls.add(bestUrl);
                 foundUrls++;
                 const task = {
