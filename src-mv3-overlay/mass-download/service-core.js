@@ -855,6 +855,22 @@ function processDownloadQueue() {
 
 // --- Download Tracking ---
 
+// Map chrome.downloads DownloadItem.error reasons to readable failure text.
+// Chrome reports both HTTP 403 and 404 as SERVER_FORBIDDEN; a rejected URL is
+// usually a deleted/404 resource (e.g. rule34's bare .jpg variants).
+function mapDownloadInterruptReason(reason) {
+    if (!reason) return 'Download interrupted';
+    const s = String(reason);
+    if (s === 'SERVER_FORBIDDEN' || s === 'SERVER_UNAUTHORIZED') return 'Server rejected the URL (HTTP 403/404 — file likely deleted)';
+    if (s === 'USER_CANCELED') return 'Canceled by user';
+    if (s === 'SERVER_CERT_PROBLEM' || s === 'NETWORK_FAILED' || s === 'NETWORK_TIMEOUT'
+        || s === 'NETWORK_DISCONNECTED' || s === 'NETWORK_SERVER_DOWN'
+        || s === 'NETWORK_INVALID_REQUEST' || s === 'SERVER_UNREACHABLE') return 'Network error: ' + s;
+    if (s.indexOf('SERVER_') === 0) return 'Server error: ' + s;
+    if (s.indexOf('FILE_') === 0) return 'File error: ' + s;
+    return 'Download interrupted: ' + s;
+}
+
 chrome.downloads.onChanged.addListener(function (delta) {
     const existingTask = downloadIdToTask.get(delta.id);
     if (!existingTask) return;
@@ -877,7 +893,7 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 const alreadyCanceled = existingTask && downloadProgress[url]
                     && downloadProgress[url].status === 'canceled';
                 if (!alreadyCanceled) {
-                    updateDownloadProgress(url, 'failed', 0, 'Download interrupted', delta.id, existingTask);
+                    updateDownloadProgress(url, 'failed', 0, mapDownloadInterruptReason(results[0].error), delta.id, existingTask);
                 }
                 releaseDownloadSlot(existingTask);
             }
