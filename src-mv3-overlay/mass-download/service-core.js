@@ -239,7 +239,7 @@ function handleDownloadMass(msg, sender) {
     // canceled by the filter guards. Only handleOpenDownloadProgress (session
     // start) and handleRetryDownload (explicit user action) may set it.
     filterQueue.push({
-        url: msg.url,
+        url: ensureAbsoluteUrl(msg.url),
         referer: msg.referer,
         isPrivate: sender.tab?.incognito,
         source: 'element',
@@ -367,7 +367,7 @@ function handleRetryDownload(msg, sender) {
         userCanceled = false;
         completionNotified = false;
         filterQueue.push({
-            url: msg.url,
+            url: ensureAbsoluteUrl(msg.url),
             referer: msg.referer,
             isPrivate: sender.tab?.incognito,
             source: 'retry'
@@ -412,7 +412,7 @@ function handleRefererDownloadReady(msg, sender) {
     }
 
     const task = {
-        url: msg.url,
+        url: ensureAbsoluteUrl(msg.url),
         referer: msg.referer || '',
         isPrivate: sender?.tab?.incognito === true,
         source: msg.source || 'referer',
@@ -437,21 +437,22 @@ function handleRefererDownloadReady(msg, sender) {
 // scanning tab (unlike an anchor click).
 function handleRefererDownloadFailed(msg) {
     if (!msg || !msg.url) return;
+    const url = ensureAbsoluteUrl(msg.url);
     if (!scanInProgress || userCanceled) {
-        const existing = downloadProgress[msg.url];
-        updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, existing ? existing.task : null);
+        const existing = downloadProgress[url];
+        updateDownloadProgress(url, 'canceled', 0, 'Canceled by user', null, existing ? existing.task : null);
         return;
     }
     const da = cachedPrefs.da || {};
     const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
         .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    if (isExcludedType(msg.url, '', excludedExtensions)) {
-        const existing = downloadProgress[msg.url];
-        updateDownloadProgress(msg.url, 'skipped', 0, 'Excluded type', null, existing ? existing.task : null);
+    if (isExcludedType(url, '', excludedExtensions)) {
+        const existing = downloadProgress[url];
+        updateDownloadProgress(url, 'skipped', 0, 'Excluded type', null, existing ? existing.task : null);
         downloadStats.skipped++;
         return;
     }
-    const existing = downloadProgress[msg.url];
+    const existing = downloadProgress[url];
     const base = existing ? existing.task : null;
     // Stage 5b: the content-script fetch returned an explicit 4xx/5xx (the
     // URL is definitively dead) — skip straight to the next candidate.
@@ -459,7 +460,7 @@ function handleRefererDownloadFailed(msg) {
         if (advanceToNextCandidate(base)) return;
     }
     const task = {
-        url: msg.url,
+        url: url,
         referer: msg.referer || (base ? base.referer : ''),
         isPrivate: base ? base.isPrivate === true : false,
         source: msg.source || (base ? base.source : 'referer'),
@@ -523,7 +524,8 @@ function serializeProgressEntry(entry) {
         filterTimeMs: t ? t.filterTimeMs : null,
         httpStatus: t ? t.httpStatus : null,
         filterMethod: t ? t.filterMethod : null,
-        filename: t ? t.filename : null
+        filename: t ? t.filename : null,
+        quality: t ? classifyUrlQuality(t.url) : null
     };
 }
 
@@ -591,11 +593,16 @@ async function processFilterQueue() {
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
-        // Stage 4a: SW-side dedup by normalized key (cross-path: element and
+        // Stage 5c: a bare '//host/...' URL breaks fetch() and
+        // chrome.downloads.download with "Invalid URL" — normalize first so
+        // every progress key / dedup / fetch below sees the absolute form.
+        task.url = ensureAbsoluteUrl(task.url);
+        if (!task.url) continue;
+        // Stage 4a: SW-side dedup by file identity key (cross-path: element and
         // group resolutions can collide). Explicit retries bypass the set — they
         // re-download a previously processed URL on purpose.
         if (task.source !== 'retry') {
-            const dupKey = normalizeUrlKey(task.url);
+            const dupKey = fileKey(task.url);
             if (globalProcessedUrls.has(dupKey)) {
                 downloadStats.skipped++;
                 updateDownloadProgress(task.url, 'skipped', 0, 'Duplicate (same file)', null, task);
@@ -831,7 +838,7 @@ function processDownloadQueue() {
         // created in the content script) or a Blob (Firefox, materialized here
         // and revoked on release).
         const dlUrl = task._objectUrl
-            || (task._blob ? (task._revokeUrl = URL.createObjectURL(task._blob)) : task.url);
+            || (task._blob ? (task._revokeUrl = URL.createObjectURL(task._blob)) : ensureAbsoluteUrl(task.url));
 
         chrome.downloads.download({
             url: dlUrl,
@@ -861,25 +868,32 @@ function processDownloadQueue() {
 
 // --- Download Tracking ---
 
-// Stage 5b: a group task carries ordered fallback candidates (sieve
-// ext-fallback chains). When the current URL fails the browser-context
-// download (dead 404 link), advance to the next candidate instead of
-// failing the item. Returns true if advanced (task re-queued as a BROWSER
-// download), false if no usable candidates remain.
+// Stage 5b/5c: a group task carries ordered fallback candidates (sieve
+// ext-fallback chains) as [{ url, isHd }, ...]. When the current URL fails the
+// browser-context download (dead 404 link), advance to the next candidate
+// instead of failing the item. Returns true if advanced (task re-queued as a
+// BROWSER download), false if no usable candidates remain.
 function advanceToNextCandidate(task) {
     if (!task || !Array.isArray(task._candidates) || task._candidates.length === 0) return false;
     if (!scanInProgress || userCanceled) return false;
     const da = cachedPrefs.da || {};
     const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
         .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const currentKey = candidateKey(task.url);
     let next = null;
     while (task._candidates.length > 0) {
         const cand = task._candidates.shift();
-        if (typeof cand !== 'string' || !cand) continue;
-        const key = normalizeUrlKey(cand);
-        if (globalProcessedUrls.has(key)) continue;
-        if (isExcludedType(cand, '', excludedExtensions)) continue;
-        next = cand;
+        const candUrl = (cand && typeof cand === 'object') ? cand.url : cand;
+        const candIsHd = (cand && typeof cand === 'object') ? !!cand.isHd : false;
+        if (typeof candUrl !== 'string' || !candUrl) continue;
+        // candidateKey keeps the extension/query distinct, so a real '.jpeg'
+        // alternative is NOT skipped just because fileKey() treats it as the
+        // same file as the failed '.jpg'. The global dedup below uses fileKey
+        // so a '?TS' cache-bust variant never double-downloads across items.
+        if (candidateKey(candUrl) === currentKey) continue;
+        if (globalProcessedUrls.has(fileKey(candUrl))) continue;
+        if (isExcludedType(candUrl, '', excludedExtensions)) continue;
+        next = { url: ensureAbsoluteUrl(candUrl), isHd: candIsHd };
         break;
     }
     if (!next) return false;
@@ -889,11 +903,11 @@ function advanceToNextCandidate(task) {
     // the failed download's slot on the OLD task; sharing the object would
     // set _slotReleased on the re-queued task and leak its slot forever.
     const newTask = {
-        url: next,
+        url: next.url,
         referer: task.referer || '',
         isPrivate: task.isPrivate === true,
         source: task.source || 'group',
-        isHd: !!task.isHd,
+        isHd: next.isHd,
         elementInfo: task.elementInfo || null,
         // Do NOT copy the old filename: it was derived from the FIRST
         // candidate's URL and would save e.g. PNG content with a stale .jpg
@@ -907,12 +921,12 @@ function advanceToNextCandidate(task) {
     };
     if (prog) {
         delete downloadProgress[oldUrl];
-        prog.url = next;
+        prog.url = next.url;
         prog.task = newTask;
-        downloadProgress[next] = prog;
+        downloadProgress[next.url] = prog;
     }
-    globalProcessedUrls.add(normalizeUrlKey(next));
-    updateDownloadProgress(next, 'pending', 0, 'Trying alternate URL...', null, newTask);
+    globalProcessedUrls.add(fileKey(next.url));
+    updateDownloadProgress(next.url, 'pending', 0, 'Trying alternate URL...', null, newTask);
     downloadQueue.push(newTask);
     processDownloadQueue();
     return true;
@@ -972,29 +986,79 @@ chrome.downloads.onChanged.addListener(function (delta) {
 
 // --- URL Heuristic Scoring and Validation ---
 
-// Stage 4a: dedup key shared with content's _normalizeUrlKey — strip the HD '#'
-// marker, collapse '//' (keeping protocol-relative and host boundaries), drop
-// the query string, treat .jpeg as .jpg. Used by processFilterQueue and
-// processUrlGroupsWithValidation so both entry paths agree on "same file".
-function normalizeUrlKey(url) {
+// Resolve protocol-relative URLs ('//host/...') to an absolute form. The
+// content script knows the page scheme and uses location.protocol; the SW
+// defaults to https (sieves overwhelmingly target https hosts, and wimg etc.
+// reject http). chrome.downloads.download and fetch() both reject bare
+// '//...' URLs, which is what made the res-rule ?TS candidates fail.
+function ensureAbsoluteUrl(url) {
+    if (typeof url !== 'string') return url;
+    const t = url.trim();
+    if (t.indexOf('//') === 0) return 'https:' + t;
+    return t;
+}
+
+// File identity key: what IS the file, regardless of representation. Strips the
+// HD '#' marker, resolves protocol-relative to https (so '//host/x' and
+// 'https://host/x' are the same file), drops the query string (cache-busters),
+// collapses '//' in the path (sieve typos like wimg//images), and treats .jpeg
+// as .jpg. This is the GLOBAL dedup key (globalProcessedUrls and content's
+// downloadAllUniqueUrls share this contract).
+function fileKey(url) {
     if (typeof url !== 'string') return '';
     url = url.trim().replace(/^#/, '');
     if (!url) return '';
+    if (url.indexOf('//') === 0) url = 'https:' + url;
     try {
         const schemeEnd = url.indexOf('://');
-        const isProtoRel = (schemeEnd === -1 && url.indexOf('//') === 0);
         const scheme = (schemeEnd > -1) ? url.slice(0, schemeEnd + 3) : '';
-        const rest0 = (schemeEnd > -1) ? url.slice(schemeEnd + 3) : (isProtoRel ? url.slice(2) : url);
+        const rest0 = (schemeEnd > -1) ? url.slice(schemeEnd + 3) : url;
         const slash = rest0.indexOf('/');
         const host = (slash > -1) ? rest0.slice(0, slash) : rest0;
         let path = (slash > -1) ? rest0.slice(slash) : '';
         const q = path.indexOf('?');
         if (q > -1) path = path.slice(0, q);
         path = path.replace(/\/{2,}/g, '/');
-        return scheme + (host ? (isProtoRel ? '//' : '') + host : '') + path.replace(/\.jpeg$/i, '.jpg');
+        return scheme + (host ? host : '') + path.replace(/\.jpeg$/i, '.jpg');
     } catch (_) {
         return url;
     }
+}
+
+// Candidate identity key: distinguishes ALTERNATIVE URLs for the same item
+// (ext-fallback chains, HD/SD pairs). Preserves the extension (.jpeg != .jpg —
+// only one of the chain's extensions actually exists on the server) and the
+// query string (a signed/cache-busted URL may be the only one that works).
+// Only pure noise is collapsed: leading '#', whitespace, '&amp;', protocol-
+// relative/absolute equivalence, repeated '//' in the path. Used to dedup the
+// candidate list INSIDE a group so real alternatives are never dropped.
+function candidateKey(url) {
+    if (typeof url !== 'string') return '';
+    url = url.trim().replace(/^#/, '').replace(/&amp;/g, '&');
+    if (!url) return '';
+    if (url.indexOf('//') === 0) url = 'https:' + url;
+    try {
+        const schemeEnd = url.indexOf('://');
+        const scheme = (schemeEnd > -1) ? url.slice(0, schemeEnd + 3) : '';
+        const rest0 = (schemeEnd > -1) ? url.slice(schemeEnd + 3) : url;
+        const slash = rest0.indexOf('/');
+        const host = (slash > -1) ? rest0.slice(0, slash) : rest0;
+        const path = (slash > -1) ? rest0.slice(slash) : '';
+        return scheme + (host ? host : '') + path.replace(/\/{2,}/g, '/');
+    } catch (_) {
+        return url;
+    }
+}
+
+// Quality bucket for the log: tells the user whether the item that actually
+// downloaded was the original, a downscaled sample, or a thumbnail.
+function classifyUrlQuality(url) {
+    if (typeof url !== 'string') return '';
+    const u = url.replace(/^#/, '');
+    if (/\/thumbnails?\/|[/._-]thumbs?[/._-]|thumbnail_/i.test(u)) return 'thumbnail';
+    if (/\/samples?\/|[/._-]samples?[/._-]|sample_/i.test(u)) return 'sample';
+    if (/\/(?:images?|img|full|original)\//i.test(u)) return 'original';
+    return 'other';
 }
 
 function calculateUrlHeuristicScore(url) {
@@ -1011,7 +1075,11 @@ function calculateUrlHeuristicScore(url) {
         score += Math.min(width * height / 10000, 30);
     }
     if (/(?:original|full|large|master|raw|hd|high)/i.test(url)) score += 20;
-    if (/(?:thumb|small|preview|mini|tiny)/i.test(url)) score -= 20;
+    // 'sample'/'preview' must rank below originals: rule34 marks the DOWNSCALED
+    // sample with '#' (low_quality_first=true), so a pure '# first' tiebreak
+    // would prefer it over the full image. The pattern penalty keeps originals
+    // (images/...) above samples (samples/...) regardless of the sieve's flag.
+    if (/(?:thumb|small|sample|preview|mini|tiny)/i.test(url)) score -= 20;
     if (url.startsWith('https://')) score += 5;
     if (!url.includes('?')) score += 10;
     if (/\.(php|asp|jsp|cgi|do)/.test(url)) score -= 15;
@@ -1019,6 +1087,7 @@ function calculateUrlHeuristicScore(url) {
 }
 
 async function validateSingleUrlContent(url, referer, timeout = 3000) {
+    const absUrl = ensureAbsoluteUrl(url);
     const controller = new AbortController();
     const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
         ? crypto.randomUUID()
@@ -1026,65 +1095,81 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     activeControllers.set(id, controller);
     try {
-        const response = await fetch(url, {
+        const response = await fetch(absUrl, {
             signal: controller.signal,
             headers: { 'Referer': referer || '' }
         });
-        if (!response.ok) return { url, isValid: false, reason: `HTTP ${response.status}` };
+        if (!response.ok) return { url: absUrl, isValid: false, reason: `HTTP ${response.status}` };
         const contentType = response.headers.get('Content-Type') || '';
         const contentLength = parseContentLength(response.headers) || 0;
-        if (contentType.startsWith('text/html')) return { url, isValid: false, reason: 'HTML page' };
+        if (contentType.startsWith('text/html')) return { url: absUrl, isValid: false, reason: 'HTML page' };
         const isValidMedia = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/');
-        if (!isValidMedia && contentLength < 1024) return { url, isValid: false, reason: 'too small' };
-        return { url, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
+        if (!isValidMedia && contentLength < 1024) return { url: absUrl, isValid: false, reason: 'too small' };
+        return { url: absUrl, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
     } catch (error) {
-        return { url, isValid: false, reason: error.name === 'AbortError' ? 'timeout' : 'network-error' };
+        return { url: absUrl, isValid: false, reason: error.name === 'AbortError' ? 'timeout' : 'network-error' };
     } finally {
         clearTimeout(timeoutId);
         activeControllers.delete(id);
     }
 }
 
-// Stage 5b: returns { best, ordered } — best is the single pick, ordered is
-// the full deduped candidate list (validated-working first, then heuristic
-// order) so the caller can attach fallback candidates and try them in
-// sequence when the chosen URL turns out to be a dead link.
+// Stage 5b/5c: returns { best, ordered } — best is { url, isHd } for the single
+// pick, ordered is the full deduped candidate list as [{ url, isHd }, ...]
+// (validated-working first, then quality/heuristic order) so the caller can
+// attach fallback candidates and try them in sequence when the chosen URL turns
+// out to be a dead link. The HD '#' marker is preserved per candidate and used
+// as a tiebreak that mirrors Imagus hover (_preload): hiRes ON prefers '#'-marked
+// URLs, hiRes OFF prefers unmarked ones — always within the same quality class
+// (originals rank above samples/thumbs, which keeps rule34's inverted
+// low_quality_first sieve from forcing the downscaled sample).
 async function findBestUrlWithValidation(urlArray, referer) {
     const seen = new Set();
-    const cleanUrlArray = [];
+    const candidates = [];
+    const isHdByKey = new Map();
     for (const u of (urlArray || [])) {
         if (typeof u !== 'string' || !u) continue;
-        const clean = u.replace(/^#/, '');
+        const isHd = u[0] === '#';
+        const clean = isHd ? u.slice(1) : u;
         if (!clean) continue;
-        const key = normalizeUrlKey(clean);
+        const key = candidateKey(clean);
         if (seen.has(key)) continue;
         seen.add(key);
-        cleanUrlArray.push(clean);
+        isHdByKey.set(key, isHd);
+        candidates.push({ url: clean, isHd });
     }
-    if (cleanUrlArray.length === 0) return { best: null, ordered: [] };
+    if (candidates.length === 0) return { best: null, ordered: [] };
+    const hiRes = !!(cachedPrefs?.hz?.hiRes);
+    const scored = candidates.map(c => ({ c, score: calculateUrlHeuristicScore(c.url) }))
+        .sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            const aHd = a.c.isHd ? 1 : 0, bHd = b.c.isHd ? 1 : 0;
+            return hiRes ? (bHd - aHd) : (aHd - bHd);
+        });
     const recentFailureRate = urlValidationStats.recentFailures.length / 10;
     if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
-        const scored = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
-        const ordered = scored.map(s => s.url);
+        const ordered = scored.map(s => s.c);
         return { best: ordered[0] || null, ordered };
     }
-    const scoredUrls = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
-    const candidatesToValidate = scoredUrls.slice(0, Math.min(5, scoredUrls.length));
+    const candidatesToValidate = scored.slice(0, Math.min(5, scored.length));
     // Audit N-03: Promise.allSettled never rejects and validateSingleUrlContent
     // catches its own errors, so a try/catch here was DEAD code — the only
     // place that set circuitBreakerOpen could never run. Failure accounting
     // now lives on the main path.
-    const results = await Promise.allSettled(candidatesToValidate.map(({ url }) => validateSingleUrlContent(url, referer, 1500)));
+    const results = await Promise.allSettled(candidatesToValidate.map(({ c }) => validateSingleUrlContent(c.url, referer, 1500)));
     const validUrls = results.filter(r => r.status === 'fulfilled' && r.value.isValid).map(r => r.value).sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
     urlValidationStats.totalValidations++;
     if (validUrls.length > 0) {
         urlValidationStats.successfulValidations++;
         urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
         urlValidationStats.circuitBreakerOpen = false;
-        const validOrdered = validUrls.map(v => v.url);
-        const rest = scoredUrls.map(s => s.url).filter(u => !validOrdered.includes(u));
-        const ordered = validOrdered.concat(rest);
-        return { best: validUrls[0].url, ordered };
+        const validKeys = new Set(validUrls.map(v => candidateKey(v.url)));
+        const ordered = [
+            ...validUrls.map(v => ({ url: v.url, isHd: !!isHdByKey.get(candidateKey(v.url)) })),
+            ...scored.filter(s => !validKeys.has(candidateKey(s.c.url))).map(s => s.c)
+        ];
+        const best = ordered[0] || null;
+        return { best, ordered };
     }
     urlValidationStats.recentFailures.push(Date.now());
     urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
@@ -1092,7 +1177,7 @@ async function findBestUrlWithValidation(urlArray, referer) {
         urlValidationStats.circuitBreakerOpen = true;
         setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
     }
-    const ordered = scoredUrls.map(s => s.url);
+    const ordered = scored.map(s => s.c);
     return { best: ordered[0] || null, ordered };
 }
 
@@ -1107,8 +1192,9 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         if (!scanInProgress) break;
         try {
             const pick = await findBestUrlWithValidation(group.urls, referer);
-            const bestUrl = pick.best;
-            const key = normalizeUrlKey(bestUrl || '');
+            const bestUrl = pick.best ? pick.best.url : null;
+            const bestIsHd = !!(pick.best && pick.best.isHd);
+            const key = fileKey(bestUrl || '');
             // Stage 4a: normalized key so '.jpeg?query' vs '.jpg' group
             // resolutions collapse to one item. The add happens in
             // processFilterQueue (single owner of globalProcessedUrls).
@@ -1118,20 +1204,20 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                 // carried on the task but never read anywhere — dropped.
                 // isPrivate matters for Firefox private-window downloads
                 // (see processDownloadQueue platform branch).
-                const isHd = Array.isArray(group.urls)
-                    && group.urls.some(u => typeof u === 'string' && u[0] === '#');
                 const task = {
                     url: bestUrl,
                     referer: referer,
                     isPrivate: sender?.tab?.incognito === true,
                     source: 'group',
-                    isHd: !!isHd,
-                    // Stage 5b: ordered fallback candidates (e.g. rule34 sieve
-                    // ext-fallback chains + samples).
+                    isHd: bestIsHd,
+                    // Stage 5b/5c: ordered fallback candidates (e.g. rule34
+                    // sieve ext-fallback chains + samples) as [{url,isHd}, ...].
                     // Tried in order when the chosen URL fails with a dead
                     // 404 link, mirroring Imagus hover which loads candidates
                     // until one succeeds.
-                    _candidates: Array.isArray(pick.ordered) ? pick.ordered.filter(u => u !== bestUrl) : []
+                    _candidates: Array.isArray(pick.ordered)
+                        ? pick.ordered.filter(c => c.url !== bestUrl)
+                        : []
                 };
                 filterQueue.push(task);
                 processFilterQueue();

@@ -399,7 +399,8 @@
                 + formatSize(it.fileSize)
                 + ' ' + (it.filterMethod || '-') + '/' + (it.httpStatus || '-')
                 + ' ' + (it.filterTimeMs != null ? it.filterTimeMs + 'ms' : '-')
-                + ' src=' + (it.source || '-') + ' hd=' + (it.isHd ? 1 : 0);
+                + ' src=' + (it.source || '-') + ' hd=' + (it.isHd ? 1 : 0)
+                + ' q=' + (it.quality || '-');
             lines.push(head);
             lines.push('      URL: ' + (it.url || '-'));
             if (it.filename) lines.push('      file: ' + it.filename);

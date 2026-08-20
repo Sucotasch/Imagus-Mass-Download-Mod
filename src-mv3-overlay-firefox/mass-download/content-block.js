@@ -53,28 +53,40 @@
             }
         });
     };
-    // Stage 4a: dedup key shared with the service worker's
-    // normalizeUrlKey — strip HD '#', collapse '//' (keeping protocol-relative
-    // and host boundaries), drop the query string, treat .jpeg as .jpg.
+    // Stage 4a: FILE identity key shared with the service worker's fileKey —
+    // strip HD '#', resolve protocol-relative to https (so '//host/x' and
+    // 'https://host/x' are the same file), drop the query string (cache-busters),
+    // collapse '//' in the path, treat .jpeg as .jpg. This is the global dedup
+    // contract (downloadAllUniqueUrls here, globalProcessedUrls in the SW).
     var _normalizeUrlKey = function (url) {
         if (typeof url !== 'string') return '';
         url = url.trim().replace(/^#/, '');
         if (!url) return '';
+        if (url.indexOf('//') === 0) url = 'https:' + url;
         try {
             var schemeEnd = url.indexOf('://');
-            var isProtoRel = (schemeEnd === -1 && url.indexOf('//') === 0);
             var scheme = (schemeEnd > -1) ? url.slice(0, schemeEnd + 3) : '';
-            var rest0 = (schemeEnd > -1) ? url.slice(schemeEnd + 3) : (isProtoRel ? url.slice(2) : url);
+            var rest0 = (schemeEnd > -1) ? url.slice(schemeEnd + 3) : url;
             var slash = rest0.indexOf('/');
             var host = (slash > -1) ? rest0.slice(0, slash) : rest0;
             var path = (slash > -1) ? rest0.slice(slash) : '';
             var q = path.indexOf('?');
             if (q > -1) path = path.slice(0, q);
             path = path.replace(/\/{2,}/g, '/');
-            return scheme + (host ? (isProtoRel ? '//' : '') + host : '') + path.replace(/\.jpeg$/i, '.jpg');
+            return scheme + (host ? host : '') + path.replace(/\.jpeg$/i, '.jpg');
         } catch (_) {
             return url;
         }
+    };
+    // Resolve protocol-relative URLs against the page scheme. The SW cannot
+    // know it and defaults to https; resolving here keeps '//host/x' valid for
+    // fetch()/chrome.downloads.download while preserving the HD '#' marker.
+    var _resolveUrl = function (url) {
+        if (typeof url !== 'string') return url;
+        var isHd = url[0] === '#';
+        var rest = isHd ? url.slice(1) : url;
+        if (rest.indexOf('//') === 0) rest = location.protocol + rest;
+        return isHd ? '#' + rest : rest;
     };
 
     // NOTE: _getMediaExt removed (Audit N-09) — its result fed only the
@@ -372,8 +384,12 @@
                         // AFTER cleanup() had restored the pre-scan value, so
                         // it always described the wrong element, and the SW
                         // never consumed it anyway.
+                        // Stage 5c: resolve protocol-relative candidates against
+                        // the page scheme so the SW never fetches/downloads a
+                        // bare '//host/...'. The HD '#' marker is preserved so
+                        // the SW can honor the hiRes preference.
                         PVI.ambiguousUrlGroups.push({
-                            urls: result,
+                            urls: result.map(u => _resolveUrl(u)),
                             referer: window.location.href
                         });
                         setTimeout(PVI.processNextInQueue, 100);
@@ -388,12 +404,12 @@
                         return;
                     }
                     const isHd = url[0] === '#';
-                    url = url.replace(/^#/, '');
+                    url = _resolveUrl(url.replace(/^#/, ''));
 
-                    // Stage 4a: dedup by normalized key — '.jpeg?18505719' and
+                    // Stage 4a: dedup by file identity key — '.jpeg?18505719' and
                     // '.jpg' for the same file collapse to one item. Content and
                     // SW share this contract (content: _normalizeUrlKey, SW:
-                    // normalizeUrlKey).
+                    // fileKey).
                     const normKey = _normalizeUrlKey(url);
                     if (normKey && !PVI.downloadAllUniqueUrls.has(normKey)) {
                         PVI.downloadAllUniqueUrls.add(normKey);
@@ -470,16 +486,17 @@
         // (cookies sent, no tab navigation — unlike an anchor click).
         _downloadWithReferer: async function (d) {
             if (!d || !d.url) return;
-            const name = d.url.split('/').pop().split('#')[0].split('?')[0] || 'download';
+            const url = _resolveUrl(d.url);
+            const name = url.split('/').pop().split('#')[0].split('?')[0] || 'download';
             try {
-                let resp = await fetch(d.url, { credentials: 'include' });
+                let resp = await fetch(url, { credentials: 'include' });
                 if (!resp.ok) {
                     throw new Error('HTTP ' + resp.status);
                 }
                 const blob = await resp.blob();
                 const msg = {
                     cmd: 'refererDownloadReady',
-                    url: d.url,
+                    url: url,
                     referer: d.referer || location.href,
                     isHd: !!d.isHd,
                     source: d.source || 'referer',
@@ -497,7 +514,7 @@
             } catch (e) {
                 Port.send({
                     cmd: 'refererDownloadFailed',
-                    url: d.url,
+                    url: url,
                     referer: d.referer || location.href,
                     isHd: !!d.isHd,
                     source: d.source || 'referer',
