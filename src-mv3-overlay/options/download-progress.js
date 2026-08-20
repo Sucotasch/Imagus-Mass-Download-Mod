@@ -19,145 +19,25 @@
     // State management
     let downloadItems = {};
     let maxProgressRecords = 100;
-    let everRendered = false;
-    // URLs present in the most recent SW snapshot. Rows missing from it are
-    // stale (SW restarted or re-keyed the entry) and get reconciled against the
-    // browser download manager instead of polled forever.
-    let lastSnapshotUrls = new Set();
-    // True when the most recent SW snapshot was empty (0 items). A live SW in
-    // the middle of a scan never reports an empty snapshot, so this is the only
-    // reliable signal that the worker actually lost its state — the page must
-    // NOT treat rows missing from a non-empty snapshot as lost (they legitimately
-    // appear later, or races between broadcasts and polls would false-cancel
-    // them). Reconcile stale rows only after a genuinely empty snapshot.
-    let lastSnapshotEmpty = false;
 
-    // True when the item's visible fields differ (avoids re-rendering the table
-    // on every poll of unchanged data, which flickers and breaks text selection).
-    function itemChanged(prev, next) {
-        if (!prev) return true;
-        return prev.status !== next.status
-            || prev.progress !== next.progress
-            || prev.error !== next.error
-            || prev.filename !== next.filename;
-    }
+    // The service worker pushes every state change here via runtime broadcasts
+    // (sendToProgressTab) — tabs.sendMessage never reaches an extension page.
+    // The page renders only on those pushes plus a single status poll at init,
+    // so it stays an exact mirror of the SW state with no polling loop and no
+    // re-rendering of unchanged data (which caused flicker / broke selection).
 
-    // Merge a snapshot into the live map (create-or-update, never wipe) and
-    // report whether any visible field changed.
-    function mergeSnapshot(items) {
-        if (!items) return false;
-        let changed = false;
-        for (const id in items) {
-            const next = items[id];
-            if (itemChanged(downloadItems[id], next)) changed = true;
-            updateDownloadItem(next);
-        }
-        return changed;
-    }
-
-    // Poll while work is active, OR while nothing has been rendered yet (a fresh
-    // tab before the first snapshot). Stop only once data is on screen and every
-    // item is terminal — the page then becomes static and fully selectable.
-    function updateRefreshState() {
-        const items = Object.values(downloadItems);
-        const hasActive = items.some(it => ['pending', 'scanning', 'downloading'].includes(it.status));
-        if (hasActive || !everRendered) {
-            startAutoRefresh();
-        } else {
-            stopAutoRefresh();
-        }
-    }
-
-    function markLocal(id, status, progress, error) {
-        const item = downloadItems[id];
-        if (!item) return false;
-        if (item.status === status && (item.progress || 0) === (progress || 0) && item.error === error) return false;
-        item.status = status;
-        item.progress = progress || 0;
-        item.error = error || null;
-        return true;
-    }
-
-    // Map chrome.downloads DownloadItem.error reasons to readable text (mirror
-    // of the SW's mapDownloadInterruptReason — the page does not share code).
-    function mapInterruptReason(reason) {
-        if (!reason) return 'Download interrupted';
-        const s = String(reason);
-        if (s === 'SERVER_FORBIDDEN' || s === 'SERVER_UNAUTHORIZED') return 'Server rejected the URL (HTTP 403/404 — file likely deleted)';
-        if (s === 'USER_CANCELED') return 'Canceled by user';
-        if (s.indexOf('NETWORK_') === 0) return 'Network error: ' + s;
-        if (s.indexOf('SERVER_') === 0) return 'Server error: ' + s;
-        if (s.indexOf('FILE_') === 0) return 'File error: ' + s;
-        return 'Download interrupted: ' + s;
-    }
-
-    // MV3 idle restarts wipe the SW's in-memory queues/status, and the candidate
-    // advance re-keys progress entries — either way a row the page already has
-    // can vanish from subsequent snapshots while its browser download continues.
-    // The browser download manager keeps the true terminal state regardless of
-    // the SW, so reconcile stale rows against it (by downloadId) instead of
-    // leaving them stuck in 'downloading' forever (refresh could never help).
-    function reconcileStaleItems() {
-        let changed = false;
-        let pendingSearches = 0;
-        const finish = () => { if (changed) { updateDisplay(); updateRefreshState(); } };
-        const applyResults = (id, item, d) => {
-            let c = false;
-            if (!d) {
-                c = markLocal(id, 'failed', 0, 'Download no longer tracked (service worker restarted)');
-            } else if (d.state === 'complete') {
-                c = markLocal(id, 'completed', 100, null);
-            } else if (d.state === 'interrupted') {
-                c = markLocal(id, 'failed', 0, mapInterruptReason(d.error));
-            } else if (d.state === 'in_progress') {
-                const pct = d.totalBytes > 0 ? Math.round((d.bytesReceived / d.totalBytes) * 100) : item.progress;
-                if (pct !== item.progress) { item.progress = pct; c = true; }
-            }
-            if (c) changed = true;
-            pendingSearches--;
-            if (pendingSearches === 0) finish();
-        };
-        const searchCb = (id, item) => (results) => {
-            if (chrome.runtime.lastError) {
-                pendingSearches--;
-                if (pendingSearches === 0) finish();
-                return;
-            }
-            applyResults(id, item, results && results[0]);
-        };
-        for (const id in downloadItems) {
-            const item = downloadItems[id];
-            if (!item) continue;
-            if (lastSnapshotUrls.has(item.url || item.id)) continue; // SW still drives it
-            if (['completed', 'failed', 'skipped', 'canceled'].includes(item.status)) continue;
-            if (item.downloadId != null) {
-                pendingSearches++;
-                chrome.downloads.search({ id: item.downloadId }, searchCb(id, item));
-            } else if (item.status === 'downloading') {
-                // 'downloading' means it reached chrome.downloads, but the id
-                // broadcast/snapshot was missed (SW died meanwhile). Match by
-                // URL — except blob: object URLs (referer retries) which never
-                // match the http item URL.
-                pendingSearches++;
-                chrome.downloads.search({ url: item.url }, searchCb(id, item));
-            } else {
-                // Never reached chrome.downloads (filter-phase / pending) and the
-                // SW no longer reports it — its in-flight fetches died with the
-                // worker, so the item can only be marked lost.
-                if (markLocal(id, 'canceled', 0, 'Session lost (service worker restarted)')) changed = true;
-            }
-        }
-        if (pendingSearches === 0) finish();
-    }
-
-    // Handle status response from background script
+    // Handle status response from background script (one-shot refresh / safety net)
     function handleStatusResponse(response) {
         if (!response) return;
         let changed = false;
         if (response.items) {
-            lastSnapshotUrls = new Set(Object.keys(response.items));
-            lastSnapshotEmpty = Object.keys(response.items).length === 0;
-            changed = mergeSnapshot(response.items);
+            // Full mirror: rebuild from the snapshot so rows that left the SW
+            // state cannot linger on the page.
+            downloadItems = {};
+            for (const id in response.items) {
+                updateDownloadItem(response.items[id]);
+            }
+            changed = true;
         }
         if (response.stats) {
             updateGlobalStats(response.stats);
@@ -165,15 +45,8 @@
         if (response.maxRecords) {
             maxProgressRecords = response.maxRecords;
         }
-        if (changed) {
-            everRendered = true;
-            updateDisplay();
-        }
-        if (lastSnapshotEmpty) reconcileStaleItems();
-        updateRefreshState();
+        if (changed) updateDisplay();
     }
-
-    let refreshIntervalId = null;
 
     // Initialize
     function init() {
@@ -195,15 +68,11 @@
         // Listen for messages from background script
         chrome.runtime.onMessage.addListener(handleMessage);
 
-        // Register with background and request status
+        // Register with background and request status. registerProgressTab makes
+        // the SW push a full updateStatus snapshot; the one-shot poll below is a
+        // safety net in case that broadcast is missed.
         chrome.runtime.sendMessage({ cmd: 'registerProgressTab' });
         refreshDisplay();
-
-        // The service worker reaches this tab only via runtime broadcasts
-        // (sendToProgressTab) — never via tabs.sendMessage (no content script
-        // in an extension page). As a safety net, poll the full snapshot on a
-        // fixed interval so the page fills even if a broadcast is missed.
-        startAutoRefresh();
     }
 
     // Handle messages from background script
@@ -221,18 +90,16 @@
                 }
             }
             if (request.items) {
-                lastSnapshotUrls = new Set(Object.keys(request.items));
-                lastSnapshotEmpty = Object.keys(request.items).length === 0;
-                if (mergeSnapshot(request.items)) {
-                    everRendered = true;
-                    updateDisplay();
+                // Full mirror of the SW snapshot.
+                downloadItems = {};
+                for (const id in request.items) {
+                    updateDownloadItem(request.items[id]);
                 }
+                updateDisplay();
             }
             if (request.stats) {
                 updateGlobalStats(request.stats);
             }
-            if (lastSnapshotEmpty) reconcileStaleItems();
-            updateRefreshState();
         } else if (request.cmd === 'allDownloadsComplete') {
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
@@ -242,21 +109,12 @@
         } else if (request.cmd === 'updateStats') {
             updateGlobalStats(request.stats);
         } else if (request.cmd === 'updateDownloadStatus') {
-            const changed = itemChanged(downloadItems[request.url], request);
             updateDownloadItem(request);
-            if (changed) {
-                everRendered = true;
-                updateDisplay();
-            }
-            updateRefreshState();
+            updateDisplay();
         } else if (request.cmd === 'resetForNewDownload') {
             // Clear UI for tab reuse
             downloadItems = {};
-            lastSnapshotUrls = new Set();
-            lastSnapshotEmpty = false;
-            everRendered = false;
             updateDisplay();
-            updateRefreshState();
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
                 scanStatusEl.textContent = '';
@@ -434,21 +292,6 @@
             'canceled': 'Canceled'
         };
         return statusMap[status] || status;
-    }
-
-    function startAutoRefresh() {
-        if (!refreshIntervalId) {
-            console.log('Starting auto-refresh (progress polling)');
-            refreshIntervalId = setInterval(refreshDisplay, 2000);
-        }
-    }
-
-    function stopAutoRefresh() {
-        if (refreshIntervalId) {
-            console.log('Stopping auto-refresh (no active downloads)');
-            clearInterval(refreshIntervalId);
-            refreshIntervalId = null;
-        }
     }
 
     function refreshDisplay() {

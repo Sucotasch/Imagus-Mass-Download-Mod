@@ -233,6 +233,7 @@ function handleOpenDownloadProgress(msg, sender) {
     downloadInitiatorTabId = sender.tab?.id;
     scanInProgress = true;
     contentScanDone = false;
+    ensureSessionKeepalive();
     const showProgressTab = cachedPrefs?.da?.showProgressTab !== false;
     if (showProgressTab) {
         getOrCreateProgressTab(downloadInitiatorTabId).catch(err => {
@@ -260,6 +261,7 @@ function handleDownloadMass(msg, sender) {
     // the user canceled. Tasks arriving while !scanInProgress are marked
     // canceled by the filter guards. Only handleOpenDownloadProgress (session
     // start) and handleRetryDownload (explicit user action) may set it.
+    ensureSessionKeepalive();
     filterQueue.push({
         url: ensureAbsoluteUrl(msg.url),
         referer: msg.referer,
@@ -314,6 +316,8 @@ function handleStopScanning() {
 
     activeControllers.forEach(ctrl => ctrl.abort());
     activeControllers.clear();
+
+    clearSessionKeepalive();
 
     if (downloadInitiatorTabId) {
         chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
@@ -500,11 +504,43 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
 });
 
+// --- Session Keepalive ---
+// MV3 idle-terminates the service worker after ~30s without events. During the
+// download phase there are long quiet windows (chrome.downloads fires only
+// sparse onChanged events), so a long scan dies mid-flight and loses whatever
+// is still in the filter queue. A period alarm is the UI-independent, reliable
+// MV3 way to keep the worker alive: it wakes the worker even from suspension,
+// and handling the event resets the idle timer. Armed for the duration of a
+// mass-download session, cleared on natural drain or cancel. Alarms survive a
+// worker restart, so a dead session self-clears on the next wake.
+const KEEPALIVE_ALARM = 'md-session-keepalive';
+
+function sessionHasWork() {
+    return scanInProgress || filterQueue.length > 0 || downloadQueue.length > 0
+        || activeFilters > 0 || activeDownloads > 0;
+}
+
+function ensureSessionKeepalive() {
+    chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 }).catch(() => {});
+}
+
+function clearSessionKeepalive() {
+    chrome.alarms.clear(KEEPALIVE_ALARM).catch(() => {});
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm || alarm.name !== KEEPALIVE_ALARM) return;
+    if (!sessionHasWork()) clearSessionKeepalive();
+});
+
 // --- Queue Processing ---
 
 function checkAllQueuesEmpty() {
     if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
-        if (contentScanDone) scanInProgress = false;
+        if (contentScanDone) {
+            scanInProgress = false;
+            clearSessionKeepalive();
+        }
         // Notify only on natural completion, once per session (Audit N-06):
         // after a user cancel (userCanceled) or repeated drain timers we must
         // not claim "all downloads completed".
