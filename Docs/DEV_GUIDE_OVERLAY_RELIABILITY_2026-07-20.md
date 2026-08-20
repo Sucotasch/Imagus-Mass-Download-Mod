@@ -515,48 +515,97 @@ Next command for implementer:
 
 ---
 
-## 14. Addendum 2026-08-20 — Stage 5b–5g: candidates, keys, progress-tab broadcast + self-heal
+## 14. Addendum 2026-08-20 — Imagus engine: how it works and how the mod uses it
 
-Post-audit work on the `mv3-version` branch. Read this before touching the candidate/fallback logic or the progress tab.
+This addendum replaces the earlier stage-by-stage patch notes. It reconstructs, from the commit history since **v2026.7.25.2** (`028c8df`) up to the current HEAD, what we learned about the Imagus engine internals, what the mass-download mod changed in response, and why. Read it before touching `PVI`, the sieve resolver, the content capture, or the SW download pipeline.
 
-### 14.1 Sieve candidate fallback (Stages 5b–5f)
+### 14.1 The engine core — hover → find → resolve → set
 
-A group task carries ordered fallback candidates as `_candidates = [{ url, isHd }, ...]` (sieve ext-fallback chains; HD `#` is preserved **per candidate**, not per item).
+Imagus is a **client/server split over one message bus**:
 
-| Function | Phase | What it does |
-|----------|-------|--------------|
-| `pickNextCandidate(task)` | shared | Pops the next usable candidate: skips `candidateKey === currentKey`, skips `fileKey` already in `globalProcessedUrls`, skips excluded extensions. Returns `{url, isHd}` or `null`. |
-| `advanceToNextCandidate(task)` | download | Browser download interrupted (dead 404) → re-keys the progress entry from old URL to the new URL. Must build a **NEW task object** — the interrupted download's `onChanged` continuation still calls `releaseDownloadSlot` on the OLD task, and sharing the object would set `_slotReleased` on the re-queued task and leak its slot. |
-| `requeueNextCandidateForFilter(task)` | filter | The filter phase rejected the chosen URL (GET answered `text/html` = login wall, capped/too-large error, or timeout) → pushes the next candidate into `filterQueue` for its own HEAD/GET round. |
+- **Content** (`content/content.js`) owns the DOM: hover detection, `PVI.find`, the zoom overlay, albums. Everything lives inside one big IIFE; `PVI` is **IIFE-local** — external files cannot see it (this is why the mod's content code is inlined into `content.js` with `>>>`/`<<<` markers, mirrored in `mass-download/content-block.js`).
+- **Message bus** (`common/app.js`): `Port.send()` = `chrome.runtime.sendMessage`. Content → SW messages: `resolve`, `resolve_cache`, plus the mod's `downloadMass`, `resolveAndDownloadGroups`, `openDownloadProgress`, `updateStatus`, `updateFilterStats`, `downloadWithReferer`. SW → content: `resolved`, `album`, plus the mod's `downloadAll`, `stopScanning`, `groupAnalysisComplete`. On Firefox the iframe path relays through `content/relay.js`.
 
-**e-hentai regression (Stage 5f, verified in `log/imagus-mass-download-log-2026-08-20T10-59-39.txt`):** the sieve group picks `https://e-hentai.org/fullimg/…/000N.png` (HD, bigger) but that URL returns 200 `text/html` (login page) while the accessible `https://<hash>.hath.network/…/000N.webp` sits in `_candidates`. Before 5f, GET-HTML rejection marked the item `failed` without touching candidates → only 1 of 8 webp downloaded. Now the HTML/capped/timeout/error branches call `requeueNextCandidateForFilter` first, logging `"; trying alternate URL"`. All 8 webp downloaded in the retest.
+The hover lifecycle:
 
-Do not skip `#`-marked URLs when `hz.hiRes` is off — for many sites the non-`#` sample 404s and only the `#` full-size exists.
+1. **`PVI.find(trg, x, y)`** walks up from the hovered element to the closest `<a>` (skipping non-anchor elements at most 4 levels), normalizes the URL (`PVI.normalizeURL`), and tests it against the sieve array `cfg.sieve` (each entry: `link` regex = link URLs, `img` regex = img URLs). The **captured regex groups of the URL become `params[0..n]`** — these are what the resolver substitutes into the rule's `res` pattern. Rules with `useimg` first inspect the nested `<img>`'s `src`/background-image.
+2. **`PVI.resolve(URL, rule, trg)`** either resolves locally (when `rule.res` is a JS function or `skip_resolve`) or queues `Port.send({ cmd: "resolve", url, params, id })` through a debounce timer (`cfg.hz.delay`, min 50 ms; mod's `resolutionTimeout` bounds the wait). While pending it stores `trg.IMGS_c_resolved = { URL, params }`.
+3. **SW resolver** (`background/service.js` case `resolve`): fetches the target page body (GET, or POST for `link` rules that carry `:postdata`), reads `<base href>` to resolve relative URLs (`withBaseURI`), then runs the rule's precompiled `res` regexes (`cachedSieveRes[rule.id]`) against the body, substituting `$1..$n` from `params`. Properties we rely on:
+   - `rule.dc` → double `decodeURIComponent` on the match (for doubly-encoded URLs).
+   - `loop_param` (`link`/`img`) → distinguishes loop rules.
+   - A `#` marker in a sieve URL means **HD/full-size** (see 14.3).
+   - Shortcut: if the fetched resource is already `image/*|video/*|audio/*` content-type, `data.m = msg.url` (the link *is* the media) and `noloop` is set.
+   - If `rule.res === 1`, the SW does not extract; it ships the body back (`params._`) for a **local** `req_res` JS function compiled in content via `Function("$", code)`.
+   - `U-01` guard: `rule.id` indexes the sieve cached at scan start; a weekly update/options re-cache can shift the index — the SW now answers `m: null` instead of hanging the content side.
+4. **Content `onMessage("resolved")`** (`content.js` ~3610): resolves the target from `PVI.resolving[id]`, runs the local `rule.res` function if present, then normalizes `d.m`:
+   - `{ "": ... }` wrapper or `{ loop: "url" }` → unwrap; `loop` re-runs `PVI.find` on the resolved URL.
+   - **Albums**: nested `[[url,url], title]` shapes create `trg.IMGS_album`, index state in `PVI.stack[url]` (`[idx, url, title, ...]`), and page through on arrow keys. `#`-index and search are stored in the same stack entry.
+   - Result is `[url, caption]` → caption goes to `PVI.prepareCaption`.
+   - Finally the engine displays the image via **`PVI.set(url)`** (or `PVI.album(idx)`), and `PVI.show("R_...")` on failures.
 
-### 14.2 Identity keys (`fileKey` vs `candidateKey`) — read before touching dedup
+**State the engine keeps on DOM nodes** (the mod must not clobber it): `IMGS_c`, `IMGS_c_resolved`, `IMGS_album`, `IMGS_album_idx`, `IMGS_MEDIA`, `IMGS_ext_data`, `IMGS_caption`, `IMGS_SVG`, `IMGS_fallback_zoom`.
 
-The 2026-07-25 attempt to normalize URLs (collapse `//`, strip/keep query) produced an inconsistent content-vs-SW dedup key and was **rolled back** in v2026.7.25.6. There is **no** `normalizeUrl`; the contract is:
+### 14.2 How the mod drives the engine (scan = fake hovers)
+
+The mod never hovers; for every collected element it **simulates a hover** and captures the engine's output instead of rendering it:
+
+- Collect elements (`downloadAll` → `filterQueueAsynchronously`): `a[href], img, video, [onclick], button, [role="button"]` (selector depends on `da.downloadAllMode` `media`/`broad`). Pre-filter: `_isElementVisible` + `_hasStopWords`.
+- For each element: save `original_set/show/TRG`, then **monkey-patch** `PVI.set = (src) => onResolved(src)` and `PVI.show = (msg) => R_* ? onResolved(null)`; set `PVI.TRG = el`, `PVI.x/y` to the element center; call `PVI.find(el, x, y)` and `PVI.load(src)`. Every capture restores the originals via `PVI._cleanupMonkeyPatch`.
+- Single URL → `Port.send({ cmd: "downloadMass", url, referer, isHd, elementInfo })`. More than one candidate URL → pushed to `ambiguousUrlGroups` → `resolveAndDownloadGroups` → SW scores/validates the group (see 14.4).
+- **Covered elements** (Stage 4b): when a container (`<a>`/button) resolves to media, its nested `<img>/<video>` are added to `downloadAllCoveredElements` so they are not scanned again (fixes `<a href=.jpeg><img src=.jpg>` double-downloads).
+
+### 14.3 Engine behaviors we learned the hard way (commit-sourced, v2026.7.25.2 → HEAD)
+
+| Behavior | What we learned | Fix in the mod |
+|----------|-----------------|----------------|
+| **Hotlink protection (Referer/cookies)** | `chrome.downloads.download` in MV3 cannot send custom headers → rule34 `wimg.*`/`ahrimp4.*`, e-hentai `fullimg` return 403 to the SW. | Hierarchy: SW fetch (no cookies) → **content fetch with `credentials:'include'`** (page cookies + Referer) → if CORS blocks it (`wimg` sends no `Access-Control-Allow-Origin`) → **browser-context `chrome.downloads.download` of the raw URL** (browser sends cookies at the network layer). Commits `.3→.4→stage5`. |
+| **MV3 SW has no `URL.createObjectURL`** | Referer-retried blobs can't be materialized as object URLs in the SW. | Chrome: content creates the object URL and ships it; FF: blob shipped to SW, `_revokeUrl` created there; `releaseDownloadSlot` revokes. (Earlier attempt used `data:` URLs — `b0c77c6`.) |
+| **`#`-prefix = HD marker** | A `#url` in a sieve result means full-size; `fetch`/`download` reject a bare `#` URL; with `hz.hiRes` on the `#` variant is preferred, but with it off the non-`#` sample may 404 (rule34) — do **not** skip `#` URLs. | `isHd` recorded per task; content strips `#` before `downloadMass`; SW strips it from every candidate (`findBestUrlWithValidation`); `fileKey`/`candidateKey` strip it too. See `Docs/HASH_PREFIX_CONVENTION.md`. |
+| **Sieve double-fire on `<a><img>`** | Collecting both the `<a>` and the nested `<img>` fires the sieve twice on the same gallery link; the second run races and consumes `res`/loop state → 7 of 8 images lost on e-hentai. | `_collectMediaElements` collects `<a>` **first**; standalone `<img>`/`<video>` only if not inside an already-collected `<a>` (`el.closest('a[href]')`). `ce33e7f` (v2026.7.25.5). |
+| **Nested sieve results** | e-hentai returns `[[[url,url], title]]`; `onResolved` parsed only flat shapes → items silently dropped. | `_flattenSieveUrls()` recursive unwinder. `b0c77c6`. |
+| **JS-navigated thumbnails** | e-hentai thumbnails are `<a onclick>` (no href media); CSS-class thumbs via `background-image`. | Collector includes `[onclick]` and `getComputedStyle().backgroundImage` + `gdtl/gdtm` class pattern. `11dde60`, `18c35d4`. |
+| **Login wall = 200 text/html** | e-hentai `/fullimg/*.png` returns the login page with 200 and `text/html`; the filter rejected it and failed the item without trying the group's webp. | GET content-type check + `requeueNextCandidateForFilter` → next candidate gets its own HEAD/GET round. Stage 5f. |
+| **`dc` double-decode** | Some rules ship doubly-encoded URLs; single decode produced 404s. | Respect `rule.dc` (decode twice) when picking `loop_param` matches in the SW. |
+| **Sieve re-cache invalidates `rule.id`** | Weekly update/options save can shift the sieve array → `rule.res` threw, content waited out its timeout. | U-01 guard: missing rule → answer `m: null` fail-fast. |
+| **Resolution is debounced** | `PVI.resolve` batches on `cfg.hz.delay`; a stuck resolution would hang a scan forever. | Mod wraps each capture in `resolutionTimeout`; `AbortError` reported as `Filter timeout` (not cancel). |
+| **MV3 SW is ephemeral** | Idle-kill wipes in-memory queues/status while browser downloads keep running → progress page showed stale `downloading` forever. | Page self-heals against the browser download manager (14.7); tab duplication fixed by closing all progress tabs by URL. |
+
+### 14.4 The two-phase pipeline on top of the engine
+
+1. **Capture (content).** Fake hovers produce either single URLs (`downloadMass`, dedup via `downloadAllUniqueUrls`) or `ambiguousUrlGroups`.
+2. **Group analysis (SW).** `processUrlGroupsWithValidation` scores candidates (`classifyUrlQuality`: thumbnail/sample/original), strips `#`, resolves protocol-relative (`ensureAbsoluteUrl`), validates with HEAD/GET, picks the best (hiRes tiebreak secondary to quality, sample penalty −20), records `_candidates` for later fallback, and pushes the winner to the filter queue.
+3. **Filter (SW).** `processFilterQueue` dedups by `fileKey`, checks excluded extensions/MIME (`isExcludedType`, `MIME_TO_EXT`), size thresholds, HEAD/GET validation, circuit breaker on failure rate. Rejection can `requeueNextCandidateForFilter`.
+4. **Download (SW).** `processDownloadQueue` (browser-context `chrome.downloads.download`, concurrency-capped via `releaseDownloadSlot`, watchdog, `downloadIdToTask` + `onChanged` tracking; 403 → `triggerRefererDownload` → content `_downloadWithReferer`; dead-404 interrupt → `advanceToNextCandidate`).
+5. **Progress/log.** `downloadProgress` + `sendToProgressTab` broadcasts + page poll; `getDownloadLog` serializes per-item metadata.
+
+### 14.5 Identity keys — the dedup contract (read before touching dedup)
+
+The v2026.7.25.6 attempt to normalize URLs (collapse `//`, strip/keep query) produced an **inconsistent content-vs-SW key** and was rolled back (`64e2a05`). There is **no** `normalizeUrl`; the contract is:
 
 | Key | Use | Preserves | Collapses |
 |-----|-----|-----------|-----------|
 | `fileKey(url)` | **Global dedup** (`globalProcessedUrls` in SW + `downloadAllUniqueUrls` in content share this contract) | host + path | `#` HD marker, query string (cache-busters), protocol-relative vs https, `//` in path, `.jpeg` → `.jpg` |
-| `candidateKey(url)` | Dedup **inside** one candidate chain | host + path + extension + query | `#`, whitespace, `&amp;`, protocol-relative, `//` in path |
+| `candidateKey(url)` | Dedup **inside one candidate chain** | host + path + extension + query | `#`, whitespace, `&amp;`, protocol-relative, `//` in path |
 
 Consequence: a real `.jpeg` alternative to a failed `.jpg` is distinct per `candidateKey` (so it is tried), but the global `fileKey` dedup collapses them once the same file is processed — verified in `test_candidates.js`.
 
-### 14.3 Progress tab: broadcast-only delivery + self-heal (Stages 5e–5g)
+### 14.6 Candidate fallback chain (Stages 5b–5f)
 
-- **Delivery:** the extension-page tab has no content/user script, so `chrome.tabs.sendMessage` never reaches it. The SW sends every progress update via `sendToProgressTab()` = `chrome.runtime.sendMessage({ ...msg, forProgressTab: true }).catch(() => {})`. The tab also polls `getDownloadStatus` every 2 s as a safety net.
-- **Flicker:** the poll must never wipe the local map. `mergeSnapshot` is create-or-update; `updateDisplay` runs only when `itemChanged` reports a visible change; polling stops when data is rendered and every row is terminal (`updateRefreshState`). (A wholesale `downloadItems = {}` rebuild on every poll breaks text selection and flickers.)
-- **MV3 idle restart = stale rows (Stage 5g).** Idle-kill wipes the SW's in-memory `downloadProgress`/`downloadIdToTask` while browser downloads keep running. The page keeps its last-rendered rows, which stay `downloading` forever and manual Refresh can't fix them (the SW returns an empty snapshot). **Fix:** the page tracks `lastSnapshotUrls` from the latest snapshot; rows missing from it are reconciled against the **browser download manager** via `chrome.downloads.search` (by `downloadId`; URL search only for rows whose status is `downloading`). This heals the display regardless of the SW.
-- **Tab duplication (Stage 5f):** after a SW restart the old tab becomes an orphan (tracked id is gone). `getOrCreateProgressTab` must `chrome.tabs.query({ url: progressUrl })` and close **all** matches before creating the new tab.
-- **Residual:** `getDownloadLog` cannot recover items whose terminal update never reached the SW (downloads that completed while the SW was asleep). To fix the log too, persist `downloadIdToTask`/`downloadProgress` to `chrome.storage.session` and reconcile on SW init — not yet implemented.
+A task carries `_candidates = [{ url, isHd }, ...]` (sieve ext-fallback chains; HD `#` per candidate). `pickNextCandidate` is the shared picker (skips `candidateKey === currentKey`, `fileKey` in `globalProcessedUrls`, excluded extensions). Two consumers:
 
-### 14.4 Still-open (as of 2026-08-20)
+- `advanceToNextCandidate(task)` — download phase: browser download interrupted (dead 404) → re-keys the progress entry old→new URL. Must build a **NEW task object** — the interrupted download's `onChanged` continuation still calls `releaseDownloadSlot` on the OLD task; sharing the object would set `_slotReleased` on the re-queued task and leak its slot.
+- `requeueNextCandidateForFilter(task)` — filter phase: HTML login wall / capped error / timeout → push the next candidate through `filterQueue` for its own HEAD/GET round. This is what fixed e-hentai (log `2026-08-20T10-59-39.txt`: before 5f only 1 of 8 webp downloaded; after, all 8).
 
-- **rule34 sample duplicates:** with `hz.hiRes`, originals download correctly, but `samples/…/sample_<hash>.jpg` from the same posts also download (separate elements/groups; `fileKey` treats them as distinct files — see `log/imagus-mass-download-log-2026-08-20T10-49-27.txt`). Proposed rule “skip sample when the post has an original” was offered but not yet accepted.
-- Queue state is still not persisted across SW death (known tech debt).
+### 14.7 Progress tab: broadcast-only delivery + self-heal (Stages 5e–5g)
 
-### 14.5 Test harnesses (temp, not in repo)
+- An extension page has no content/user script, so `chrome.tabs.sendMessage` never reaches it. The SW sends every update via `sendToProgressTab()` = `chrome.runtime.sendMessage({ ...msg, forProgressTab: true }).catch(() => {})`; the tab polls `getDownloadStatus` every 2 s as a safety net.
+- **Flicker:** the poll must never wipe the local map. `mergeSnapshot` is create-or-update; `updateDisplay` runs only when `itemChanged` reports a visible change; polling stops when data is rendered and every row is terminal.
+- **MV3 idle restart = stale rows:** Idle-kill wipes the SW's `downloadProgress`/`downloadIdToTask`; the page keeps rows stuck at `downloading`, and Refresh can't help (SW returns an empty snapshot). Fix: page tracks `lastSnapshotUrls`; rows missing from the snapshot are reconciled against the **browser download manager** (`chrome.downloads.search` by `downloadId`; URL search only for `downloading` rows).
+- **Tab duplication after SW restart:** the tracked id is lost, the old tab becomes an orphan. `getOrCreateProgressTab` must `chrome.tabs.query({ url: progressUrl })` and close **all** matches before creating the new tab.
+- **Residual:** `getDownloadLog` cannot recover items whose terminal update never reached the SW. Fixing that (and the queue) means persisting `downloadIdToTask`/`downloadProgress` to `chrome.storage.session` and reconciling on SW init — not yet implemented.
 
-`C:\Users\sucot\AppData\Local\Temp\opencode\test_keys.js` (25), `test_findbest.js` (8), `test_candidates.js` (15) — extract real functions from `service-core.js` (the extraction regex must capture optional `async `; `EXT_ALIASES` must be extracted too) and assert dedup/scoring/fallback invariants.
+### 14.8 Still-open + test harnesses
+
+- **rule34 sample duplicates:** with `hz.hiRes`, originals download correctly, but `samples/…/sample_<hash>.jpg` of the same posts also download (separate elements/groups; `fileKey` treats them as distinct files — log `2026-08-20T10-49-27.txt`). Proposed rule “skip sample when the post has an original” was offered but not yet accepted.
+- Queue state still not persisted across SW death.
+- Temp harnesses (not in repo): `C:\Users\sucot\AppData\Local\Temp\opencode\test_keys.js` (25), `test_findbest.js` (8), `test_candidates.js` (15) — extract real functions from `service-core.js` (extraction regex must capture optional `async `; `EXT_ALIASES` must be extracted too) and assert dedup/scoring/fallback invariants.

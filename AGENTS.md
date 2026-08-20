@@ -216,7 +216,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 |-----|----------|
 | `Docs/MASS_DOWNLOAD_STRATEGY.md` | Overlay design, entry points, re-base procedure |
 | `Docs/MASS_DOWNLOAD_ALGORITHM.md` | Two-phase algorithm, heuristics, circuit breaker |
-| `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` | Post-audit dev guide: residual bugs, hooks, anti-patterns |
+| `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` | Post-audit dev guide: residual bugs, hooks, anti-patterns; §14 = Imagus engine internals (hover→find→resolve→set, sieve resolver, mod's capture) + commit-sourced lessons since v2026.7.25.2 |
 | `Docs/PROJECT_STRUCTURE.md` | Components, message bus, dependency map |
 | `Docs/MV3_DEVELOPMENT.md` | MV3 SW, userScripts, migration notes |
 | `Docs/UPSTREAM_725_INTEGRATION_PLAN.md` | Upstream v2026.7.25 integration / re-base checklist |
