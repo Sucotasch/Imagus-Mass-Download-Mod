@@ -895,7 +895,9 @@ function advanceToNextCandidate(task) {
         source: task.source || 'group',
         isHd: !!task.isHd,
         elementInfo: task.elementInfo || null,
-        filename: task.filename,
+        // Do NOT copy the old filename: it was derived from the FIRST
+        // candidate's URL and would save e.g. PNG content with a stale .jpg
+        // extension. processDownloadQueue re-derives it from the winning URL.
         contentType: '',
         fileSize: 0,
         httpStatus: 0,
@@ -997,7 +999,11 @@ function normalizeUrlKey(url) {
 
 function calculateUrlHeuristicScore(url) {
     let score = 0;
-    if (/\.(jpg|jpeg|png|gif|webp|mp4|webm|avi|mov)$/i.test(url)) score += 50;
+    // Query/hash cache-busters (?TS, #frag) must not hide the real extension:
+    // wimg.rule34.xxx serves originals as "...jpg?TS" and that URL used to be
+    // scored below the downscaled sample (no +50 media bonus).
+    const noQuery = url.split(/[?#]/)[0];
+    if (/\.(jpg|jpeg|png|gif|webp|mp4|webm|avi|mov)$/i.test(noQuery)) score += 50;
     const dimensionMatch = url.match(/(\d{3,4})[x×](\d{3,4})/);
     if (dimensionMatch) {
         const width = parseInt(dimensionMatch[1]);
