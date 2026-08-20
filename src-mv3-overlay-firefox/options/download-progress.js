@@ -19,25 +19,59 @@
     // State management
     let downloadItems = {};
     let maxProgressRecords = 100;
+    let everRendered = false;
+
+    // True when the item's visible fields differ (avoids re-rendering the table
+    // on every poll of unchanged data, which flickers and breaks text selection).
+    function itemChanged(prev, next) {
+        if (!prev) return true;
+        return prev.status !== next.status
+            || prev.progress !== next.progress
+            || prev.error !== next.error
+            || prev.filename !== next.filename;
+    }
+
+    // Merge a snapshot into the live map (create-or-update, never wipe) and
+    // report whether any visible field changed.
+    function mergeSnapshot(items) {
+        if (!items) return false;
+        let changed = false;
+        for (const id in items) {
+            const next = items[id];
+            if (itemChanged(downloadItems[id], next)) changed = true;
+            updateDownloadItem(next);
+        }
+        return changed;
+    }
+
+    // Poll while work is active, OR while nothing has been rendered yet (a fresh
+    // tab before the first snapshot). Stop only once data is on screen and every
+    // item is terminal — the page then becomes static and fully selectable.
+    function updateRefreshState() {
+        const items = Object.values(downloadItems);
+        const hasActive = items.some(it => ['pending', 'scanning', 'downloading'].includes(it.status));
+        if (hasActive || !everRendered) {
+            startAutoRefresh();
+        } else {
+            stopAutoRefresh();
+        }
+    }
 
     // Handle status response from background script
     function handleStatusResponse(response) {
-        if (response) {
-            if (response.items) {
-                const newItems = response.items;
-                downloadItems = {};
-                for (const id in newItems) {
-                    updateDownloadItem(newItems[id]);
-                }
-            }
-            if (response.stats) {
-                updateGlobalStats(response.stats);
-            }
-            if (response.maxRecords) {
-                maxProgressRecords = response.maxRecords;
-            }
+        if (!response) return;
+        const changed = mergeSnapshot(response.items);
+        if (response.stats) {
+            updateGlobalStats(response.stats);
+        }
+        if (response.maxRecords) {
+            maxProgressRecords = response.maxRecords;
+        }
+        if (changed) {
+            everRendered = true;
             updateDisplay();
         }
+        updateRefreshState();
     }
 
     let refreshIntervalId = null;
@@ -87,15 +121,14 @@
                     setTimeout(() => { scanStatusEl.textContent = '' }, 10000);
                 }
             }
-            if (request.items) {
-                for (const url in request.items) {
-                    updateDownloadItem(request.items[url]);
-                }
+            if (mergeSnapshot(request.items)) {
+                everRendered = true;
                 updateDisplay();
             }
             if (request.stats) {
                 updateGlobalStats(request.stats);
             }
+            updateRefreshState();
         } else if (request.cmd === 'allDownloadsComplete') {
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
@@ -104,19 +137,20 @@
             }
         } else if (request.cmd === 'updateStats') {
             updateGlobalStats(request.stats);
-            // Auto-refresh logic is now state-dependent in handleMessage/updateDownloadStatus
         } else if (request.cmd === 'updateDownloadStatus') {
+            const changed = itemChanged(downloadItems[request.url], request);
             updateDownloadItem(request);
-            updateDisplay();
-
-            // Only start refresh if the new status is active
-            if (['pending', 'scanning', 'downloading'].includes(request.status)) {
-                startAutoRefresh();
+            if (changed) {
+                everRendered = true;
+                updateDisplay();
             }
+            updateRefreshState();
         } else if (request.cmd === 'resetForNewDownload') {
             // Clear UI for tab reuse
             downloadItems = {};
+            everRendered = false;
             updateDisplay();
+            updateRefreshState();
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
                 scanStatusEl.textContent = '';
@@ -300,6 +334,14 @@
         if (!refreshIntervalId) {
             console.log('Starting auto-refresh (progress polling)');
             refreshIntervalId = setInterval(refreshDisplay, 2000);
+        }
+    }
+
+    function stopAutoRefresh() {
+        if (refreshIntervalId) {
+            console.log('Stopping auto-refresh (no active downloads)');
+            clearInterval(refreshIntervalId);
+            refreshIntervalId = null;
         }
     }
 

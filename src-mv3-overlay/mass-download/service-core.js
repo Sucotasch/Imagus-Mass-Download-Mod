@@ -31,13 +31,25 @@ async function getOrCreateProgressTab(initiatorTabId) {
     if (progressTabPromise) return progressTabPromise;
 
     progressTabPromise = (async () => {
-        if (downloadProgressTabId) {
-            console.info(manifest.name + ': Closing old progress tab (ID: ' + downloadProgressTabId + ')');
-            await chrome.tabs.remove(downloadProgressTabId).catch(() => {});
-            downloadProgressTabId = null;
-        }
-
         const progressUrl = chrome.runtime.getURL('options/download-progress.html');
+        // Close every existing progress tab — the tracked id AND any orphan left
+        // behind by a service-worker restart (which loses downloadProgressTabId).
+        // Otherwise a second copy lingers forever next to the previous content tab.
+        const ids = new Set();
+        if (downloadProgressTabId) ids.add(downloadProgressTabId);
+        try {
+            const existing = await chrome.tabs.query({ url: progressUrl });
+            existing.forEach(t => ids.add(t.id));
+        } catch (e) {
+            console.warn(manifest.name + ': Could not query existing progress tabs', e);
+        }
+        ids.forEach(id => {
+            if (id == null) return;
+            console.info(manifest.name + ': Closing progress tab (ID: ' + id + ')');
+            chrome.tabs.remove(id).catch(() => {});
+        });
+        downloadProgressTabId = null;
+
         let createOptions = { url: progressUrl, active: false };
 
         if (initiatorTabId) {
@@ -728,7 +740,14 @@ async function processFilterQueue() {
                     task.httpStatus = response.status;
                     task.filterMethod = 'GET';
                     task.contentType = contentType;
-                    updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
+                    // Stage 5f: the URL answered with an HTML page (login wall,
+                    // e.g. e-hentai '/fullimg/...' originals) — try the group's
+                    // next candidate through the filter before failing.
+                    if (requeueNextCandidateForFilter(task)) {
+                        updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page; trying alternate URL', null, task);
+                    } else {
+                        updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
+                    }
                 } else {
                     const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
                     if (capped.tooLarge) {
@@ -743,7 +762,11 @@ async function processFilterQueue() {
                         task.httpStatus = response.status;
                         task.filterMethod = 'GET';
                         task.contentType = contentType;
-                        updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
+                        if (requeueNextCandidateForFilter(task)) {
+                            updateDownloadProgress(task.url, 'failed', 0, capped.error + '; trying alternate URL', null, task);
+                        } else {
+                            updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
+                        }
                     } else {
                         const blob = capped.blob;
                         const size = blob.size;
@@ -794,12 +817,20 @@ async function processFilterQueue() {
                 if (getError.name === 'AbortError') {
                     task.filterTimeMs = Date.now() - filterStart;
                     task.filterMethod = 'GET';
-                    updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout', null, task);
+                    if (requeueNextCandidateForFilter(task)) {
+                        updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout; trying alternate URL', null, task);
+                    } else {
+                        updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout', null, task);
+                    }
                     return;
                 }
                 task.filterTimeMs = Date.now() - filterStart;
                 task.filterMethod = 'GET';
-                updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
+                if (requeueNextCandidateForFilter(task)) {
+                    updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message + '; trying alternate URL', null, task);
+                } else {
+                    updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
+                }
             }
         } finally {
             activeFilters--;
@@ -867,13 +898,12 @@ function processDownloadQueue() {
 // --- Download Tracking ---
 
 // Stage 5b/5c: a group task carries ordered fallback candidates (sieve
-// ext-fallback chains) as [{ url, isHd }, ...]. When the current URL fails the
-// browser-context download (dead 404 link), advance to the next candidate
-// instead of failing the item. Returns true if advanced (task re-queued as a
-// BROWSER download), false if no usable candidates remain.
-function advanceToNextCandidate(task) {
-    if (!task || !Array.isArray(task._candidates) || task._candidates.length === 0) return false;
-    if (!scanInProgress || userCanceled) return false;
+// ext-fallback chains) as [{ url, isHd }, ...]. pickNextCandidate pops the next
+// usable one (dedup by candidateKey within the chain, by fileKey globally, and
+// excluded extensions), returning { url, isHd } or null.
+function pickNextCandidate(task) {
+    if (!task || !Array.isArray(task._candidates) || task._candidates.length === 0) return null;
+    if (!scanInProgress || userCanceled) return null;
     const da = cachedPrefs.da || {};
     const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
         .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -894,6 +924,14 @@ function advanceToNextCandidate(task) {
         next = { url: ensureAbsoluteUrl(candUrl), isHd: candIsHd };
         break;
     }
+    return next;
+}
+
+// Stage 5b/5c: when the current URL fails the browser-context download (dead
+// 404 link), advance to the next candidate instead of failing the item. Returns
+// true if advanced (task re-queued as a BROWSER download), false otherwise.
+function advanceToNextCandidate(task) {
+    const next = pickNextCandidate(task);
     if (!next) return false;
     const oldUrl = task.url;
     const prog = downloadProgress[oldUrl];
@@ -927,6 +965,26 @@ function advanceToNextCandidate(task) {
     updateDownloadProgress(next.url, 'pending', 0, 'Trying alternate URL...', null, newTask);
     downloadQueue.push(newTask);
     processDownloadQueue();
+    return true;
+}
+
+// Stage 5d/5f: the FILTER phase rejected the chosen URL (e.g. an e-hentai
+// '/fullimg/...' original that answers with the login HTML page). Instead of
+// failing the item, re-queue the next candidate through the filter so it gets
+// its own HEAD/GET validation round. Returns true if a candidate was re-queued.
+function requeueNextCandidateForFilter(task) {
+    const next = pickNextCandidate(task);
+    if (!next) return false;
+    const newTask = {
+        url: next.url,
+        referer: task.referer || '',
+        isPrivate: task.isPrivate === true,
+        source: task.source || 'group',
+        isHd: next.isHd,
+        elementInfo: task.elementInfo || null,
+        _candidates: task._candidates
+    };
+    filterQueue.push(newTask);
     return true;
 }
 
