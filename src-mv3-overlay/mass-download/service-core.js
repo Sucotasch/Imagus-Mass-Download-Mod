@@ -996,6 +996,9 @@ function advanceToNextCandidate(task) {
         prog.url = next.url;
         prog.task = newTask;
         downloadProgress[next.url] = prog;
+        // Page rows are keyed by URL: re-keying must remove the old row or it
+        // stays stuck at its last status ('downloading') until a full refresh.
+        sendToProgressTab({ cmd: 'removeProgressEntry', url: oldUrl });
     }
     globalProcessedUrls.add(fileKey(next.url));
     updateDownloadProgress(next.url, 'pending', 0, 'Trying alternate URL...', null, newTask);

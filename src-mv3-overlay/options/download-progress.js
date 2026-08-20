@@ -111,6 +111,13 @@
         } else if (request.cmd === 'updateDownloadStatus') {
             updateDownloadItem(request);
             updateDisplay();
+        } else if (request.cmd === 'removeProgressEntry') {
+            // SW re-keyed this URL (candidate advance) — drop the old-key row
+            // instead of leaving it stuck at its last status until refresh.
+            if (request.url && downloadItems[request.url]) {
+                delete downloadItems[request.url];
+                updateDisplay();
+            }
         } else if (request.cmd === 'resetForNewDownload') {
             // Clear UI for tab reuse
             downloadItems = {};
