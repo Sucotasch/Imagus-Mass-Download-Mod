@@ -512,3 +512,51 @@ Next command for implementer:
 ---
 
 *End of dev guide. Product code not modified.*
+
+---
+
+## 14. Addendum 2026-08-20 — Stage 5b–5g: candidates, keys, progress-tab broadcast + self-heal
+
+Post-audit work on the `mv3-version` branch. Read this before touching the candidate/fallback logic or the progress tab.
+
+### 14.1 Sieve candidate fallback (Stages 5b–5f)
+
+A group task carries ordered fallback candidates as `_candidates = [{ url, isHd }, ...]` (sieve ext-fallback chains; HD `#` is preserved **per candidate**, not per item).
+
+| Function | Phase | What it does |
+|----------|-------|--------------|
+| `pickNextCandidate(task)` | shared | Pops the next usable candidate: skips `candidateKey === currentKey`, skips `fileKey` already in `globalProcessedUrls`, skips excluded extensions. Returns `{url, isHd}` or `null`. |
+| `advanceToNextCandidate(task)` | download | Browser download interrupted (dead 404) → re-keys the progress entry from old URL to the new URL. Must build a **NEW task object** — the interrupted download's `onChanged` continuation still calls `releaseDownloadSlot` on the OLD task, and sharing the object would set `_slotReleased` on the re-queued task and leak its slot. |
+| `requeueNextCandidateForFilter(task)` | filter | The filter phase rejected the chosen URL (GET answered `text/html` = login wall, capped/too-large error, or timeout) → pushes the next candidate into `filterQueue` for its own HEAD/GET round. |
+
+**e-hentai regression (Stage 5f, verified in `log/imagus-mass-download-log-2026-08-20T10-59-39.txt`):** the sieve group picks `https://e-hentai.org/fullimg/…/000N.png` (HD, bigger) but that URL returns 200 `text/html` (login page) while the accessible `https://<hash>.hath.network/…/000N.webp` sits in `_candidates`. Before 5f, GET-HTML rejection marked the item `failed` without touching candidates → only 1 of 8 webp downloaded. Now the HTML/capped/timeout/error branches call `requeueNextCandidateForFilter` first, logging `"; trying alternate URL"`. All 8 webp downloaded in the retest.
+
+Do not skip `#`-marked URLs when `hz.hiRes` is off — for many sites the non-`#` sample 404s and only the `#` full-size exists.
+
+### 14.2 Identity keys (`fileKey` vs `candidateKey`) — read before touching dedup
+
+The 2026-07-25 attempt to normalize URLs (collapse `//`, strip/keep query) produced an inconsistent content-vs-SW dedup key and was **rolled back** in v2026.7.25.6. There is **no** `normalizeUrl`; the contract is:
+
+| Key | Use | Preserves | Collapses |
+|-----|-----|-----------|-----------|
+| `fileKey(url)` | **Global dedup** (`globalProcessedUrls` in SW + `downloadAllUniqueUrls` in content share this contract) | host + path | `#` HD marker, query string (cache-busters), protocol-relative vs https, `//` in path, `.jpeg` → `.jpg` |
+| `candidateKey(url)` | Dedup **inside** one candidate chain | host + path + extension + query | `#`, whitespace, `&amp;`, protocol-relative, `//` in path |
+
+Consequence: a real `.jpeg` alternative to a failed `.jpg` is distinct per `candidateKey` (so it is tried), but the global `fileKey` dedup collapses them once the same file is processed — verified in `test_candidates.js`.
+
+### 14.3 Progress tab: broadcast-only delivery + self-heal (Stages 5e–5g)
+
+- **Delivery:** the extension-page tab has no content/user script, so `chrome.tabs.sendMessage` never reaches it. The SW sends every progress update via `sendToProgressTab()` = `chrome.runtime.sendMessage({ ...msg, forProgressTab: true }).catch(() => {})`. The tab also polls `getDownloadStatus` every 2 s as a safety net.
+- **Flicker:** the poll must never wipe the local map. `mergeSnapshot` is create-or-update; `updateDisplay` runs only when `itemChanged` reports a visible change; polling stops when data is rendered and every row is terminal (`updateRefreshState`). (A wholesale `downloadItems = {}` rebuild on every poll breaks text selection and flickers.)
+- **MV3 idle restart = stale rows (Stage 5g).** Idle-kill wipes the SW's in-memory `downloadProgress`/`downloadIdToTask` while browser downloads keep running. The page keeps its last-rendered rows, which stay `downloading` forever and manual Refresh can't fix them (the SW returns an empty snapshot). **Fix:** the page tracks `lastSnapshotUrls` from the latest snapshot; rows missing from it are reconciled against the **browser download manager** via `chrome.downloads.search` (by `downloadId`; URL search only for rows whose status is `downloading`). This heals the display regardless of the SW.
+- **Tab duplication (Stage 5f):** after a SW restart the old tab becomes an orphan (tracked id is gone). `getOrCreateProgressTab` must `chrome.tabs.query({ url: progressUrl })` and close **all** matches before creating the new tab.
+- **Residual:** `getDownloadLog` cannot recover items whose terminal update never reached the SW (downloads that completed while the SW was asleep). To fix the log too, persist `downloadIdToTask`/`downloadProgress` to `chrome.storage.session` and reconcile on SW init — not yet implemented.
+
+### 14.4 Still-open (as of 2026-08-20)
+
+- **rule34 sample duplicates:** with `hz.hiRes`, originals download correctly, but `samples/…/sample_<hash>.jpg` from the same posts also download (separate elements/groups; `fileKey` treats them as distinct files — see `log/imagus-mass-download-log-2026-08-20T10-49-27.txt`). Proposed rule “skip sample when the post has an original” was offered but not yet accepted.
+- Queue state is still not persisted across SW death (known tech debt).
+
+### 14.5 Test harnesses (temp, not in repo)
+
+`C:\Users\sucot\AppData\Local\Temp\opencode\test_keys.js` (25), `test_findbest.js` (8), `test_candidates.js` (15) — extract real functions from `service-core.js` (the extraction regex must capture optional `async `; `EXT_ALIASES` must be extracted too) and assert dedup/scoring/fallback invariants.
