@@ -193,6 +193,7 @@ function handleDownloadAll(msg, sender, sendResponse) {
 
 function resetMassDownloadSession() {
     globalProcessedUrls.clear();
+    activeRefererRetries = 0;
     // Preserve completed/skipped entries from previous scans for history
     const preserved = {};
     for (const url in downloadProgress) {
@@ -299,6 +300,7 @@ function handleStopScanning() {
     scanInProgress = false;
     contentScanDone = true;
     userCanceled = true;
+    activeRefererRetries = 0;
 
     filterQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
     downloadQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
@@ -395,6 +397,7 @@ function handleRetryDownload(msg, sender) {
 }
 
 function handleRefererDownloadReady(msg, sender) {
+    activeRefererRetries = Math.max(0, activeRefererRetries - 1);
     if (!msg || !msg.url) return;
     if (!scanInProgress || userCanceled) {
         updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, null);
@@ -454,6 +457,7 @@ function handleRefererDownloadReady(msg, sender) {
 // stays tracked in downloadIdToTask/onChanged, and can never navigate the
 // scanning tab (unlike an anchor click).
 function handleRefererDownloadFailed(msg) {
+    activeRefererRetries = Math.max(0, activeRefererRetries - 1);
     if (!msg || !msg.url) return;
     const url = ensureAbsoluteUrl(msg.url);
     if (!scanInProgress || userCanceled) {
@@ -517,7 +521,7 @@ const KEEPALIVE_ALARM = 'md-session-keepalive';
 
 function sessionHasWork() {
     return scanInProgress || filterQueue.length > 0 || downloadQueue.length > 0
-        || activeFilters > 0 || activeDownloads > 0;
+        || activeFilters > 0 || activeDownloads > 0 || activeRefererRetries > 0;
 }
 
 function ensureSessionKeepalive() {
@@ -536,7 +540,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // --- Queue Processing ---
 
 function checkAllQueuesEmpty() {
-    if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0) {
+    if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0 && activeRefererRetries === 0) {
         if (contentScanDone) {
             scanInProgress = false;
             clearSessionKeepalive();
@@ -620,6 +624,18 @@ function triggerRefererDownload(task) {
         return Promise.resolve();
     }
     updateDownloadProgress(task.url, 'pending', 0, 'Retrying via page context', null, task);
+    activeRefererRetries++;
+    const retryUrl = task.url;
+    setTimeout(() => {
+        // Content never answered (initiator tab closed/navigated mid-fetch) —
+        // release the in-flight slot so the session can still drain. No-op after
+        // a normal ready/failed (the counter is already back down and the item
+        // is no longer 'pending').
+        activeRefererRetries = Math.max(0, activeRefererRetries - 1);
+        if (downloadProgress[retryUrl] && downloadProgress[retryUrl].status === 'pending') {
+            updateDownloadProgress(retryUrl, 'failed', 0, 'Referer retry timed out', null, downloadProgress[retryUrl].task);
+        }
+    }, 30000);
     chrome.tabs.sendMessage(downloadInitiatorTabId, {
         cmd: 'downloadWithReferer',
         url: task.url,
@@ -628,6 +644,7 @@ function triggerRefererDownload(task) {
         source: task.source || 'element',
         elementInfo: task.elementInfo || null
     }).catch(() => {
+        activeRefererRetries = Math.max(0, activeRefererRetries - 1);
         updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable', null, task);
     });
     return Promise.resolve();

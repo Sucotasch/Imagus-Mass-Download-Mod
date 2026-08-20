@@ -7,6 +7,13 @@ var filterQueue = [];
 var downloadQueue = [];
 var activeFilters = 0;
 var activeDownloads = 0;
+// Referer-retry items are NOT in filterQueue/downloadQueue while the content
+// script fetches them (triggerRefererDownload -> refererDownloadReady/Failed).
+// Without this counter the session looks drained mid-retry, checkAllQueuesEmpty
+// clears the keepalive and flips scanInProgress off, and the SW dies with the
+// items stuck at 'pending'. Incremented in triggerRefererDownload, decremented
+// in both referer handlers and reset on stop/reset.
+var activeRefererRetries = 0;
 // scanInProgress = user session still accepting filter/download work.
 // contentScanDone = content finished DOM/sieve scan (NOT the same as cancel).
 var scanInProgress = false;
