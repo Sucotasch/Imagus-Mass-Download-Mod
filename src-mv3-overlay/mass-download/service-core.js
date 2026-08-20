@@ -453,6 +453,11 @@ function handleRefererDownloadFailed(msg) {
     }
     const existing = downloadProgress[msg.url];
     const base = existing ? existing.task : null;
+    // Stage 5b: the content-script fetch returned an explicit 4xx/5xx (the
+    // URL is definitively dead) — skip straight to the next candidate.
+    if (base && /^HTTP [45]\d\d$/.test(msg.error || '')) {
+        if (advanceToNextCandidate(base)) return;
+    }
     const task = {
         url: msg.url,
         referer: msg.referer || (base ? base.referer : ''),
@@ -463,7 +468,8 @@ function handleRefererDownloadFailed(msg) {
         contentType: '',
         fileSize: 0,
         filterMethod: 'BROWSER',
-        httpStatus: msg.error === 'HTTP 403' ? 403 : 0
+        httpStatus: msg.error === 'HTTP 403' ? 403 : 0,
+        _candidates: (base && Array.isArray(base._candidates)) ? base._candidates : []
     };
     task._session = sessionId;
     downloadQueue.push(task);
@@ -855,6 +861,61 @@ function processDownloadQueue() {
 
 // --- Download Tracking ---
 
+// Stage 5b: a group task carries ordered fallback candidates (sieve
+// ext-fallback chains). When the current URL fails the browser-context
+// download (dead 404 link), advance to the next candidate instead of
+// failing the item. Returns true if advanced (task re-queued as a BROWSER
+// download), false if no usable candidates remain.
+function advanceToNextCandidate(task) {
+    if (!task || !Array.isArray(task._candidates) || task._candidates.length === 0) return false;
+    if (!scanInProgress || userCanceled) return false;
+    const da = cachedPrefs.da || {};
+    const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    let next = null;
+    while (task._candidates.length > 0) {
+        const cand = task._candidates.shift();
+        if (typeof cand !== 'string' || !cand) continue;
+        const key = normalizeUrlKey(cand);
+        if (globalProcessedUrls.has(key)) continue;
+        if (isExcludedType(cand, '', excludedExtensions)) continue;
+        next = cand;
+        break;
+    }
+    if (!next) return false;
+    const oldUrl = task.url;
+    const prog = downloadProgress[oldUrl];
+    // A NEW task object — the caller (onChanged interrupted) still releases
+    // the failed download's slot on the OLD task; sharing the object would
+    // set _slotReleased on the re-queued task and leak its slot forever.
+    const newTask = {
+        url: next,
+        referer: task.referer || '',
+        isPrivate: task.isPrivate === true,
+        source: task.source || 'group',
+        isHd: !!task.isHd,
+        elementInfo: task.elementInfo || null,
+        filename: task.filename,
+        contentType: '',
+        fileSize: 0,
+        httpStatus: 0,
+        filterMethod: 'BROWSER',
+        _session: task._session,
+        _candidates: task._candidates
+    };
+    if (prog) {
+        delete downloadProgress[oldUrl];
+        prog.url = next;
+        prog.task = newTask;
+        downloadProgress[next] = prog;
+    }
+    globalProcessedUrls.add(normalizeUrlKey(next));
+    updateDownloadProgress(next, 'pending', 0, 'Trying alternate URL...', null, newTask);
+    downloadQueue.push(newTask);
+    processDownloadQueue();
+    return true;
+}
+
 // Map chrome.downloads DownloadItem.error reasons to readable failure text.
 // Chrome reports both HTTP 403 and 404 as SERVER_FORBIDDEN; a rejected URL is
 // usually a deleted/404 resource (e.g. rule34's bare .jpg variants).
@@ -892,7 +953,10 @@ chrome.downloads.onChanged.addListener(function (delta) {
             } else if (delta.state.current === 'interrupted') {
                 const alreadyCanceled = existingTask && downloadProgress[url]
                     && downloadProgress[url].status === 'canceled';
-                if (!alreadyCanceled) {
+                // Stage 5b: dead 404 link -> try the next fallback candidate
+                // (advanceToNextCandidate mutates task.url / re-keys the
+                // progress entry; only mark failed if no candidates remain).
+                if (!alreadyCanceled && !advanceToNextCandidate(existingTask)) {
                     updateDownloadProgress(url, 'failed', 0, mapDownloadInterruptReason(results[0].error), delta.id, existingTask);
                 }
                 releaseDownloadSlot(existingTask);
@@ -975,16 +1039,28 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
     }
 }
 
+// Stage 5b: returns { best, ordered } — best is the single pick, ordered is
+// the full deduped candidate list (validated-working first, then heuristic
+// order) so the caller can attach fallback candidates and try them in
+// sequence when the chosen URL turns out to be a dead link.
 async function findBestUrlWithValidation(urlArray, referer) {
-    const cleanUrlArray = urlArray
-        .filter(url => typeof url === 'string' && url)
-        .map(url => url.replace(/^#/, ''))
-        .filter(Boolean);
-    if (cleanUrlArray.length === 0) return null;
+    const seen = new Set();
+    const cleanUrlArray = [];
+    for (const u of (urlArray || [])) {
+        if (typeof u !== 'string' || !u) continue;
+        const clean = u.replace(/^#/, '');
+        if (!clean) continue;
+        const key = normalizeUrlKey(clean);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cleanUrlArray.push(clean);
+    }
+    if (cleanUrlArray.length === 0) return { best: null, ordered: [] };
     const recentFailureRate = urlValidationStats.recentFailures.length / 10;
     if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
         const scored = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
-        return scored[0].url;
+        const ordered = scored.map(s => s.url);
+        return { best: ordered[0] || null, ordered };
     }
     const scoredUrls = cleanUrlArray.map(url => ({ url, score: calculateUrlHeuristicScore(url) })).sort((a, b) => b.score - a.score);
     const candidatesToValidate = scoredUrls.slice(0, Math.min(5, scoredUrls.length));
@@ -999,7 +1075,10 @@ async function findBestUrlWithValidation(urlArray, referer) {
         urlValidationStats.successfulValidations++;
         urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
         urlValidationStats.circuitBreakerOpen = false;
-        return validUrls[0].url;
+        const validOrdered = validUrls.map(v => v.url);
+        const rest = scoredUrls.map(s => s.url).filter(u => !validOrdered.includes(u));
+        const ordered = validOrdered.concat(rest);
+        return { best: validUrls[0].url, ordered };
     }
     urlValidationStats.recentFailures.push(Date.now());
     urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
@@ -1007,7 +1086,8 @@ async function findBestUrlWithValidation(urlArray, referer) {
         urlValidationStats.circuitBreakerOpen = true;
         setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
     }
-    return scoredUrls[0].url;
+    const ordered = scoredUrls.map(s => s.url);
+    return { best: ordered[0] || null, ordered };
 }
 
 async function processUrlGroupsWithValidation(groups, referer, sender) {
@@ -1020,7 +1100,8 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
     for (const group of groups) {
         if (!scanInProgress) break;
         try {
-            const bestUrl = await findBestUrlWithValidation(group.urls, referer);
+            const pick = await findBestUrlWithValidation(group.urls, referer);
+            const bestUrl = pick.best;
             const key = normalizeUrlKey(bestUrl || '');
             // Stage 4a: normalized key so '.jpeg?query' vs '.jpg' group
             // resolutions collapse to one item. The add happens in
@@ -1038,7 +1119,13 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                     referer: referer,
                     isPrivate: sender?.tab?.incognito === true,
                     source: 'group',
-                    isHd: !!isHd
+                    isHd: !!isHd,
+                    // Stage 5b: ordered fallback candidates (e.g. rule34 sieve
+                    // ext-fallback chains + samples).
+                    // Tried in order when the chosen URL fails with a dead
+                    // 404 link, mirroring Imagus hover which loads candidates
+                    // until one succeeds.
+                    _candidates: Array.isArray(pick.ordered) ? pick.ordered.filter(u => u !== bestUrl) : []
                 };
                 filterQueue.push(task);
                 processFilterQueue();
