@@ -24,6 +24,13 @@
     // stale (SW restarted or re-keyed the entry) and get reconciled against the
     // browser download manager instead of polled forever.
     let lastSnapshotUrls = new Set();
+    // True when the most recent SW snapshot was empty (0 items). A live SW in
+    // the middle of a scan never reports an empty snapshot, so this is the only
+    // reliable signal that the worker actually lost its state — the page must
+    // NOT treat rows missing from a non-empty snapshot as lost (they legitimately
+    // appear later, or races between broadcasts and polls would false-cancel
+    // them). Reconcile stale rows only after a genuinely empty snapshot.
+    let lastSnapshotEmpty = false;
 
     // True when the item's visible fields differ (avoids re-rendering the table
     // on every poll of unchanged data, which flickers and breaks text selection).
@@ -149,6 +156,7 @@
         let changed = false;
         if (response.items) {
             lastSnapshotUrls = new Set(Object.keys(response.items));
+            lastSnapshotEmpty = Object.keys(response.items).length === 0;
             changed = mergeSnapshot(response.items);
         }
         if (response.stats) {
@@ -161,7 +169,7 @@
             everRendered = true;
             updateDisplay();
         }
-        reconcileStaleItems();
+        if (lastSnapshotEmpty) reconcileStaleItems();
         updateRefreshState();
     }
 
@@ -214,6 +222,7 @@
             }
             if (request.items) {
                 lastSnapshotUrls = new Set(Object.keys(request.items));
+                lastSnapshotEmpty = Object.keys(request.items).length === 0;
                 if (mergeSnapshot(request.items)) {
                     everRendered = true;
                     updateDisplay();
@@ -222,7 +231,7 @@
             if (request.stats) {
                 updateGlobalStats(request.stats);
             }
-            reconcileStaleItems();
+            if (lastSnapshotEmpty) reconcileStaleItems();
             updateRefreshState();
         } else if (request.cmd === 'allDownloadsComplete') {
             const scanStatusEl = document.getElementById('scanStatus');
@@ -243,6 +252,8 @@
         } else if (request.cmd === 'resetForNewDownload') {
             // Clear UI for tab reuse
             downloadItems = {};
+            lastSnapshotUrls = new Set();
+            lastSnapshotEmpty = false;
             everRendered = false;
             updateDisplay();
             updateRefreshState();
