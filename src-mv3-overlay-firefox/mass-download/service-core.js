@@ -17,6 +17,16 @@
 
 let progressTabPromise = null;
 
+// Push to the progress tab. The tab is an extension PAGE (no content/user
+// script), so chrome.tabs.sendMessage never reaches it — use a runtime
+// broadcast tagged forProgressTab. Content/user scripts receive the same
+// message but their onMessage handlers ignore the unknown cmds. The tab's own
+// runtime.onMessage listener is always the delivery target while it is open.
+function sendToProgressTab(msg) {
+    if (!downloadProgressTabId) return;
+    chrome.runtime.sendMessage({ ...msg, forProgressTab: true }).catch(() => {});
+}
+
 async function getOrCreateProgressTab(initiatorTabId) {
     if (progressTabPromise) return progressTabPromise;
 
@@ -224,12 +234,12 @@ function handleOpenDownloadProgress(msg, sender) {
 function handleRegisterProgressTab(msg, sender) {
     downloadProgressTabId = sender.tab?.id;
     console.info(manifest.name + ': Progress tab registered with ID:', downloadProgressTabId);
-    chrome.tabs.sendMessage(downloadProgressTabId, {
+    sendToProgressTab({
         cmd: 'updateStatus',
         status: scanInProgress ? 'Scanning...' : '',
         items: serializeAllProgress(),
         stats: downloadStats
-    }).catch(() => {});
+    });
 }
 
 function handleDownloadMass(msg, sender) {
@@ -255,11 +265,7 @@ function handleResolveGroups(msg, sender) {
 }
 
 function handleUpdateStatus(msg) {
-    if (downloadProgressTabId) {
-        chrome.tabs.sendMessage(downloadProgressTabId, msg).catch((err) => {
-            console.warn('Failed to send status to progress tab:', err);
-        });
-    }
+    sendToProgressTab(msg);
     if (msg.done) {
         // Content finished scanning — do not cancel in-flight filter/download.
         contentScanDone = true;
@@ -272,11 +278,7 @@ function handleUpdateFilterStats(msg) {
     // Content's DOM pre-filter rejects vs SW's size/type skips are separate
     // counters now (Audit BUG-08); the message shape from content is unchanged.
     downloadStats.prefiltered += (msg.filtered || 0);
-    if (downloadProgressTabId) {
-        chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
-            console.warn(manifest.name + ': Failed to send stats to progress tab');
-        });
-    }
+    sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
 }
 
 function handleStopScanning() {
@@ -496,9 +498,7 @@ function checkAllQueuesEmpty() {
         // not claim "all downloads completed".
         if (downloadProgressTabId && contentScanDone && !userCanceled && !completionNotified) {
             completionNotified = true;
-            chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'allDownloadsComplete' }).catch(() => {
-                downloadProgressTabId = null;
-            });
+            sendToProgressTab({ cmd: 'allDownloadsComplete' });
         }
     }
 }
@@ -538,14 +538,12 @@ function serializeAllProgress() {
 }
 
 function updateDownloadProgress(url, status, progress, error, downloadId, task) {
-    if (downloadProgressTabId) {
-        chrome.tabs.sendMessage(downloadProgressTabId, {
-            cmd: 'updateDownloadStatus',
-            url: url, status: status, progress: progress,
-            error: error, downloadId: downloadId,
-            referer: task ? task.referer : null
-        }).catch(() => { downloadProgressTabId = null; });
-    }
+    sendToProgressTab({
+        cmd: 'updateDownloadStatus',
+        url: url, status: status, progress: progress,
+        error: error, downloadId: downloadId,
+        referer: task ? task.referer : null
+    });
     downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
 
     // Audit N-24: same explicit null-check as handleGetDownloadStatus.
@@ -963,11 +961,7 @@ chrome.downloads.onChanged.addListener(function (delta) {
             if (delta.state.current === 'complete') {
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
-                if (downloadProgressTabId) {
-                    chrome.tabs.sendMessage(downloadProgressTabId, { cmd: 'updateStats', stats: downloadStats }).catch(() => {
-                        console.warn(manifest.name + ': Failed to send stats to progress tab');
-                    });
-                }
+                sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
                 releaseDownloadSlot(existingTask);
             } else if (delta.state.current === 'interrupted') {
                 const alreadyCanceled = existingTask && downloadProgress[url]
@@ -1229,15 +1223,11 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
             console.warn(manifest.name + ': group resolution failed', error);
         }
         processedGroups++;
-        if (downloadProgressTabId) {
-            chrome.tabs.sendMessage(downloadProgressTabId, {
-                cmd: 'updateStatus',
-                status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
-                done: false
-            }).catch(() => {
-                console.warn(manifest.name + ': Failed to send message to progress tab');
-            });
-        }
+        sendToProgressTab({
+            cmd: 'updateStatus',
+            status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
+            done: false
+        });
     }
     if (downloadInitiatorTabId) {
         chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls }).catch(() => { downloadInitiatorTabId = null; });

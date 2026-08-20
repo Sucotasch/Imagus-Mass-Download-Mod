@@ -66,8 +66,11 @@
         chrome.runtime.sendMessage({ cmd: 'registerProgressTab' });
         refreshDisplay();
 
-        // Don't start auto-refresh immediately - let background push updates
-        // Only refresh if we detect stale data
+        // The service worker reaches this tab only via runtime broadcasts
+        // (sendToProgressTab) — never via tabs.sendMessage (no content script
+        // in an extension page). As a safety net, poll the full snapshot on a
+        // fixed interval so the page fills even if a broadcast is missed.
+        startAutoRefresh();
     }
 
     // Handle messages from background script
@@ -94,8 +97,6 @@
                 updateGlobalStats(request.stats);
             }
         } else if (request.cmd === 'allDownloadsComplete') {
-            // Stop auto-refresh when all downloads complete
-            stopAutoRefresh();
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
                 scanStatusEl.textContent = 'All downloads completed';
@@ -171,12 +172,6 @@
         completedFilesEl.textContent = completed;
         failedFilesEl.textContent = failed;
         canceledFilesEl.textContent = canceled;
-
-        // Final terminal state check: if nothing is active, stop refresh
-        const activeCount = items.filter(item => ['pending', 'scanning', 'downloading'].includes(item.status)).length;
-        if (activeCount === 0) {
-            stopAutoRefresh();
-        }
     }
 
     // Update the global stats display (found, prefiltered, skipped).
@@ -303,16 +298,8 @@
 
     function startAutoRefresh() {
         if (!refreshIntervalId) {
-            console.log('Starting auto-refresh (active downloads detected)');
+            console.log('Starting auto-refresh (progress polling)');
             refreshIntervalId = setInterval(refreshDisplay, 2000);
-        }
-    }
-
-    function stopAutoRefresh() {
-        if (refreshIntervalId) {
-            console.log('Stopping auto-refresh (no active downloads)');
-            clearInterval(refreshIntervalId);
-            refreshIntervalId = null;
         }
     }
 
