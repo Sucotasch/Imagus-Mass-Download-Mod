@@ -5,7 +5,9 @@
 
 TL;DR: This is a deeply modified version of the **Imagus** extension, rebuilt for the modern **Chrome Manifest V3** standard. Beyond the core "hover-to-enlarge" functionality, this mod introduces a powerful toolkit for bulk media downloading.
 
-> **Note:** The `mv3-version` branch is the current stable development line, fully rewritten to comply with Google Chrome's latest security and performance requirements.
+> **⚠ Experimental:** The mass-download subsystem is under active development. It is delivered as an unpacked overlay on top of Imagus Reborn and may receive breaking changes between versions — test before relying on it for critical use.
+
+> **Note:** The `mv3-version` branch is the current development line for the Manifest V3 overlay, rebuilt on top of Imagus Reborn to comply with Google Chrome's latest security and performance requirements.
 
 ## Key Features
 Core:
@@ -22,12 +24,13 @@ Mod:
   - **Stop-Words:** Configure a list of keywords in the settings to exclude links containing them (e.g., "avatar", "profile").
   - **Filter by Type & Size:** Automatically skips common UI image types and checks file sizes before downloading to avoid tiny images or videos. These values are configurable.
 - **Operation Control:** The download process can be fully canceled at any time. Failed or canceled downloads can be retried individually from the progress page.
+- **Download Diagnostics:** The progress tab can export a text log of every item (content type, file size, HTTP status, filter method, HD flag, source) along with session statistics and active settings — useful for debugging blocked or skipped downloads.
 
 ## 🛠 Installation (Developer Mode)
 
 Since this mod uses custom enhancements, it must be installed manually via Developer Mode:
 
-**Quick install:** Download the latest release from [Releases](https://github.com/Sucotasch/Imagus-Mass-Download-Mod/releases/tag/v2026.7.21), extract, and load `src-mv3-overlay` as unpacked extension.
+**Quick install:** Download the latest release from [Releases](https://github.com/Sucotasch/Imagus-Mass-Download-Mod/releases/tag/v2026.7.25.7-pre), extract, and load `src-mv3-overlay` as unpacked extension.
 
 **Or clone from source:**
 
@@ -292,7 +295,7 @@ git checkout mv3-version
 | Max Concurrent Downloads | 3 | Parallel chrome.downloads |
 | Min Image Size | 45 KB | Skip images smaller than this |
 | Min Video Size | 2 MB | Skip videos smaller than this |
-| Excluded Extensions | .png, .svg, .ico, .gif | Don't download these file types |
+| Excluded Extensions | .svg, .ico, .gif | Don't download these file types |
 | Stop Words | ad, banner, icon, logo, avatar, profile, user | Exclude URLs containing these |
 | Download Unknown Types | true | Download files with unknown MIME type |
 | Resolution Timeout | 8 s | Max time to resolve a sieve rule |
@@ -412,7 +415,7 @@ avatar, profile, icon, logo, watermark, preview
 | Extension not loading | Ensure Developer Mode is enabled |
 | Mass download not starting | Check page permissions in Options |
 | Downloads failing | Increase timeout in Download All settings |
-| Service Worker suspending | Audio keep-alive hack is active by default |
+| Service Worker suspending | A period alarm in the service worker keeps it alive during long scans; the content script also plays a silent looping audio as a secondary keep-alive |
 | Sieve rules not working | Validate JavaScript syntax in editor |
 
 ### Debug Mode
@@ -434,6 +437,35 @@ chrome.storage.local.get(null, console.log)
 3. Add more stop-words for problematic sites
 4. Disable validation on sites with high failure rates
 ```
+
+---
+
+## What Changed vs Stable 2026.7.25.1
+
+This build is an experimental overlay on top of Imagus Reborn. Compared with the stable 2026.7.25.1 line, the mass-download subsystem has been substantially reworked:
+
+### Sieve updates
+- The sieve repository URL is now configurable (Options → Sieves → ≡ button).
+- On a GitHub 429 (rate limit), the extension automatically falls back to the jsDelivr mirror of the same repository.
+- Updates use `If-Modified-Since` conditional requests.
+- The "update available" indicator is now etag-based and clears correctly after a successful update (previously it could stay highlighted).
+- Forced updates bypass `If-Modified-Since`/304, so restoring the upstream rules works even when only custom rules were kept.
+
+### Media detection
+- A normalized dedup key is shared by the content script and the service worker: it strips the HD `#` marker, collapses `//`, drops the query string, and treats `.jpeg` as `.jpg`. This collapses the HD and standard variants of the same file into one entry.
+- Container elements that resolve to a media item now cover their nested `<img>`/`<video>`, so a link wrapping an image counts once.
+- Protocol-relative URLs (`//host/...`) are resolved to absolute form before fetching or downloading.
+
+### Media download
+- When a chosen URL turns out to be a dead 404, the next candidate in the chain is tried automatically instead of failing the item.
+- For filter-phase 403/404 responses, the URL is retried through a page-context fetch (sending the browser cookies + Referer) and downloaded from the resulting blob/object URL.
+- The old anchor-click download fallback is replaced by `chrome.downloads.download()`, so triggering a download never navigates the scanning tab (the anchor click could redirect the tab and abort the scan).
+- A service-worker keepalive alarm prevents the worker from being suspended during long or quiet download phases; the in-page progress tab is a push-driven mirror of worker state.
+
+### Save Log
+- The progress tab has a **Save Log** button that exports a text diagnostics file: per item — content type, file size, HTTP status, filter method, filter time, source, and HD flag — plus download statistics, the extension version, and the active `da`/`hz` settings.
+
+> **Status:** the mass-download engine is under active development and may change between releases.
 
 ---
 
@@ -500,12 +532,16 @@ chrome.storage.local.get(null, console.log)
 ### Структура файлов
 
 ```
-src-mv3/
+src-mv3-overlay/
 ├── manifest.json              # Манифест расширения (MV3)
 ├── background/
 │   └── service.js             # Service Worker (фоновая логика)
 ├── content/
 │   └── content.js             # Контент скрипт (сканирование страницы)
+├── mass-download/
+│   ├── service-init.js        # Глобальные переменные (очереди, статистика)
+│   ├── service-core.js        # Фильтрация, загрузка, прогресс, группы
+│   └── content-block.js       # Эталон патчей контент скрипта
 ├── common/
 │   └── app.js                 # Общие утилиты
 ├── options/
@@ -654,7 +690,7 @@ git checkout mv3-version
 | Макс. параллельных загрузок | 3 | Параллельные chrome.downloads |
 | Мин. размер изображения | 45 КБ | Пропускать изображения меньше этого |
 | Мин. размер видео | 2 МБ | Пропускать видео меньше этого |
-| Исключённые расширения | .png, .svg, .ico, .gif | Не скачивать эти типы файлов |
+| Исключённые расширения | .svg, .ico, .gif | Не скачивать эти типы файлов |
 | Стоп-слова | ad, banner, icon, logo, avatar, profile, user | Исключить URL содержащие это |
 | Скачивать неизвестные типы | true | Скачивать файлы с неизвестным MIME |
 | Таймаут разрешения | 8 с | Макс. время на разрешение sieve правила |
@@ -774,7 +810,7 @@ avatar, profile, icon, logo, watermark, preview
 | Расширение не загружается | Убедитесь, что режим разработчика включен |
 | Массовая загрузка не запускается | Проверьте разрешения страницы в настройках |
 | Загрузки не работают | Увеличьте тайм-аут в настройках "Скачать всё" |
-| Service Worker приостанавливается | Аудио keep-alive хак активен по умолчанию |
+| Service Worker приостанавливается | Периодический alarm в service worker удерживает его активным во время длинных сканирований; контент скрипт также проигрывает тихий зацикленный аудиопоток как вторичный keep-alive |
 | Правила сита не работают | Проверьте синтаксис JavaScript в редакторе |
 
 ### Режим отладки
@@ -796,6 +832,35 @@ chrome.storage.local.get(null, console.log)
 3. Добавить больше стоп-слов для проблемных сайтов
 4. Отключить валидацию на сайтах с высоким процентом ошибок
 ```
+
+---
+
+## Что изменилось относительно стабильной 2026.7.25.1
+
+Эта сборка — экспериментальный оверлей поверх Imagus Reborn. По сравнению со стабильной веткой 2026.7.25.1 подсистема массовой загрузки существенно переработана:
+
+### Обновление фильтров (sieves)
+- URL репозитория фильтров теперь настраивается (Настройки → Сита → кнопка ≡).
+- При ответе GitHub 429 (превышение лимита) расширение автоматически переключается на зеркало jsDelivr того же репозитория.
+- Обновления используют условные запросы `If-Modified-Since`.
+- Индикатор «доступно обновление» теперь основан на etag и корректно сбрасывается после успешного обновления (ранее мог оставаться подсвеченным).
+- Принудительные обновления обходят `If-Modified-Since`/304, поэтому восстановление стандартных правил работает даже если сохранены только пользовательские.
+
+### Обнаружение медиа
+- Нормализованный ключ дедупликации используется и контент скриптом, и service worker: он убирает HD-маркер `#`, сворачивает `//`, отбрасывает строку запроса и считает `.jpeg` равным `.jpg`. Это объединяет HD- и обычную вариации одного файла в одну запись.
+- Элемент-контейнер, разрешающийся в медиа, теперь покрывает вложенные `<img>`/`<video>`, поэтому ссылка с картинкой внутри считается один раз.
+- Протокольно-относительные URL (`//host/...`) приводятся к абсолютному виду перед запросом или загрузкой.
+
+### Загрузка медиа
+- Если выбранный URL оказывается мёртвым 404, автоматически используется следующий кандидат из цепочки вместо отказа по элементу.
+- При ответах 403/404 на этапе фильтрации URL повторяется через fetch в контексте страницы (с cookie + Referer браузера), а затем загружается из полученного blob/object URL.
+- Старый механизм загрузки кликом по `<a download>` заменён на `chrome.downloads.download()`, поэтому запуск загрузки никогда не навигирует сканирующую вкладку (клик по якорю мог перенаправить вкладку и прервать сканирование).
+- Alarm-keepalive в service worker не даёт воркеру заснуть во время длинных или «тихих» фаз загрузки; вкладка прогресса — управляемое push-событиями зеркало состояния воркера.
+
+### Сохранение лога
+- Вкладка прогресса содержит кнопку **Save Log**, которая экспортирует текстовый диагностический файл: для каждого элемента — тип контента, размер файла, HTTP-статус, метод фильтрации, время фильтрации, источник и HD-флаг — плюс статистика загрузок, версия расширения и активные настройки `da`/`hz`.
+
+> **Статус:** движок массовой загрузки находится в активной разработке и может меняться между релизами.
 
 ---
 
@@ -835,4 +900,4 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
 ---
 
-*Last Updated: 2025 | Version: MV3 Stable Branch*
+*Last Updated: 2026 | Version: 2026.7.25.7-pre (Experimental)*
