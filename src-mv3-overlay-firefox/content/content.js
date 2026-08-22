@@ -1624,7 +1624,9 @@
                 trg.IMGS_thumb = imgs;
             } else if (use_img === 3) trg.IMGS_thumb = true;
             tmp_el = n && n.href ? (n.textContent || "").trim() : null;
-            if (tmp_el === n.href) tmp_el = null;
+            // Guard (upstream hardening): same detached-element case as the
+            // IMGS_fallback_zoom line — the parent walk can exit with n === null.
+            if (n && tmp_el === n.href) tmp_el = null;
             i = 0;
             n = trg;
             do {
