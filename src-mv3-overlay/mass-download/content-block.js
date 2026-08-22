@@ -243,56 +243,90 @@
             updatePanel();
         };
 
-        // "Gentle" grid loader. The upstream gallery() assigns the FULL-SIZE
-        // url to every preview-less cell at once — with loading="lazy" the
-        // visible viewport fires ~25-30 parallel full-size requests, and
-        // rate-limiting hosts answer part of them with 429/403 (broken-image
-        // icons; the browser never retries a failed <img>). The album VIEWER
-        // never bursts (one image + at most 3 preloads), which is why
-        // wheeling through the album "warms" the HTTP cache and afterwards
-        // the grid renders and the SW save pipeline validates fine.
-        // This schedules the grid the same gentle way: cells enter a
-        // concurrency-limited queue (3) as they approach the viewport, with
-        // one retry for transient failures. Also applies PVI.set()'s
-        // &amp;->& decode, which gallery() omits (those cells fail forever).
+        // "Gentle" grid loader with a page-context fallback. Fresh full-size
+        // loads of preview-less cells fail on hosts like e-hentai
+        // (hath.network hotlink/token semantics) while the same URL loads
+        // fine once cached by the album viewer — the user had to "warm"
+        // items by wheeling through the album before the grid (and the SW
+        // save validation) would show them. The scheduler paces cells
+        // (max 3 concurrent, viewport-aware), applies PVI.set()'s
+        // &amp;->& decode that gallery() omits, and on failure escalates:
+        // one delayed retry (transient 429), then a page-context fetch
+        // (credentials:'include' — the mechanism our referer-retry chain
+        // proved works for these hosts) materialized as a blob object URL.
         var paceGrid = function (list) {
             var queue = [];
             var active = 0;
             var MAX_ACTIVE = 3;
             var io = null;
 
+            var settle = function (m, ok, url) {
+                active--;
+                if (ok === 2) {
+                    // page-fetch fallback materialized the image
+                    m.dataset.mdSrc = url;
+                }
+                startNext();
+            };
+
+            // Route one media element through the fallback chain.
+            var loadViaPageFetch = function (m) {
+                var url = m.dataset.mdSrc;
+                fetch(url, { credentials: 'include' })
+                    .then(function (r) {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.blob();
+                    })
+                    .then(function (b) {
+                        if (!m.isConnected) { settle(m, false); return; }
+                        var objUrl = URL.createObjectURL(b);
+                        m.onload = function () { m.onload = m.onerror = null; settle(m, 2, objUrl); };
+                        m.onerror = function () { m.onload = m.onerror = null; URL.revokeObjectURL(objUrl); settle(m, false); };
+                        m.setAttribute('src', objUrl);
+                    })
+                    .catch(function () {
+                        // CORS/network blocked the fetch too — leave the
+                        // error state; the URL itself is likely dead.
+                        settle(m, false);
+                    });
+            };
+
+            var armLoad = function (m) {
+                m.addEventListener('load', function onOk() {
+                    m.removeEventListener('load', onOk);
+                    m.removeEventListener('error', onFail);
+                    settle(m, true);
+                });
+                m.addEventListener('error', function onFail() {
+                    m.removeEventListener('load', onOk);
+                    m.removeEventListener('error', onFail);
+                    if (!m.dataset.mdStage) {
+                        // stage 1: one delayed retry for transient failures
+                        m.dataset.mdStage = '1';
+                        setTimeout(function () {
+                            if (!m.isConnected) { settle(m, false); return; }
+                            active++;
+                            armLoad(m);
+                            m.setAttribute('src', m.dataset.mdSrc);
+                        }, 1500);
+                        settle(m, false); // release the slot during the wait
+                    } else if (!m.dataset.mdStage2) {
+                        // stage 2: page-context fetch -> blob (proven path
+                        // for hotlink-protected hosts)
+                        m.dataset.mdStage2 = '1';
+                        active++;
+                        loadViaPageFetch(m);
+                        settle(m, false); // slot managed by the fetch chain
+                    }
+                });
+            };
+
             var startNext = function () {
                 while (active < MAX_ACTIVE && queue.length) {
                     var m = queue.shift();
                     if (!m.isConnected) continue;
                     active++;
-                    var done = function (ev) {
-                        m.removeEventListener('load', done);
-                        m.removeEventListener('error', onErr);
-                        active--;
-                        startNext();
-                    };
-                    var onErr = function (ev) {
-                        m.removeEventListener('load', done);
-                        m.removeEventListener('error', onErr);
-                        active--;
-                        if (!m.dataset.mdRetried && m.isConnected) {
-                            // transient 429/rate-limit: one delayed retry
-                            m.dataset.mdRetried = '1';
-                            m.removeAttribute('src');
-                            setTimeout(function () {
-                                if (m.isConnected) {
-                                    m.addEventListener('load', function once() { m.removeEventListener('error', once); startNextSafe(); });
-                                    m.addEventListener('error', once);
-                                    m.setAttribute('src', m.dataset.mdSrc);
-                                }
-                            }, 1500);
-                        }
-                        startNext();
-                    };
-                    var startNextSafe = function () { startNext(); };
-                    m.addEventListener('load', done);
-                    m.addEventListener('error', onErr);
+                    armLoad(m);
                     m.setAttribute('src', m.dataset.mdSrc);
                 }
             };
