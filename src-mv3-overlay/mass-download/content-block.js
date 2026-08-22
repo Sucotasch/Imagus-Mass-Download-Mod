@@ -138,12 +138,18 @@
             if (!sr || sr.getElementById('md-gallery-style')) return;
             var st = doc.createElement('style');
             st.id = 'md-gallery-style';
+            // The button bar is a STICKY row pinned to the top INSIDE the
+            // gallery window (#imagus-gallery = the scrollable grid itself):
+            // it is attached to the window, stays visible while the grid
+            // scrolls, hides/destroys together with the window, and sits on
+            // the gallery's light-gray background as a solid dark bar.
             st.textContent = ''
-                + '#md-gallery-panel{position:fixed;top:14px;right:14px;display:flex;gap:8px;z-index:2147483647;font:13px/1.2 sans-serif;}'
-                + '#md-gallery-panel button{padding:7px 12px;border:0;border-radius:6px;background:rgba(0,0,0,.72);color:#fff;cursor:pointer;}'
-                + '#md-gallery-panel button:hover{background:rgba(0,0,0,.9);}'
-                + '#md-gallery-panel .md-gsave{background:#2f7df6;}'
-                + '#md-gallery-panel .md-gsave:disabled{background:rgba(0,0,0,.5);opacity:.6;cursor:default;}'
+                + '.md-gbar{position:sticky;top:0;left:0;width:100%;display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:6px 10px;margin:-8px -8px 8px -8px;background:#1f242b;z-index:10;font:13px/1.2 sans-serif;}'
+                + '.md-gbar button{padding:7px 14px;border:0;border-radius:6px;background:#3a4150;color:#fff;font-weight:600;cursor:pointer;}'
+                + '.md-gbar button:hover{background:#4a5364;}'
+                + '.md-gbar .md-gsave{background:#2f7df6;}'
+                + '.md-gbar .md-gsave:hover{background:#4b91f8;}'
+                + '.md-gbar .md-gsave:disabled{background:#2a2f38;color:#8a919c;cursor:default;}'
                 + '#imagus-gallery > .md-gcell{position:relative;}'
                 + '.md-gcheck{position:absolute;top:6px;left:6px;width:20px;height:20px;border:2px solid #fff;border-radius:5px;background:rgba(0,0,0,.45);cursor:pointer;z-index:3;}'
                 + '.md-gcell.md-gsel > .md-gcheck{background:#2f7df6;border-color:#fff;}'
@@ -151,50 +157,57 @@
             sr.appendChild(st);
         };
 
+        var cellCount = 0;
+
         var updatePanel = function () {
             if (!panel) return;
-            var boxes = panel._count || 0;
-            var all = boxes > 0 && selected.size === boxes;
+            var all = cellCount > 0 && selected.size === cellCount;
             panel.querySelector('[data-a="all"]').textContent = all ? 'Deselect all' : 'Select all';
             var save = panel.querySelector('[data-a="save"]');
             save.textContent = 'Save (' + selected.size + ')';
             save.disabled = selected.size === 0;
         };
 
-        var showPanel = function () {
-            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
-            if (!sr) return;
+        var buildPanel = function () {
             ensureCss();
-            if (!panel) {
-                panel = doc.createElement('div');
-                panel.id = 'md-gallery-panel';
-                var bAll = doc.createElement('button');
-                bAll.dataset.a = 'all';
-                var bSave = doc.createElement('button');
-                bSave.dataset.a = 'save';
-                bSave.className = 'md-gsave';
-                panel.appendChild(bAll);
-                panel.appendChild(bSave);
-                panel.addEventListener('click', function (ev) {
-                    var b = ev.target.closest ? ev.target.closest('button') : null;
-                    if (!b) return;
-                    if (b.dataset.a === 'all') toggleAll();
-                    else if (b.dataset.a === 'save') doSave();
-                });
-                sr.appendChild(panel);
-            }
-            panel.style.display = 'flex';
+            if (panel) return panel;
+            panel = doc.createElement('div');
+            panel.className = 'md-gbar';
+            var bAll = doc.createElement('button');
+            bAll.dataset.a = 'all';
+            var bSave = doc.createElement('button');
+            bSave.dataset.a = 'save';
+            bSave.className = 'md-gsave';
+            panel.appendChild(bAll);
+            panel.appendChild(bSave);
+            panel.addEventListener('click', function (ev) {
+                var b = ev.target.closest ? ev.target.closest('button') : null;
+                if (!b) return;
+                if (b.dataset.a === 'all') toggleAll();
+                else if (b.dataset.a === 'save') doSave();
+            });
+            // First child of the grid so the sticky bar leads the scroll flow.
+            PVI.GLR.insertBefore(panel, PVI.GLR.firstChild);
+            updatePanel();
+            return panel;
+        };
+
+        var clearSelectionUi = function () {
+            selected.clear();
+            if (PVI.GLR) Array.prototype.forEach.call(PVI.GLR.querySelectorAll('.md-gsel'), function (cell) {
+                cell.classList.remove('md-gsel');
+            });
             updatePanel();
         };
 
         var hidePanel = function (clearSelection) {
-            if (panel) panel.style.display = 'none';
+            // The bar lives INSIDE GLR: state 0 wipes it with innerHTML="".
+            // Only drop the stale reference; state 1 hides it via GLR display.
+            panel = null;
             if (clearSelection) {
                 selected.clear();
                 albumRef = null;
-                if (PVI.GLR) Array.prototype.forEach.call(PVI.GLR.children, function (cell) {
-                    cell.classList.remove('md-gsel');
-                });
+                cellCount = 0;
             }
         };
 
@@ -219,9 +232,9 @@
             if (!sr || !PVI.GLR) return;
             ensureCss();
             // Re-open of an already-built grid (gallery() skips the rebuild):
-            // boxes exist — just reshow the panel and keep the selection.
+            // boxes exist — ensure the bar is present and keep the selection.
             if (PVI.GLR.querySelector('.md-gcheck')) {
-                showPanel();
+                buildPanel();
                 return;
             }
             var albumId = PVI.TRG && PVI.TRG.IMGS_album;
@@ -229,13 +242,14 @@
             if (!Array.isArray(list)) return;
             albumRef = list;
             selected.clear();
-            var count = 0;
+            cellCount = 0;
             Array.prototype.forEach.call(PVI.GLR.children, function (cell) {
+                if (cell.classList && cell.classList.contains('md-gbar')) return;
                 var media = cell.firstElementChild;
                 if (!media) return;
                 var idx = media.dataset ? media.dataset.idx : null;
                 if (idx == null) return;
-                count++;
+                cellCount++;
                 cell.classList.add('md-gcell');
                 var box = doc.createElement('div');
                 box.className = 'md-gcheck';
@@ -250,8 +264,7 @@
                 });
                 cell.appendChild(box);
             });
-            if (panel) panel._count = count;
-            showPanel();
+            buildPanel();
         };
 
         var doSave = function () {
@@ -291,7 +304,16 @@
                     Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + batch.length + ' item(s) queued.', done: true });
                 }
             })(0);
-            hidePanel(false);
+            // Keep the bar while the gallery is open (it is part of the
+            // window now); just reset the selection — re-saving the same
+            // items within one session would be deduped as duplicates anyway.
+            var save = panel ? panel.querySelector('[data-a="save"]') : null;
+            if (save) {
+                save.textContent = 'Queued \u2713';
+                save.disabled = true;
+                setTimeout(function () { updatePanel(); }, 1500);
+            }
+            clearSelectionUi();
         };
 
         var origGallery = PVI.gallery;
@@ -300,7 +322,6 @@
             try {
                 if (PVI.galleryState === 2) decorate();
                 else if (PVI.galleryState === 0) hidePanel(true);
-                else hidePanel(false);
             } catch (_) { /* feature UI must never break the engine */ }
             return r;
         };
