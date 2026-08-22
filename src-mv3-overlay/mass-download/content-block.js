@@ -140,21 +140,30 @@
             st.id = 'md-gallery-style';
             // The button bar is a STICKY row pinned to the top INSIDE the
             // gallery window (#imagus-gallery = the scrollable grid itself).
-            // CRITICAL: upstream styles EVERY direct GLR child as a grid cell
-            // (#imagus-gallery > * { width: grid-size; height: grid-size;
-            // position: relative }) — specificity 1,0,0 beats a bare class.
-            // The bar MUST be sized/positioned through the same-strength
-            // selector below, otherwise it renders as a 150x150 slot, steals
-            // a cell position and shifts the whole grid (the "empty column"
-            // regression).
+            // CRITICAL #1: upstream styles EVERY direct GLR child as a grid
+            // cell (#imagus-gallery > * { width: grid-size; height:
+            // grid-size }) — the bar MUST be sized through the same-strength
+            // selector below or it renders as a 150x150 slot and shifts the
+            // grid.
+            // CRITICAL #2 (the "empty column" regression): the engine sizes
+            // the window with only 8px width slack. ANY extra content height
+            // produces a vertical scrollbar, which steals ~15px of CONTENT
+            // WIDTH and drops the last cell of every row (a column-wide gap
+            // on the right). The bar therefore contributes NET ZERO flow
+            // height: fixed 40px height, margin-bottom −40px cancels it, and
+            // margin-top −8px + the 8px flex gap cancel each other — the
+            // first row lands exactly where upstream puts it (top: 8px) and
+            // the scroll behavior is byte-identical to a bar-less grid.
+            // The bar overlays the top 40px of the first row, so checkboxes
+            // live in the cells' BOTTOM-left corner to stay clickable.
             st.textContent = ''
-                + '#imagus-gallery > .md-gbar{position:sticky;top:0;width:auto;height:auto;flex-basis:100%;display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:6px 10px;margin:-8px -8px 8px -8px;background:#1f242b;z-index:10;font:13px/1.2 sans-serif;}'
-                + '.md-gbar button{padding:7px 14px;border:0;border-radius:6px;background:#3a4150;color:#fff;font-weight:600;cursor:pointer;}'
+                + '#imagus-gallery > .md-gbar{position:sticky;top:0;width:auto;height:40px;box-sizing:border-box;flex-basis:100%;display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:5px 10px;margin:-8px -8px -40px;background:#1f242b;z-index:10;font:13px/1.2 sans-serif;}'
+                + '.md-gbar button{padding:6px 14px;border:0;border-radius:6px;background:#3a4150;color:#fff;font-weight:600;cursor:pointer;}'
                 + '.md-gbar button:hover{background:#4a5364;}'
                 + '.md-gbar .md-gsave{background:#2f7df6;}'
                 + '.md-gbar .md-gsave:hover{background:#4b91f8;}'
                 + '.md-gbar .md-gsave:disabled{background:#2a2f38;color:#8a919c;cursor:default;}'
-                + '.md-gcheck{position:absolute;top:6px;left:6px;width:20px;height:20px;border:2px solid #fff;border-radius:5px;background:rgba(0,0,0,.45);cursor:pointer;z-index:3;}'
+                + '.md-gcheck{position:absolute;bottom:6px;left:6px;width:20px;height:20px;border:2px solid #fff;border-radius:5px;background:rgba(0,0,0,.45);cursor:pointer;z-index:3;}'
                 + '.md-gcell.md-gsel > .md-gcheck{background:#2f7df6;border-color:#fff;}'
                 + '.md-gcell.md-gsel > img,.md-gcell.md-gsel > video{outline:3px solid #2f7df6;outline-offset:-3px;}';
             sr.appendChild(st);
