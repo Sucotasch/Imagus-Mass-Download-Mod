@@ -243,6 +243,92 @@
             updatePanel();
         };
 
+        // "Gentle" grid loader. The upstream gallery() assigns the FULL-SIZE
+        // url to every preview-less cell at once — with loading="lazy" the
+        // visible viewport fires ~25-30 parallel full-size requests, and
+        // rate-limiting hosts answer part of them with 429/403 (broken-image
+        // icons; the browser never retries a failed <img>). The album VIEWER
+        // never bursts (one image + at most 3 preloads), which is why
+        // wheeling through the album "warms" the HTTP cache and afterwards
+        // the grid renders and the SW save pipeline validates fine.
+        // This schedules the grid the same gentle way: cells enter a
+        // concurrency-limited queue (3) as they approach the viewport, with
+        // one retry for transient failures. Also applies PVI.set()'s
+        // &amp;->& decode, which gallery() omits (those cells fail forever).
+        var paceGrid = function (list) {
+            var queue = [];
+            var active = 0;
+            var MAX_ACTIVE = 3;
+            var io = null;
+
+            var startNext = function () {
+                while (active < MAX_ACTIVE && queue.length) {
+                    var m = queue.shift();
+                    if (!m.isConnected) continue;
+                    active++;
+                    var done = function (ev) {
+                        m.removeEventListener('load', done);
+                        m.removeEventListener('error', onErr);
+                        active--;
+                        startNext();
+                    };
+                    var onErr = function (ev) {
+                        m.removeEventListener('load', done);
+                        m.removeEventListener('error', onErr);
+                        active--;
+                        if (!m.dataset.mdRetried && m.isConnected) {
+                            // transient 429/rate-limit: one delayed retry
+                            m.dataset.mdRetried = '1';
+                            m.removeAttribute('src');
+                            setTimeout(function () {
+                                if (m.isConnected) {
+                                    m.addEventListener('load', function once() { m.removeEventListener('error', once); startNextSafe(); });
+                                    m.addEventListener('error', once);
+                                    m.setAttribute('src', m.dataset.mdSrc);
+                                }
+                            }, 1500);
+                        }
+                        startNext();
+                    };
+                    var startNextSafe = function () { startNext(); };
+                    m.addEventListener('load', done);
+                    m.addEventListener('error', onErr);
+                    m.setAttribute('src', m.dataset.mdSrc);
+                }
+            };
+
+            try {
+                io = new IntersectionObserver(function (entries) {
+                    entries.forEach(function (en) {
+                        if (!en.isIntersecting) return;
+                        var m = en.target;
+                        io.unobserve(m);
+                        queue.push(m);
+                    });
+                    startNext();
+                }, { root: PVI.GLR, rootMargin: '200px' });
+            } catch (_) {
+                io = null;
+            }
+
+            Array.prototype.forEach.call(PVI.GLR.querySelectorAll('img[data-idx], video[data-idx]'), function (m) {
+                var i = parseInt(m.dataset.idx, 10);
+                var item = list[i];
+                var hasPreview = Array.isArray(item) && !!item[2];
+                var s = m.getAttribute('src');
+                if (hasPreview || !s) {
+                    if (io) io.unobserve(m);
+                    return; // small previews are not the limited resource
+                }
+                if (s.indexOf('&amp;') !== -1) s = s.replace(/&amp;/g, '&');
+                m.removeAttribute('src');
+                m.dataset.mdSrc = s;
+                if (io) io.observe(m);
+                else queue.push(m); // very old engines: pace without laziness
+            });
+            startNext();
+        };
+
         var decorate = function () {
             var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
             if (!sr || !PVI.GLR) return;
@@ -281,6 +367,7 @@
                 cell.appendChild(box);
             });
             buildPanel();
+            try { paceGrid(list); } catch (_) { /* pacing is an optimization */ }
         };
 
         var doSave = function () {
