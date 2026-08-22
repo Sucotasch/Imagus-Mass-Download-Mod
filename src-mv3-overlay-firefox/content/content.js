@@ -1512,7 +1512,7 @@
                 if (ret) ret = Array.isArray(ret) ? ret.concat(rule) : [ret, rule];
                 else if (ret !== null) ret = rule;
             }
-            if (tmp_el === true) trg.IMGS_fallback_zoom = n.href;
+            if (tmp_el === true && n) trg.IMGS_fallback_zoom = n.href;
             if (ret && (typeof ret === "string" || Array.isArray(ret))) {
                 URL = /^https?:\/\//;
                 URL = [
@@ -1941,6 +1941,11 @@
         set: function (src) {
             var i, src_left, src_HD;
             if (!src) return;
+            // Guard (upstream hardening): the iframe path assigns TRG = PVI.HLP,
+            // which is null when create() could not build the overlay — without
+            // this, `delete PVI.TRG.IMGS_SVG` throws "Cannot convert undefined
+            // or null to object" (seen on facebook.com).
+            if (!PVI.TRG) return;
             if (PVI.iFrame) {
                 i = PVI.TRG;
                 win.parent.postMessage(

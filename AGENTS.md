@@ -203,6 +203,9 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 - `find()` length check, `rotate()` null guard, `grantUrls` object `.map`
 - `SieveUI` `getValue()` type check, `app.js` chrome.runtime guard
 - deinitTabs/context menu `.catch()`
+- `find()` `n`-null guard on `IMGS_fallback_zoom` (detached elements — scan snapshot processes nodes Shopify-style pages have already removed; error "reading 'href' of null")
+- `set()` `PVI.TRG` null guard at head (iframe path assigns `TRG = PVI.HLP`, null when `create()` could not build the overlay — "Cannot convert undefined or null to object" on facebook.com)
+- `updateBadge` `.catch()` on all `setBadge*` calls ("No tab with id" unhandled rejections on tab close)
 
 **Security:**
 - Unbounded blob GET fallback — Content-Length / size cap

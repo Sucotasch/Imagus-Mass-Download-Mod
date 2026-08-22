@@ -961,12 +961,15 @@ async function grantsRemove(url) {
 
 function updateBadge(tabId, tabUrl) {
     if (!tabUrl) return;
+    // Guard (upstream hardening): a tab closed between the tabs.get/update
+    // event and the badge call rejects the promise — unhandled
+    // "No tab with id" noise in the SW console.
     if (grantsIsBlocked(tabUrl)) {
-        chrome.action.setBadgeText({ text: "X", tabId: tabId });
-        chrome.action.setBadgeBackgroundColor({color: "#ff8080ff", tabId: tabId });
-        chrome.action.setBadgeTextColor({ color: "#FFF", tabId: tabId });
+        chrome.action.setBadgeText({ text: "X", tabId: tabId }).catch(() => {});
+        chrome.action.setBadgeBackgroundColor({color: "#ff8080ff", tabId: tabId }).catch(() => {});
+        chrome.action.setBadgeTextColor({ color: "#FFF", tabId: tabId }).catch(() => {});
     } else {
-        chrome.action.setBadgeText({ text: "", tabId: tabId });
+        chrome.action.setBadgeText({ text: "", tabId: tabId }).catch(() => {});
     }
 }
 
