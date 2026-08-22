@@ -184,16 +184,62 @@
             save.disabled = selected.size === 0;
         };
 
+        // Re-resolve the album. e-hentai-style albums are scraped once at
+        // hover time into PVI.stack with TOKEN-SIGNED media urls; the engine
+        // replays that cached list forever (resolve() never re-fetches while
+        // the page lives). When the tokens expire, every fresh load fails in
+        // EVERY context (direct <img>, page fetch, SW validation) and only
+        // browser-cached items keep working — no loading trick can recover a
+        // dead URL. The only cure is dropping the album cache and letting the
+        // engine resolve it again (a fresh scrape brings fresh tokens).
+        var autoRefreshed = false;
+        var refreshAlbum = function (auto) {
+            var el = PVI.TRG;
+            if (!el || !el.isConnected) return;
+            var albumId = PVI.TRG.IMGS_album;
+            if (albumId && PVI.stack[albumId]) delete PVI.stack[albumId];
+            delete PVI.TRG.IMGS_c_resolved;
+            delete PVI.TRG.IMGS_album;
+            selected.clear();
+            albumRef = null;
+            cellCount = 0;
+            try { PVI.reset(true); } catch (_) {}
+            PVI.TRG = el;
+            try {
+                var src = PVI.find(el, PVI.x, PVI.y);
+                if (src) PVI.load(src);
+            } catch (_) { return; }
+            // The re-resolution lands asynchronously (resolved handler shows
+            // the first image); poll briefly for the fresh album and reopen
+            // the gallery grid on it. gallery(0) first: the old grid must be
+            // wiped or gallery(2) would reuse the stale cells.
+            var tries = 0;
+            var t = setInterval(function () {
+                if (PVI.TRG && PVI.TRG.IMGS_album && Array.isArray(PVI.stack[PVI.TRG.IMGS_album])) {
+                    clearInterval(t);
+                    try { PVI.gallery(0); PVI.gallery(2); } catch (_) {}
+                } else if (++tries > 50) {
+                    clearInterval(t);
+                }
+            }, 300);
+            var rf = panel ? panel.querySelector('[data-a="refresh"]') : null;
+            if (rf && auto) rf.textContent = 'Refreshing…';
+        };
+
         var buildPanel = function () {
             ensureCss();
             if (panel) return panel;
             panel = doc.createElement('div');
             panel.className = 'md-gbar';
+            var bRef = doc.createElement('button');
+            bRef.dataset.a = 'refresh';
+            bRef.textContent = 'Refresh';
             var bAll = doc.createElement('button');
             bAll.dataset.a = 'all';
             var bSave = doc.createElement('button');
             bSave.dataset.a = 'save';
             bSave.className = 'md-gsave';
+            panel.appendChild(bRef);
             panel.appendChild(bAll);
             panel.appendChild(bSave);
             panel.addEventListener('click', function (ev) {
@@ -201,6 +247,7 @@
                 if (!b) return;
                 if (b.dataset.a === 'all') toggleAll();
                 else if (b.dataset.a === 'save') doSave();
+                else if (b.dataset.a === 'refresh') refreshAlbum(false);
             });
             // First child of the grid so the sticky bar leads the scroll flow.
             PVI.GLR.insertBefore(panel, PVI.GLR.firstChild);
@@ -224,6 +271,7 @@
                 selected.clear();
                 albumRef = null;
                 cellCount = 0;
+                autoRefreshed = false;
             }
         };
 
@@ -285,9 +333,16 @@
                         m.setAttribute('src', objUrl);
                     })
                     .catch(function () {
-                        // CORS/network blocked the fetch too — leave the
-                        // error state; the URL itself is likely dead.
+                        // CORS/network blocked the fetch too — every load
+                        // context has failed: the URL itself is dead
+                        // (expired/consumed token). Re-resolve the album ONCE
+                        // per gallery session — a fresh scrape brings fresh
+                        // tokens.
                         settle(m, false);
+                        if (!autoRefreshed) {
+                            autoRefreshed = true;
+                            setTimeout(function () { refreshAlbum(true); }, 500);
+                        }
                     });
             };
 
