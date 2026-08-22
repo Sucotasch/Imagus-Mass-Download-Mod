@@ -153,6 +153,10 @@
                 }
             } else if (d.cmd === 'downloadWithReferer') {
                 PVI._downloadWithReferer(d);
+            } else if (d.cmd === 'revokeObjectUrl') {
+                // Chrome referer-retry cleanup: the object URL was created in
+                // THIS page's registry — only we can revoke it (the SW cannot).
+                try { URL.revokeObjectURL(d.url); } catch (_) {}
             }
             // <<< MASS-DOWNLOAD-MESSAGES
 
@@ -574,7 +578,7 @@
                 if (blob.size > MAX_PAGE_FETCH) {
                     throw new Error('Too large for page fetch');
                 }
-                Port.send({
+                const msg = {
                     cmd: 'refererDownloadReady',
                     url: url,
                     referer: d.referer || location.href,
@@ -583,12 +587,16 @@
                     elementInfo: d.elementInfo || null,
                     session: d.session,
                     contentType: blob.type || (resp.headers.get('Content-Type') || ''),
-                    size: blob.size,
-                    // Blob on both platforms: the SW materializes + revokes its
-                    // own object URL (a content-created objectUrl was never
-                    // revoked by anyone — one leaked blob per retry).
-                    blob: blob
-                });
+                    size: blob.size
+                };
+                // Platform split (§14.3): Chrome's MV3 service worker has NO
+                // URL.createObjectURL — the page creates the object URL and the
+                // SW asks us to revoke it later (revokeObjectUrl). Firefox's
+                // background is an event page — ship the Blob, the SW
+                // materializes + revokes its own URL.
+                if (platform === 'firefox') msg.blob = blob;
+                else msg.objectUrl = URL.createObjectURL(blob);
+                Port.send(msg);
             } catch (e) {
                 Port.send({
                     cmd: 'refererDownloadFailed',

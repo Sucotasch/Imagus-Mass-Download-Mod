@@ -344,8 +344,18 @@ function releaseDownloadSlot(task) {
     if (!task || task._slotReleased) return;
     task._slotReleased = true;
     if (task._revokeUrl) {
-        URL.revokeObjectURL(task._revokeUrl);
+        // Firefox event page path — revoking our own object URL.
+        if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(task._revokeUrl);
         task._revokeUrl = null;
+    }
+    if (task._objectUrl) {
+        // Chrome path: the object URL lives in the PAGE's URL registry — ask
+        // the content script to revoke it (fire-and-forget; if the initiator
+        // tab is gone the blob dies with the page anyway).
+        if (downloadInitiatorTabId) {
+            chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'revokeObjectUrl', url: task._objectUrl }).catch(() => {});
+        }
+        task._objectUrl = null;
     }
     if (task._watchdog) {
         clearTimeout(task._watchdog);
@@ -456,12 +466,21 @@ function handleRefererDownloadReady(msg, sender) {
         httpStatus: 200
     };
     task._session = sessionId;
-    // Review fix #2: the payload arrives as a Blob on BOTH platforms and the
-    // SW materializes + revokes its own object URL (see processDownloadQueue).
-    // The old Chrome path (objectUrl created in the content script) was never
-    // revoked by anyone — one leaked blob per referer retry for the page's
-    // lifetime.
-    task._blob = msg.blob;
+    // Platform split (RESTORED — with a runtime capability check):
+    // - Firefox's background is an EVENT PAGE — URL.createObjectURL EXISTS
+    //   there, so ship the Blob and materialize + revoke the object URL in
+    //   the SW (_revokeUrl).
+    // - Chrome's MV3 SERVICE WORKER has NO URL.createObjectURL — the content
+    //   script creates the object URL (_objectUrl) and the SW asks it to
+    //   revoke it on release (revokeObjectUrl message). This is the §14.3
+    //   constraint; the 2026-08-22 "unify on SW-side materialization" change
+    //   violated it and froze the whole download queue (each throw leaked an
+    //   activeDownloads slot until the concurrency cap blocked everything).
+    if (msg.blob && typeof URL.createObjectURL === 'function') {
+        task._blob = msg.blob;
+    } else if (msg.objectUrl) {
+        task._objectUrl = msg.objectUrl;
+    }
     downloadQueue.push(task);
     processDownloadQueue();
 }
@@ -947,13 +966,24 @@ function processDownloadQueue() {
             : rawFilename;
         task.filename = filename;
 
-        // Stage 5 / review fix #2: referer-retried payloads arrive as a Blob;
-        // the SW materializes its own object URL here and revokes it in
-        // releaseDownloadSlot (both platforms — the content-created objectUrl
-        // variant leaked).
-        const dlUrl = task._blob
-            ? (task._revokeUrl = URL.createObjectURL(task._blob))
-            : ensureAbsoluteUrl(task.url);
+        // Referer-retried payloads: a Blob on Firefox (event page can
+        // materialize it — guarded), or a content-created object URL on
+        // Chrome (whose SW has no URL.createObjectURL). The try/catch is
+        // load-bearing: an exception between activeDownloads++ and
+        // chrome.downloads.download leaks the slot permanently and the
+        // concurrency gate then stalls every later download.
+        let dlUrl;
+        if (task._blob && typeof URL.createObjectURL === 'function') {
+            try {
+                dlUrl = task._revokeUrl = URL.createObjectURL(task._blob);
+            } catch (e) {
+                updateDownloadProgress(task.url, 'failed', 0, 'Page-fetch blob failed: ' + (e && e.message), null, task);
+                releaseDownloadSlot(task);
+                continue;
+            }
+        } else {
+            dlUrl = task._objectUrl || ensureAbsoluteUrl(task.url);
+        }
 
         chrome.downloads.download({
             url: dlUrl,
