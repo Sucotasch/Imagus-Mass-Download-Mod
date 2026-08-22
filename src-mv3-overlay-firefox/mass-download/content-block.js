@@ -91,6 +91,221 @@
 
     // NOTE: _getMediaExt removed (Audit N-09) — its result fed only the
     // `ext`/`priorityExt` task fields that the service worker never read.
+
+    // === Gallery Save: select items in gallery mode + Select all / Save ===
+    // Runs via setTimeout(0): PVI does not exist yet while this section
+    // executes. Design notes (all consequences verified):
+    // - Zero SW changes: Save feeds the existing downloadMass pipeline
+    //   (validation/referer-retries/progress/dedup all reused).
+    // - Zero upstream edits: a thin signature-agnostic wrapper around
+    //   PVI.gallery decorates the grid when it opens and cleans up when it
+    //   closes; checkboxes are plain divs, so upstream galleryClick (capture,
+    //   img/video targets only) ignores them — no click interference.
+    // - The grid cell shows `preview || src`, but Save always uses the album
+    //   ITEM url (albumRef[i][0]) — never the preview the <img> displays.
+    // - If a scan is running, items join the LIVE session (no
+    //   openDownloadProgress reset); otherwise a standalone session is opened
+    //   and closed with updateStatus{done:true} AFTER the last chunk (the SW's
+    //   100ms checkAllQueuesEmpty delay covers message reordering).
+    // - Sends are chunked (25 per 10ms) so a 500-item Select All cannot
+    //   saturate the message port.
+    var _mdGalleryInstall = function () {
+        if (!PVI || PVI._mdGalleryInstalled) return;
+        PVI._mdGalleryInstalled = true;
+
+        var selected = new Set();   // album item indices
+        var albumRef = null;        // captured PVI.stack list of the open gallery
+        var panel = null;
+        var CHUNK = 25;
+
+        // Album item -> downloadable url (mirrors the scan's album capture):
+        // [[sd,hd],cap] variants picked per hz.hiRes like PVI.set; videojs
+        // extension markers in the caption carry the url when item[0] is empty.
+        var itemUrl = function (item, hiRes) {
+            var u = Array.isArray(item) ? item[0] : item;
+            var cap = Array.isArray(item) && typeof item[1] === 'string' ? item[1] : '';
+            var m = /<imagus-extension type="videojs" url="([^"]+)"/i.exec(cap);
+            if ((!u || typeof u !== 'string') && m) u = m[1];
+            if (Array.isArray(u)) {
+                var hd = u.find(function (x) { return typeof x === 'string' && x[0] === '#'; });
+                u = (hiRes && hd) || u.find(function (x) { return typeof x === 'string' && x[0] !== '#'; }) || u[0];
+            }
+            return (typeof u === 'string' && u) ? u : null;
+        };
+
+        var ensureCss = function () {
+            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
+            if (!sr || sr.getElementById('md-gallery-style')) return;
+            var st = doc.createElement('style');
+            st.id = 'md-gallery-style';
+            st.textContent = ''
+                + '#md-gallery-panel{position:fixed;top:14px;right:14px;display:flex;gap:8px;z-index:2147483647;font:13px/1.2 sans-serif;}'
+                + '#md-gallery-panel button{padding:7px 12px;border:0;border-radius:6px;background:rgba(0,0,0,.72);color:#fff;cursor:pointer;}'
+                + '#md-gallery-panel button:hover{background:rgba(0,0,0,.9);}'
+                + '#md-gallery-panel .md-gsave{background:#2f7df6;}'
+                + '#md-gallery-panel .md-gsave:disabled{background:rgba(0,0,0,.5);opacity:.6;cursor:default;}'
+                + '#imagus-gallery > .md-gcell{position:relative;}'
+                + '.md-gcheck{position:absolute;top:6px;left:6px;width:20px;height:20px;border:2px solid #fff;border-radius:5px;background:rgba(0,0,0,.45);cursor:pointer;z-index:3;}'
+                + '.md-gcell.md-gsel > .md-gcheck{background:#2f7df6;border-color:#fff;}'
+                + '.md-gcell.md-gsel > img,.md-gcell.md-gsel > video{outline:3px solid #2f7df6;outline-offset:-3px;}';
+            sr.appendChild(st);
+        };
+
+        var updatePanel = function () {
+            if (!panel) return;
+            var boxes = panel._count || 0;
+            var all = boxes > 0 && selected.size === boxes;
+            panel.querySelector('[data-a="all"]').textContent = all ? 'Deselect all' : 'Select all';
+            var save = panel.querySelector('[data-a="save"]');
+            save.textContent = 'Save (' + selected.size + ')';
+            save.disabled = selected.size === 0;
+        };
+
+        var showPanel = function () {
+            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
+            if (!sr) return;
+            ensureCss();
+            if (!panel) {
+                panel = doc.createElement('div');
+                panel.id = 'md-gallery-panel';
+                var bAll = doc.createElement('button');
+                bAll.dataset.a = 'all';
+                var bSave = doc.createElement('button');
+                bSave.dataset.a = 'save';
+                bSave.className = 'md-gsave';
+                panel.appendChild(bAll);
+                panel.appendChild(bSave);
+                panel.addEventListener('click', function (ev) {
+                    var b = ev.target.closest ? ev.target.closest('button') : null;
+                    if (!b) return;
+                    if (b.dataset.a === 'all') toggleAll();
+                    else if (b.dataset.a === 'save') doSave();
+                });
+                sr.appendChild(panel);
+            }
+            panel.style.display = 'flex';
+            updatePanel();
+        };
+
+        var hidePanel = function (clearSelection) {
+            if (panel) panel.style.display = 'none';
+            if (clearSelection) {
+                selected.clear();
+                albumRef = null;
+                if (PVI.GLR) Array.prototype.forEach.call(PVI.GLR.children, function (cell) {
+                    cell.classList.remove('md-gsel');
+                });
+            }
+        };
+
+        var toggleAll = function () {
+            if (!PVI.GLR || !albumRef) return;
+            var boxes = PVI.GLR.querySelectorAll('.md-gcheck');
+            var select = selected.size !== boxes.length;
+            selected.clear();
+            Array.prototype.forEach.call(boxes, function (box) {
+                var cell = box.parentElement;
+                var i = parseInt(box.dataset.idx, 10);
+                if (select) {
+                    selected.add(i);
+                    if (cell) cell.classList.add('md-gsel');
+                } else if (cell) cell.classList.remove('md-gsel');
+            });
+            updatePanel();
+        };
+
+        var decorate = function () {
+            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
+            if (!sr || !PVI.GLR) return;
+            ensureCss();
+            // Re-open of an already-built grid (gallery() skips the rebuild):
+            // boxes exist — just reshow the panel and keep the selection.
+            if (PVI.GLR.querySelector('.md-gcheck')) {
+                showPanel();
+                return;
+            }
+            var albumId = PVI.TRG && PVI.TRG.IMGS_album;
+            var list = albumId ? PVI.stack[albumId] : null;
+            if (!Array.isArray(list)) return;
+            albumRef = list;
+            selected.clear();
+            var count = 0;
+            Array.prototype.forEach.call(PVI.GLR.children, function (cell) {
+                var media = cell.firstElementChild;
+                if (!media) return;
+                var idx = media.dataset ? media.dataset.idx : null;
+                if (idx == null) return;
+                count++;
+                cell.classList.add('md-gcell');
+                var box = doc.createElement('div');
+                box.className = 'md-gcheck';
+                box.dataset.idx = idx;
+                box.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    var i = parseInt(this.dataset.idx, 10);
+                    var on = selected.has(i);
+                    if (on) { selected.delete(i); this.parentElement.classList.remove('md-gsel'); }
+                    else { selected.add(i); this.parentElement.classList.add('md-gsel'); }
+                    updatePanel();
+                });
+                cell.appendChild(box);
+            });
+            if (panel) panel._count = count;
+            showPanel();
+        };
+
+        var doSave = function () {
+            if (!albumRef || selected.size === 0) return;
+            var hiRes = !!(cfg && cfg.hz && cfg.hz.hiRes);
+            var seen = new Set();
+            var batch = [];
+            selected.forEach(function (i) {
+                var raw = itemUrl(albumRef[i], hiRes);
+                if (!raw) return;
+                var isHd = raw[0] === '#';
+                var url = _resolveUrl(raw.replace(/^#/, ''));
+                var key = _normalizeUrlKey(url);
+                if (key && seen.has(key)) return;
+                if (key) seen.add(key);
+                batch.push({ url: url, isHd: isHd });
+            });
+            if (batch.length === 0) return;
+            var scanWasActive = !!PVI.downloadAllActive;
+            if (!scanWasActive) Port.send({ cmd: 'openDownloadProgress' });
+            (function sendChunk(from) {
+                var end = Math.min(from + CHUNK, batch.length);
+                for (var i = from; i < end; i++) {
+                    Port.send({
+                        cmd: 'downloadMass',
+                        url: batch[i].url,
+                        referer: window.location.href,
+                        isHd: batch[i].isHd,
+                        elementInfo: { tag: 'gallery', src: '' }
+                    });
+                }
+                if (end < batch.length) {
+                    setTimeout(function () { sendChunk(end); }, 10);
+                } else if (!scanWasActive) {
+                    // Close the standalone session only after the LAST chunk —
+                    // premature done:true cancels in-flight queue work (N-02).
+                    Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + batch.length + ' item(s) queued.', done: true });
+                }
+            })(0);
+            hidePanel(false);
+        };
+
+        var origGallery = PVI.gallery;
+        PVI.gallery = function () {
+            var r = origGallery.apply(this, arguments);
+            try {
+                if (PVI.galleryState === 2) decorate();
+                else if (PVI.galleryState === 0) hidePanel(true);
+                else hidePanel(false);
+            } catch (_) { /* feature UI must never break the engine */ }
+            return r;
+        };
+    };
+    setTimeout(_mdGalleryInstall, 0);
     // <<< MASS-DOWNLOAD-HELPERS
 
 
