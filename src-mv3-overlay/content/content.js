@@ -4240,30 +4240,39 @@
         _downloadWithReferer: async function (d) {
             if (!d || !d.url) return;
             const url = _resolveUrl(d.url);
-            const name = url.split('/').pop().split('#')[0].split('?')[0] || 'download';
+            // Mirrors the SW's MAX_FALLBACK_SIZE: the page must not buffer a
+            // whole video in tab memory just to measure it. Over the cap the
+            // SW falls back to a browser-context download, which streams.
+            const MAX_PAGE_FETCH = 10 * 1024 * 1024;
             try {
                 let resp = await fetch(url, { credentials: 'include' });
                 if (!resp.ok) {
                     throw new Error('HTTP ' + resp.status);
                 }
+                const lenHeader = resp.headers.get('Content-Length');
+                const declared = lenHeader != null && lenHeader !== '' ? parseInt(lenHeader, 10) : NaN;
+                if (Number.isFinite(declared) && declared > MAX_PAGE_FETCH) {
+                    throw new Error('Too large for page fetch');
+                }
                 const blob = await resp.blob();
-                const msg = {
+                if (blob.size > MAX_PAGE_FETCH) {
+                    throw new Error('Too large for page fetch');
+                }
+                Port.send({
                     cmd: 'refererDownloadReady',
                     url: url,
                     referer: d.referer || location.href,
                     isHd: !!d.isHd,
                     source: d.source || 'referer',
                     elementInfo: d.elementInfo || null,
-                    fileName: name,
+                    session: d.session,
                     contentType: blob.type || (resp.headers.get('Content-Type') || ''),
-                    size: blob.size
-                };
-                if (platform === 'firefox') {
-                    msg.blob = blob;
-                } else {
-                    msg.objectUrl = URL.createObjectURL(blob);
-                }
-                Port.send(msg);
+                    size: blob.size,
+                    // Blob on both platforms: the SW materializes + revokes its
+                    // own object URL (a content-created objectUrl was never
+                    // revoked by anyone — one leaked blob per retry).
+                    blob: blob
+                });
             } catch (e) {
                 Port.send({
                     cmd: 'refererDownloadFailed',
@@ -4272,6 +4281,7 @@
                     isHd: !!d.isHd,
                     source: d.source || 'referer',
                     elementInfo: d.elementInfo || null,
+                    session: d.session,
                     error: (e && e.message) || String(e)
                 });
             }

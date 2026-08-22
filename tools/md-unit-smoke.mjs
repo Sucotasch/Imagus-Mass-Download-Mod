@@ -80,3 +80,54 @@ assert.ok(!isExcludedType('https://ex.com/a.png', 'image/png', []));
 assert.ok(isExcludedType('https://ex.com/a.PNG', '', ['.png']));
 
 console.log('md-unit-smoke: all assertions passed');
+
+// --- Stage-4a dedup contract: SW fileKey() must equal content _normalizeUrlKey() ---
+// Two hand-maintained copies of the same algorithm (content is inline per I1);
+// this locks them together so they cannot drift (lesson of BUG-04). Verified
+// for BOTH trees so a Firefox-side edit cannot silently diverge either.
+
+function cutVarFn(source, name) {
+    const start = source.indexOf(`var ${name} = function (`);
+    assert.ok(start >= 0, `var ${name} not found`);
+    const end = source.indexOf('\n    };', start); // closer indented by 4
+    return source.slice(start, end + 8);
+}
+
+const cutFnFor = (source) => (name) => {
+    const start = source.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `function ${name} not found`);
+    const end = source.indexOf('\n}', start);
+    return source.slice(start, end + 2);
+};
+
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const swSrc = readFileSync(join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8');
+    const contentSrc = readFileSync(join(repoRoot, `${tree}/content/content.js`), 'utf8');
+
+    const swFactory = new Function(`${cutFnFor(swSrc)('fileKey')}\nreturn fileKey;`);
+    const contentFactory = new Function(
+        `${cutVarFn(contentSrc, '_normalizeUrlKey')}\nreturn _normalizeUrlKey;`
+    );
+    const fileKey = swFactory();
+    const normalizeKey = contentFactory();
+
+    const samples = [
+        'https://wimg.rule34.xxx/images/123/abc.jpg?TS=1700000000',
+        'https://wimg.rule34.xxx/images/123/abc.jpg',
+        '//wimg.rule34.xxx/images//123/abc.jpeg',
+        '#https://example.com/gallery/full.png',
+        'https://example.com/a/b.webm?key=1#frag',
+        'https://example.com/noext',
+    ];
+    for (const u of samples) {
+        assert.strictEqual(fileKey(u), normalizeKey(u), `${tree}: contract mismatch on ${u}`);
+    }
+    // Spot-check the semantics themselves (once, on the Chrome tree):
+    if (tree === 'src-mv3-overlay') {
+        assert.equal(fileKey('https://h.com/a.jpg?TS=1'), 'https://h.com/a.jpg');
+        assert.equal(fileKey('//h.com/a//b.jpeg'), 'https://h.com/a/b.jpg');
+        assert.equal(fileKey('#https://h.com/x.png'), 'https://h.com/x.png');
+    }
+}
+
+console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

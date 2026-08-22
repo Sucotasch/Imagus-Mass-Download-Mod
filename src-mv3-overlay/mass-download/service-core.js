@@ -194,6 +194,7 @@ function handleDownloadAll(msg, sender, sendResponse) {
 function resetMassDownloadSession() {
     globalProcessedUrls.clear();
     activeRefererRetries = 0;
+    refererRetryUrls.clear();
     // Preserve completed/skipped entries from previous scans for history
     const preserved = {};
     for (const url in downloadProgress) {
@@ -301,6 +302,7 @@ function handleStopScanning() {
     contentScanDone = true;
     userCanceled = true;
     activeRefererRetries = 0;
+    refererRetryUrls.clear();
 
     filterQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
     downloadQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
@@ -397,8 +399,17 @@ function handleRetryDownload(msg, sender) {
 }
 
 function handleRefererDownloadReady(msg, sender) {
-    activeRefererRetries = Math.max(0, activeRefererRetries - 1);
+    // Review fix #1/#4: the in-flight slot is returned exactly once — either
+    // here or by the 30s watchdog (refererRetryUrls), never both; a blanket
+    // decrement ate a PARALLEL retry's slot and made the session look drained.
+    // A stale session's answer must not touch the new session's counter or
+    // rows — reset already cleared both.
+    if (msg && msg.url && refererRetryUrls.has(msg.url)) {
+        refererRetryUrls.delete(msg.url);
+        activeRefererRetries = Math.max(0, activeRefererRetries - 1);
+    }
     if (!msg || !msg.url) return;
+    if (msg.session !== sessionId) return;
     if (!scanInProgress || userCanceled) {
         updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, null);
         return;
@@ -445,8 +456,12 @@ function handleRefererDownloadReady(msg, sender) {
         httpStatus: 200
     };
     task._session = sessionId;
-    if (platform === 'firefox') task._blob = msg.blob;
-    else task._objectUrl = msg.objectUrl;
+    // Review fix #2: the payload arrives as a Blob on BOTH platforms and the
+    // SW materializes + revokes its own object URL (see processDownloadQueue).
+    // The old Chrome path (objectUrl created in the content script) was never
+    // revoked by anyone — one leaked blob per referer retry for the page's
+    // lifetime.
+    task._blob = msg.blob;
     downloadQueue.push(task);
     processDownloadQueue();
 }
@@ -457,8 +472,14 @@ function handleRefererDownloadReady(msg, sender) {
 // stays tracked in downloadIdToTask/onChanged, and can never navigate the
 // scanning tab (unlike an anchor click).
 function handleRefererDownloadFailed(msg) {
-    activeRefererRetries = Math.max(0, activeRefererRetries - 1);
+    // See handleRefererDownloadReady: return the slot exactly once, and a
+    // stale session's answer must not reach the new session's rows.
+    if (msg && msg.url && refererRetryUrls.has(msg.url)) {
+        refererRetryUrls.delete(msg.url);
+        activeRefererRetries = Math.max(0, activeRefererRetries - 1);
+    }
     if (!msg || !msg.url) return;
+    if (msg.session !== sessionId) return;
     const url = ensureAbsoluteUrl(msg.url);
     if (!scanInProgress || userCanceled) {
         const existing = downloadProgress[url];
@@ -626,14 +647,20 @@ function triggerRefererDownload(task) {
     updateDownloadProgress(task.url, 'pending', 0, 'Retrying via page context', null, task);
     activeRefererRetries++;
     const retryUrl = task.url;
+    const startedSession = sessionId;
+    refererRetryUrls.add(retryUrl);
     setTimeout(() => {
-        // Content never answered (initiator tab closed/navigated mid-fetch) —
-        // release the in-flight slot so the session can still drain. No-op after
-        // a normal ready/failed (the counter is already back down and the item
-        // is no longer 'pending').
+        // Review fix #1: decrement ONLY if this retry is still unsettled — a
+        // landed ready/failed already returned its slot through
+        // refererRetryUrls. The old blanket decrement ate a PARALLEL retry's
+        // slot and made checkAllQueuesEmpty fire early.
+        if (!refererRetryUrls.has(retryUrl)) return;
+        refererRetryUrls.delete(retryUrl);
+        if (startedSession !== sessionId) return; // reset already zeroed the counter
         activeRefererRetries = Math.max(0, activeRefererRetries - 1);
-        if (downloadProgress[retryUrl] && downloadProgress[retryUrl].status === 'pending') {
-            updateDownloadProgress(retryUrl, 'failed', 0, 'Referer retry timed out', null, downloadProgress[retryUrl].task);
+        const entry = downloadProgress[retryUrl];
+        if (entry && entry.status === 'pending') {
+            updateDownloadProgress(retryUrl, 'failed', 0, 'Referer retry timed out', null, entry.task);
         }
     }, 30000);
     chrome.tabs.sendMessage(downloadInitiatorTabId, {
@@ -642,8 +669,12 @@ function triggerRefererDownload(task) {
         referer: task.referer || '',
         isHd: !!task.isHd,
         source: task.source || 'element',
-        elementInfo: task.elementInfo || null
+        elementInfo: task.elementInfo || null,
+        session: startedSession
     }).catch(() => {
+        if (!refererRetryUrls.has(retryUrl)) return;
+        refererRetryUrls.delete(retryUrl);
+        if (startedSession !== sessionId) return;
         activeRefererRetries = Math.max(0, activeRefererRetries - 1);
         updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable', null, task);
     });
@@ -916,11 +947,13 @@ function processDownloadQueue() {
             : rawFilename;
         task.filename = filename;
 
-        // Stage 5: referer-retried tasks carry an object URL (Chrome,
-        // created in the content script) or a Blob (Firefox, materialized here
-        // and revoked on release).
-        const dlUrl = task._objectUrl
-            || (task._blob ? (task._revokeUrl = URL.createObjectURL(task._blob)) : ensureAbsoluteUrl(task.url));
+        // Stage 5 / review fix #2: referer-retried payloads arrive as a Blob;
+        // the SW materializes its own object URL here and revokes it in
+        // releaseDownloadSlot (both platforms — the content-created objectUrl
+        // variant leaked).
+        const dlUrl = task._blob
+            ? (task._revokeUrl = URL.createObjectURL(task._blob))
+            : ensureAbsoluteUrl(task.url);
 
         chrome.downloads.download({
             url: dlUrl,

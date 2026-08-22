@@ -14,6 +14,11 @@ var activeDownloads = 0;
 // items stuck at 'pending'. Incremented in triggerRefererDownload, decremented
 // in both referer handlers and reset on stop/reset.
 var activeRefererRetries = 0;
+// URLs of in-flight page-context retries (triggerRefererDownload -> ready/
+// failed). Guards the 30s watchdog against a double decrement: the slot is
+// returned exactly once — by the settling handler or by the timeout, never
+// both. Cleared on stop/reset together with the counter.
+const refererRetryUrls = new Set();
 // scanInProgress = user session still accepting filter/download work.
 // contentScanDone = content finished DOM/sieve scan (NOT the same as cancel).
 var scanInProgress = false;
