@@ -139,18 +139,21 @@
             var st = doc.createElement('style');
             st.id = 'md-gallery-style';
             // The button bar is a STICKY row pinned to the top INSIDE the
-            // gallery window (#imagus-gallery = the scrollable grid itself):
-            // it is attached to the window, stays visible while the grid
-            // scrolls, hides/destroys together with the window, and sits on
-            // the gallery's light-gray background as a solid dark bar.
+            // gallery window (#imagus-gallery = the scrollable grid itself).
+            // CRITICAL: upstream styles EVERY direct GLR child as a grid cell
+            // (#imagus-gallery > * { width: grid-size; height: grid-size;
+            // position: relative }) — specificity 1,0,0 beats a bare class.
+            // The bar MUST be sized/positioned through the same-strength
+            // selector below, otherwise it renders as a 150x150 slot, steals
+            // a cell position and shifts the whole grid (the "empty column"
+            // regression).
             st.textContent = ''
-                + '.md-gbar{position:sticky;top:0;left:0;width:100%;display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:6px 10px;margin:-8px -8px 8px -8px;background:#1f242b;z-index:10;font:13px/1.2 sans-serif;}'
+                + '#imagus-gallery > .md-gbar{position:sticky;top:0;width:auto;height:auto;flex-basis:100%;display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:6px 10px;margin:-8px -8px 8px -8px;background:#1f242b;z-index:10;font:13px/1.2 sans-serif;}'
                 + '.md-gbar button{padding:7px 14px;border:0;border-radius:6px;background:#3a4150;color:#fff;font-weight:600;cursor:pointer;}'
                 + '.md-gbar button:hover{background:#4a5364;}'
                 + '.md-gbar .md-gsave{background:#2f7df6;}'
                 + '.md-gbar .md-gsave:hover{background:#4b91f8;}'
                 + '.md-gbar .md-gsave:disabled{background:#2a2f38;color:#8a919c;cursor:default;}'
-                + '#imagus-gallery > .md-gcell{position:relative;}'
                 + '.md-gcheck{position:absolute;top:6px;left:6px;width:20px;height:20px;border:2px solid #fff;border-radius:5px;background:rgba(0,0,0,.45);cursor:pointer;z-index:3;}'
                 + '.md-gcell.md-gsel > .md-gcheck{background:#2f7df6;border-color:#fff;}'
                 + '.md-gcell.md-gsel > img,.md-gcell.md-gsel > video{outline:3px solid #2f7df6;outline-offset:-3px;}';
