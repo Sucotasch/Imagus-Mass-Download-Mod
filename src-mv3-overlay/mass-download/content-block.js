@@ -154,11 +154,15 @@
             // margin-top −8px + the 8px flex gap cancel each other — the
             // first row lands exactly where upstream puts it (top: 8px) and
             // the scroll behavior is byte-identical to a bar-less grid.
-            // The bar overlays the top 40px of the first row, so checkboxes
-            // live in the cells' BOTTOM-left corner to stay clickable.
+            // The bar overlays the top 40px of the first row TRANSPARENTLY:
+            // pointer-events:none on the strip lets clicks pass to the images
+            // underneath; only the (opaque) buttons at the LEFT edge receive
+            // events — the engine's toolbar lives on the right side of the
+            // popup and must not be covered. Checkboxes stay in the cells'
+            // BOTTOM-left corner, clear of the strip.
             st.textContent = ''
-                + '#imagus-gallery > .md-gbar{position:sticky;top:0;width:auto;height:40px;box-sizing:border-box;flex-basis:100%;display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:5px 10px;margin:-8px -8px -40px;background:#1f242b;z-index:10;font:13px/1.2 sans-serif;}'
-                + '.md-gbar button{padding:6px 14px;border:0;border-radius:6px;background:#3a4150;color:#fff;font-weight:600;cursor:pointer;}'
+                + '#imagus-gallery > .md-gbar{position:sticky;top:0;width:auto;height:40px;box-sizing:border-box;flex-basis:100%;display:flex;gap:8px;justify-content:flex-start;align-items:center;padding:5px 10px;margin:-8px -8px -40px;background:transparent;pointer-events:none;z-index:10;font:13px/1.2 sans-serif;}'
+                + '.md-gbar button{padding:6px 14px;border:0;border-radius:6px;background:#3a4150;color:#fff;font-weight:600;cursor:pointer;pointer-events:auto;box-shadow:0 1px 4px rgba(0,0,0,.45);}'
                 + '.md-gbar button:hover{background:#4a5364;}'
                 + '.md-gbar .md-gsave{background:#2f7df6;}'
                 + '.md-gbar .md-gsave:hover{background:#4b91f8;}'
