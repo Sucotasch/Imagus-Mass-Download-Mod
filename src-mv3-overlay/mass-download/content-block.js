@@ -292,12 +292,18 @@
             };
 
             var armLoad = function (m) {
-                m.addEventListener('load', function onOk() {
+                // Named closure vars — NOT named function expressions: a
+                // function expression's name is visible only inside itself,
+                // so sibling references (`removeEventListener('error',
+                // onFail)` inside onOk) threw ReferenceError and the settle()
+                // slot release never ran, deadlocking the queue after
+                // MAX_ACTIVE loads ("onFail is not defined").
+                var onOk = function () {
                     m.removeEventListener('load', onOk);
                     m.removeEventListener('error', onFail);
                     settle(m, true);
-                });
-                m.addEventListener('error', function onFail() {
+                };
+                var onFail = function () {
                     m.removeEventListener('load', onOk);
                     m.removeEventListener('error', onFail);
                     if (!m.dataset.mdStage) {
@@ -318,7 +324,9 @@
                         loadViaPageFetch(m);
                         settle(m, false); // slot managed by the fetch chain
                     }
-                });
+                };
+                m.addEventListener('load', onOk);
+                m.addEventListener('error', onFail);
             };
 
             var startNext = function () {
