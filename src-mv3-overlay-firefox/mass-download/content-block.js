@@ -231,6 +231,24 @@
             const filteredElements = [];
             const keywords = (cfg.da && cfg.da.excludedKeywords) ? cfg.da.excludedKeywords.split(',').map(w => w.trim()).filter(w => w) : [];
 
+            // Cheap engine-assisted pre-filter (D): PVI.find(..., srcOnly=true)
+            // answers "would this element resolve at all" (sieve link/img match
+            // or a raw image src/bg) WITHOUT scheduling a resolution — it
+            // returns at the rule-match point, before PVI.resolve/isUrlIgnored
+            // run. A dead element (button/[onclick] noise on broad scans) then
+            // costs one DOM walk here instead of a full reset+find+debounce
+            // round in processNextInQueue. Keep/skip parity with the full flow
+            // is exact: same walk, same match; ignore-listed elements simply
+            // reach the full flow (as today) and are dropped there.
+            const _hasResolveCandidate = function (el) {
+                try {
+                    const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+                    return !!PVI.find(el, rect.left + rect.width / 2, rect.top + rect.height / 2, true);
+                } catch (_) {
+                    return true; // fail open — the full pipeline decides
+                }
+            };
+
             const processChunk = () => {
                 if (!PVI.downloadAllActive) {
                     PVI._stopKeepAwake('Scanning canceled.');
@@ -241,7 +259,7 @@
 
                 for (let i = index; i < chunkEnd; i++) {
                     const el = elementsToFilter[i];
-                    if (_isElementVisible(el) && !_hasStopWords(el, keywords)) {
+                    if (_isElementVisible(el) && !_hasStopWords(el, keywords) && _hasResolveCandidate(el)) {
                         filteredElements.push(el);
                     } else {
                         PVI.downloadAllFiltered++;
@@ -340,6 +358,14 @@
                 setTimeout(PVI.processNextInQueue, 10);
                 return;
             }
+            // Engine node-cache reset (B): a failed hover marks trg.IMGS_c
+            // forever (resolve refuses to retry) and a successful array result
+            // locks trg.IMGS_c_resolved in resolved form — without this, a
+            // re-scan without reload silently skips those elements and
+            // post-scan hover degrades on failed ones. resetNode only deletes
+            // the node's IMGS_* caches (recursing into <a> children marked
+            // dead); PVI.stack album lists survive and replay without network.
+            PVI.resetNode(el);
             const itemsLeft = PVI.downloadAllQueue.length;
             const itemsScanned = PVI.downloadAllTotal - itemsLeft;
 
@@ -377,6 +403,46 @@
                 try {
                     if (result == null || result === false) {
                         setTimeout(PVI.processNextInQueue, 10);
+                        return;
+                    }
+                    // Genuine albums (A): for the album result shape the engine
+                    // stores the item list in PVI.stack[el.IMGS_album] and calls
+                    // PVI.album(idx) → PVI.set(album[idx][0]) — i.e. the capture
+                    // receives ONE url of N. Enqueue every album item instead
+                    // (each is a finished image, not a candidate: no SW scoring
+                    // needed, the normal downloadMass path handles them).
+                    const albumId = el.IMGS_album;
+                    const albumList = albumId ? PVI.stack[albumId] : null;
+                    if (Array.isArray(albumList) && albumList.length > 1) {
+                        for (let ai = 1; ai < albumList.length; ai++) {
+                            const aItem = albumList[ai];
+                            let aUrl = Array.isArray(aItem) ? aItem[0] : aItem;
+                            if (Array.isArray(aUrl)) {
+                                // [[sd, hd], cap] — variants inside one item;
+                                // pick per the hiRes preference like PVI.set
+                                const hd = aUrl.find(u => typeof u === 'string' && u[0] === '#');
+                                aUrl = (cfg.hz.hiRes && hd) || aUrl.find(u => typeof u === 'string' && u[0] !== '#') || aUrl[0];
+                            }
+                            if (typeof aUrl !== 'string' || !aUrl) continue;
+                            const aHd = aUrl[0] === '#';
+                            aUrl = _resolveUrl(aUrl.replace(/^#/, ''));
+                            const aKey = _normalizeUrlKey(aUrl);
+                            if (aKey && !PVI.downloadAllUniqueUrls.has(aKey)) {
+                                PVI.downloadAllUniqueUrls.add(aKey);
+                                PVI.downloadAllFound++;
+                                Port.send({
+                                    cmd: 'downloadMass',
+                                    url: aUrl,
+                                    referer: window.location.href,
+                                    elementInfo: { tag: el.localName, src: el.href || el.src || '' },
+                                    isHd: aHd
+                                });
+                            }
+                        }
+                        // the container covers its nested thumbnail media (4b)
+                        if (el.querySelectorAll) el.querySelectorAll('img, video').forEach(child => PVI.downloadAllCoveredElements.add(child));
+                        Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items (album)... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
+                        setTimeout(PVI.processNextInQueue, 150);
                         return;
                     }
                     if (Array.isArray(result) && result.length > 1) {
@@ -427,7 +493,10 @@
                             isHd: isHd
                         });
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
-                        setTimeout(PVI.processNextInQueue, 500);
+                        // D: 500 → 150 ms — no shared timers between elements
+                        // (each resolve schedules/clears its own), cleanup is
+                        // synchronous; ~0.35 s saved per found item.
+                        setTimeout(PVI.processNextInQueue, 150);
                         return;
                     }
                 } catch (err) {

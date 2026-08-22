@@ -609,3 +609,45 @@ A task carries `_candidates = [{ url, isHd }, ...]` (sieve ext-fallback chains; 
 - **rule34 sample duplicates:** with `hz.hiRes`, originals download correctly, but `samples/…/sample_<hash>.jpg` of the same posts also download (separate elements/groups; `fileKey` treats them as distinct files — log `2026-08-20T10-49-27.txt`). Proposed rule “skip sample when the post has an original” was offered but not yet accepted.
 - Queue state still not persisted across SW death.
 - Temp harnesses (not in repo): `C:\Users\sucot\AppData\Local\Temp\opencode\test_keys.js` (25), `test_findbest.js` (8), `test_candidates.js` (15) — extract real functions from `service-core.js` (extraction regex must capture optional `async `; `EXT_ALIASES` must be extracted too) and assert dedup/scoring/fallback invariants.
+
+### 14.9 Engine audit 2026-08-22 — result shapes, node caches, albums (A/B/D fixes)
+
+Full trace of the engine's `find → resolve → resolved → set/album` chain with line anchors
+(`content/content.js`). Read together with 14.1.
+
+**The three `resolved` result shapes (handler ~3610) — the mod must treat them differently:**
+
+| Shape | Engine meaning | Engine path | Mod handling |
+|-------|----------------|-------------|--------------|
+| `[url1, url2, …]` (flat strings) | **variants of ONE image** (SD/HD list) | `PVI.set(array)` splits into `src_left`/`src_HD` by the `#` marker, picks the list by `cfg.hz.hiRes`, keeps the other in `IMGS_HD_stack` for the Tab toggle, `src = chosen[0]` (1963–1983) | `ambiguousUrlGroups` → SW scoring/validation — **semantics match** |
+| `[[url,cap],[url,cap],…]` (array of pairs, N>1) | **album** — N distinct images | `trg.IMGS_album = URL`, list → `PVI.stack[URL] = [idx, …items]`, shown via `PVI.album(idx)` → `PVI.set(album[idx][0])` — **one URL at a time** (3656–3678, 1875–1934) | **Fix A** (below) — before it, a 10-image post downloaded exactly 1 |
+| `[url, caption]` | single with caption | `set(url)` | normal single path |
+
+**Engine node caches the scan interacts with (all on the DOM node, all survive until `resetNode`):**
+- `trg.IMGS_c` — "element dead": set on a failed resolve (3718–3721, runs during the scan too — `trg === PVI.TRG`); `resolve` refuses to retry forever after (1291).
+- `trg.IMGS_c_resolved` — `{URL, params}` while pending; **the result itself** after a successful array resolve (`set:1982`). Non-pending form blocks re-resolve (1292) → **re-scan without reload silently skipped array-elements**; single-URL elements stayed re-resolvable (their cache remains in pending shape).
+- `PVI.stack[URL]` — album lists keyed by the SOURCE page URL; a repeat resolve replays the current item without network (1294–1298). Survives `resetNode` — the mod's re-scan benefits from it (fast album replay).
+- `PVI.resetNode(node, keepAlbum)` (1111) — deletes exactly these node caches (recursing into `<a>` children marked dead). Pure cache deletion, no popup/DOM side effects.
+
+**Fix A — album capture** (in `onResolved`, before the flat-array branch): if `el.IMGS_album` is set and `PVI.stack[el.IMGS_album]` has items, enqueue **every** item through the normal `downloadMass` path (dedup by `_normalizeUrlKey`, `isHd` from the `#` marker, `[[sd,hd],cap]` inner variants picked per `cfg.hz.hiRes` like `PVI.set`), mark the container's nested media covered (4b), and skip the single-URL fall-through (the current item is part of the list). Album items are finished images, not candidates — no SW scoring.
+Correctness depends on **B**: `resetNode(el)` before `find` guarantees `el.IMGS_album` seen in `onResolved` was set by THIS element's resolution, not a stale hover.
+
+**Fix B — `PVI.resetNode(el)` in `processNextInQueue` before `find`:** clears `IMGS_c`/`IMGS_c_resolved` per scanned element. Fixes (1) re-scan without reload skipping locked elements, (2) post-scan hover degradation on scan-failed elements (the scan used to mark them dead for real hovers too). NOTE: B can explain **same-page** run-to-run variance only; runs separated by a page reload start with fresh DOM state — cross-reload variance is more likely SW restarts mid-scan / validation-network timing (see 14.7 residual).
+
+**Fix D — cheap engine-assisted pre-filter + pacing:**
+- `PVI.find(el, cx, cy, /* srcOnly */ true)` returns at the rule-match point (1408), **before** `PVI.resolve`/`isUrlIgnored` run — a pure "would this element resolve at all" probe (sieve match or raw img src/bg) with no resolution scheduled. `filterQueueAsynchronously` now drops `srcOnly`-falsy elements (button/[onclick] noise on broad scans) for the cost of one DOM walk instead of a full reset+find+debounce round. Keep/skip parity with the full flow is exact (same walk, same match); ignore-listed elements still reach the full flow and are dropped there, as before. Fails open on exception.
+- Inter-element pause after a found item: 500 → 150 ms (no shared timers between elements — each `resolve` schedules/clears its own debounce; monkey-patch cleanup is synchronous). ~0.35 s saved per found item — flag for live testing on heavy galleries.
+
+### 14.10 Engine capabilities the mod does NOT use (2026-08-22) — potentially useful
+
+| Capability | Where | Potential use | Priority |
+|------------|-------|---------------|----------|
+| `IMGS_HD_stack` | `set:1977–1980` | The engine keeps the REJECTED variant list (SD when hiRes on, HD when off) for the Tab toggle. The mod could log "downloaded SD, HD existed" per item for free. | low |
+| `d.noloop` | SW `resolve` shortcut (content-type already media) | Free "URL is directly valid" hint — could skip SW GET validation for these. | low |
+| `PVI.stack` replay | `resolve:1294` | Already benefits re-scans via fix A/B; could also serve as an offline album source when the site resolve later fails. | info |
+| `PVI.gallery` / pile | 2681+ | Visual album grid — display-only, nothing to reuse for downloads. | none |
+| `resolve_cache` message | content:3646 | **Dead upstream code**: guarded by `cfg.tls.sieveCacheRes` which is absent from `defaults.json`, and no SW handler exists upstream or here. There is NO resolution cache anywhere — the mod's own validation is the only one. Do not "fix" this in upstream files; remember on re-base. | info |
+| `httpPrepend` / `normalizeURL` | 1272 / 1280 | Engine equivalents of the mod's `_resolveUrl`/`ensureAbsoluteUrl` (the SW cannot know the page protocol — the duplication is deliberate and semantically equivalent). | info |
+| `isVideoUrl` + `#mp4/#mp3` markers | `set:1993–1999` | Engine's media classification; the mod's SW/progress-side regexes are the parallel implementation. Divergence harmless so far. | info |
+
+**Deliberate near-duplications (keep, but keep in sync):** hiRes candidate choice (engine `set`/`_preload` vs SW tiebreak in `findBestUrlWithValidation`), URL normalization (above), media-type classification (above), candidate-on-failure cascade (engine `IMGS_c_resolved` load-error cascade 2070–2090 — content/image-load domain — vs SW `_candidates` chain — download domain; different failure domains, both needed).
