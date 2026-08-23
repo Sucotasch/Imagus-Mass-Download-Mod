@@ -1,5 +1,5 @@
 // md-unit-smoke.mjs — minimal pure-helper smoke tests for mass-download.
-// No framework on purpose (repo has none; see Audit.md BUG-10 / §6).
+// No framework on purpose (repo has none; see Audit/FULL_AUDIT_2026-08-18.md BUG-10 / §6).
 //
 // Run:  node tools/md-unit-smoke.mjs   (from the repo root)
 //

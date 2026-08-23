@@ -1,6 +1,6 @@
 # Архитектура проекта Imagus Reborn MD (Manifest V3)
 
-> Актуальная версия: `src-mv3-overlay/` (ветка `feature/overlay-development`)
+> Актуальная версия: `src-mv3-overlay/` (ветка `mv3-version`; Firefox-зеркало `src-mv3-overlay-firefox/`)
 
 ## 1. Обзор компонентов
 
@@ -38,8 +38,11 @@
 | `updateStatus` / `updateFilterStats` | content→SW→progress | Статус и статистика |
 | `stopScanning` | progress→SW→content | Полная остановка |
 | `getDownloadStatus` | progress→SW | Текущее состояние (sync sendResponse) |
+| `getDownloadLog` | progress→SW | Диагностический лог: items + stats + настройки (async sendResponse) |
 | `clearCompletedDownloads` / `clearAllDownloads` / `retryDownload` | progress→SW | Управление прогрессом |
 | `groupAnalysisComplete` | SW→content | Завершение анализа групп |
+| `downloadWithReferer` | SW→content | Повтор 403/404 через fetch со страницы (куки + Referer) |
+| `refererDownloadReady` / `refererDownloadFailed` | content→SW | Результат referer-retry (object URL или отказ) |
 | `updateDownloadStatus` / `updateStats` / `allDownloadsComplete` | SW→progress | UI обновления |
 
 ## 3. Настройки mass-download (`da` в `defaults.json`)
@@ -50,7 +53,7 @@
 | `maxConcurrentDownloads` | number | 3 | Параллельных chrome.downloads |
 | `minImageSize` | number | 45 | Мин. размер изображения (КБ) |
 | `minVideoSize` | number | 2 | Мин. размер видео (МБ) |
-| `excludedExtensions` | string | `.png, .svg, .ico, .gif` | Исключённые расширения |
+| `excludedExtensions` | string | `.svg, .ico, .gif` | Исключённые расширения |
 | `excludedKeywords` | string | `ad, banner, icon, logo, avatar, profile, user` | Стоп-слова |
 | `downloadOnUnknown` | boolean | true | Скачивать неизвестные типы |
 | `resolutionTimeout` | number | 8 | Таймаут разрешения sieve (с) |

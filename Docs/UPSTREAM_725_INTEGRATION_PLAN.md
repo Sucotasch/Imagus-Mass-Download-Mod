@@ -14,9 +14,9 @@
 ### Связанные документы
 
 | Doc | Зачем |
-|-----|--------|
+|-----|-------|
 | [`MASS_DOWNLOAD_STRATEGY.md`](MASS_DOWNLOAD_STRATEGY.md) | Full re-base — **не** использовать для 7.25 |
-| [`UPSTREAM_721_INTEGRATION_PLAN.md`](UPSTREAM_721_INTEGRATION_PLAN.md) | История port 7.21 (уже в основном влито) |
+| *(история порта 7.21 — см. git log; отдельного плана в `Docs/` нет)* | История port 7.21 (уже в основном влито) |
 | [`Audit/FULL_AUDIT_2026-07-21.md`](../Audit/FULL_AUDIT_2026-07-21.md) | MD bugs (excludedExtensions, onChanged…) — **отдельный PR**, не смешивать |
 | [`AGENTS.md`](../AGENTS.md) | Карта репо, invariants |
 

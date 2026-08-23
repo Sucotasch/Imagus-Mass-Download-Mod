@@ -1,5 +1,8 @@
 # Imagus Mass Download Mod — Engineering Code Review (re-audit after fix pass)
 
+> **Актуальный статус всех пунктов этого и других аудитов:** [AUDIT_STATUS_CURRENT.md](AUDIT_STATUS_CURRENT.md) (сверка с кодом 2026-08-23).
+> Этот документ — исторический снимок от 2026-08-18; номера строк и отдельные формулировки (напр. N-04 «elementInfo dropped») могли устареть.
+
 | Field | Value |
 |-------|--------|
 | **Date** | 2026-08-18 (fix pass: N-16…N-24 implemented in both trees) |

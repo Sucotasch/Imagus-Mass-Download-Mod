@@ -89,7 +89,7 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 - **Firefox 136+** только (upstream-требование userScripts messaging).
 - userScripts — опциональное разрешение: без него расширение молча не работает; страница настроек показывает баннер с кнопкой запроса (`ALLOW_USER_SCRIPTS_FF`).
 - Для релиза на AMO нужен signing; `web-ext lint` перед отправкой обязателен.
-- Открытые баги из корневого `Audit.md` (N-01…N-15, U-01…U-07) касаются **обоих деревьев** — чинить в `src-mv3-overlay/` и зеркалить сюда (или применять в обоих одним коммитом), не расползаясь.
+- Открытые баги из реаудита `Audit/FULL_AUDIT_2026-08-18.md` (N-01…N-15, U-01…U-07; сводный статус — `Audit/AUDIT_STATUS_CURRENT.md`) касаются **обоих деревьев** — чинить в `src-mv3-overlay/` и зеркалить сюда (или применять в обоих одним коммитом), не расползаясь.
 - Incognito-режим: `spanning` (один event page на обычные и приватные окна) — `task.isPrivate` уже снимается с `sender.tab.incognito`.
 
 ---

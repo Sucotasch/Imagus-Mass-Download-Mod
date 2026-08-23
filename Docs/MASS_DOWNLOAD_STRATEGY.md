@@ -4,7 +4,7 @@
 |-------|--------|
 | **Дата** | 2026-07-20 (актуализация) |
 | **Статус** | **Подход применён и работоспособен** |
-| **Результат** | Дерево **`src-mv3-overlay/`** (ветка `feature/overlay-development`) |
+| **Результат** | Дерево **`src-mv3-overlay/`** (ветка `mv3-version`; Firefox-зеркало — `src-mv3-overlay-firefox`, ветка `feature/overlay-firefox`) |
 | **Назначение документа** | Playbook для агента-исполнителя: **как накатить мод на новую версию Imagus Reborn**, не перечитывая оба проекта целиком |
 | **Не для** | Повторного исследования «как устроен mass-download» (→ Algorithm) и bugfix (→ Audit / Dev Guide) |
 
@@ -14,7 +14,7 @@
 |----------|-----------------|
 | [`AGENTS.md`](../AGENTS.md) | Правила дня, карта репо |
 | [`MASS_DOWNLOAD_ALGORITHM.md`](MASS_DOWNLOAD_ALGORITHM.md) | Как работает двухфазный алгоритм |
-| [`Audit/FULL_AUDIT_STATUS_2026-07-20.md`](../Audit/FULL_AUDIT_STATUS_2026-07-20.md) | Что уже починено / residual при re-base |
+| [`Audit/AUDIT_STATUS_CURRENT.md`](../Audit/AUDIT_STATUS_CURRENT.md) | Сводный статус всех аудитов (что починено / открыто при re-base) |
 | [`DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md`](DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md) | WP по оставшимся багам **после** успешного re-base |
 | `src-mv3-overlay/mass-download/content-block.js` | **Канонический текст** content-патчей (копировать отсюда) |
 | `src-mv3-overlay/mass-download/service-*.js` | **Канонический** SW mass-download (копировать целиком) |
@@ -217,7 +217,7 @@ importScripts('../mass-download/service-init.js', '../mass-download/service-core
 
 **Где:** внутри `handleMessage` / `switch (msg.cmd)`, **после** upstream `case "resolve"` (и его `return true` / body), **перед** закрывающей `}` switch.
 
-Актуальный набор (из `src-mv3-overlay`):
+Актуальный набор (из `src-mv3-overlay`, service.js:~569; сверяй с живым кодом — список растёт):
 
 ```javascript
         // === MASS DOWNLOAD CASES ===
@@ -233,7 +233,7 @@ importScripts('../mass-download/service-init.js', '../mass-download/service-core
             handleDownloadMass(msg, sender);
             break;
         case 'resolveAndDownloadGroups':
-            handleResolveGroups(msg);
+            handleResolveGroups(msg, sender);
             break;
         case 'updateStatus':
             handleUpdateStatus(msg);
@@ -247,6 +247,9 @@ importScripts('../mass-download/service-init.js', '../mass-download/service-core
         case 'getDownloadStatus':
             handleGetDownloadStatus(msg, sendResponse);
             break;
+        case 'getDownloadLog':
+            /* serializeAllProgress → sendResponse(...); return true (async) */
+            break;
         case 'clearCompletedDownloads':
             handleClearCompleted();
             break;
@@ -255,6 +258,12 @@ importScripts('../mass-download/service-init.js', '../mass-download/service-core
             break;
         case 'retryDownload':
             handleRetryDownload(msg, sender);
+            break;
+        case 'refererDownloadReady':
+            handleRefererDownloadReady(msg, sender);
+            break;
+        case 'refererDownloadFailed':
+            handleRefererDownloadFailed(msg);
             break;
 ```
 
@@ -320,7 +329,7 @@ da: cachedPrefs.da,
 ### 4.6 Adapter I — `app.js` `readCfg`
 
 ```javascript
-keys: ["hz", "keys", "tls", "grants", "da", "sieve", "sieveUpdateLast", "sieveRepository"]
+keys: ["hz", "keys", "tls", "grants", "grantUrls", "da", "sieve", "sieveUpdateLast", "sieveRepository"]
 ```
 
 Нужен options page. Рекомендуется также сохранить/перенести guard:
@@ -351,7 +360,7 @@ if (typeof chrome === 'undefined' || !chrome.runtime) {
     "maxConcurrentDownloads": 3,
     "minImageSize": 45,
     "minVideoSize": 2,
-    "excludedExtensions": ".png, .svg, .ico, .gif",
+    "excludedExtensions": ".svg, .ico, .gif",
     "excludedKeywords": "ad, banner, icon, logo, avatar, profile, user",
     "downloadOnUnknown": true,
     "resolutionTimeout": 8,
@@ -417,7 +426,7 @@ Upstream split `_` уже понимает `da_maxConcurrentFilters` → `prefs.
 "permissions": [ "alarms", "downloads", "history", "storage", "userScripts" ]
 ```
 
-`downloads` обязателен. Версию можно выровнять с upstream (сейчас overlay: `2026.7.15`).
+`downloads` обязателен. Версию можно выровнять с upstream (точное значение — см. `manifest.json`; Chrome не принимает нечисловые суффиксы вроде `-pre`, Firefox принимает).
 
 ---
 
@@ -592,12 +601,15 @@ grep MASS-DOWNLOAD content/content.js
 | `downloadAll` | popup → SW → content (frame 0) |
 | `openDownloadProgress` | content → SW |
 | `registerProgressTab` | progress → SW |
-| `downloadMass` | content → SW |
+| `downloadMass` | content → SW (одиночный готовый URL; им же пользуется Gallery Save) |
 | `resolveAndDownloadGroups` | content → SW |
 | `updateStatus` / `updateFilterStats` | content → SW → progress |
 | `stopScanning` | progress → SW → content |
 | `getDownloadStatus` / clear* / `retryDownload` | progress → SW |
+| `getDownloadLog` | progress → SW (async sendResponse — сериализованные items + stats + настройки) |
 | `groupAnalysisComplete` | SW → content |
+| `downloadWithReferer` | SW → content (page-context fetch при 403/404) |
+| `refererDownloadReady` / `refererDownloadFailed` | content → SW (результат referer-retry) |
 | `updateDownloadStatus` / `updateStats` / `allDownloadsComplete` | SW → progress |
 
 Полный алгоритм фаз: `MASS_DOWNLOAD_ALGORITHM.md`.
@@ -655,7 +667,7 @@ grep MASS-DOWNLOAD content/content.js
 
 ### 12.3 Residual bugs (не блокируют re-base playbook)
 
-См. `Audit/FULL_AUDIT_STATUS_2026-07-20.md`: R-01 URL ext parse, R-02 foreign onChanged UI, R-03 GET cancel guard, …  
+См. `Audit/AUDIT_STATUS_CURRENT.md`: R-01 URL ext parse, R-02 foreign onChanged UI, R-03 GET cancel guard, …  
 После re-base — править в `service-core.js` по Dev Guide, **не** размазывать в upstream.
 
 ---

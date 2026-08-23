@@ -17,20 +17,23 @@ Enlarges thumbnails and shows images/videos when hovering over links.
 
 Mod:
 - **Advanced Mass Download:** A completely redesigned two-phase algorithm scans the page, validates URLs in the background, and uses heuristics to find the best quality media, ensuring more accurate and reliable downloads.
+- **Gallery Save:** Open Imagus' gallery grid, tick items with checkboxes, and save them all — cells carry proven full-size URLs; links without a preview yet are resolved through the engine automatically.
 - **Quick Start Hotkey:** Press `Ctrl+Q` to instantly start the mass download process on the current page.
 - **Persistent Progress UI:** A dedicated tab opens to show the real-time progress of all downloads. It provides detailed stats on completed, pending, failed, and skipped files.
 - **Powerful Pre-download Filtering:** To avoid downloading unwanted content, the mod includes a robust filtering system:
   - **Pre-scan Filtering:** In-page filtering of invisible elements and elements matching stop-words *before* the main scan, significantly improving performance on large pages.
   - **Stop-Words:** Configure a list of keywords in the settings to exclude links containing them (e.g., "avatar", "profile").
   - **Filter by Type & Size:** Automatically skips common UI image types and checks file sizes before downloading to avoid tiny images or videos. These values are configurable.
+- **Hotlink Protection (Referer-Retry):** When a CDN rejects the download with 403/404 (rule34/e-hentai class of sites), the URL is retried through a page-context fetch that sends the site's cookies + Referer.
 - **Operation Control:** The download process can be fully canceled at any time. Failed or canceled downloads can be retried individually from the progress page.
 - **Download Diagnostics:** The progress tab can export a text log of every item (content type, file size, HTTP status, filter method, HD flag, source) along with session statistics and active settings — useful for debugging blocked or skipped downloads.
+- **Firefox build:** a mirrored `src-mv3-overlay-firefox` tree ships the same feature set for Firefox 136+ (see installation below).
 
 ## 🛠 Installation (Developer Mode)
 
 Since this mod uses custom enhancements, it must be installed manually via Developer Mode:
 
-**Quick install:** Download the latest release from [Releases](https://github.com/Sucotasch/Imagus-Mass-Download-Mod/releases/tag/v2026.7.25.7-pre), extract, and load `src-mv3-overlay` as unpacked extension.
+**Quick install:** Download the latest release from [Releases](https://github.com/Sucotasch/Imagus-Mass-Download-Mod/releases/latest), extract, and load `src-mv3-overlay` as unpacked extension.
 
 **Or clone from source:**
 
@@ -41,6 +44,13 @@ Since this mod uses custom enhancements, it must be installed manually via Devel
 5. Select the **`src-mv3-overlay`** folder from the downloaded project directory.
 
 The extension is now installed and ready to use.
+
+### Firefox (136+)
+
+1. Open `about:debugging#/runtime/this-firefox` in Firefox.
+2. Click **"Load Temporary Add-on..."** and pick `src-mv3-overlay-firefox/manifest.json`.
+3. When prompted on the extension settings page, grant the optional **userScripts** permission — without it the extension silently does not work.
+4. Temporary add-ons are removed when Firefox closes; repeat step 2 for a new session.
 
 ## Usage
 Pin the extension button on the Chrome toolbar, go to a page with a video or image gallery, click the button and follow the instructions that appear below it. After starting the bulk download, a new tab with progress, statistics and controls will open. Filtering options can be changed in the main extension settings, section Download All Settings.
@@ -85,7 +95,7 @@ This community-driven modification focuses on feature expansion and long-term co
 | **MV3 Port** | Imagus Reborn (hababr/Imagus-Reborn) |
 | **Current Branch** | `mv3-version` |
 | **License** | MIT |
-| **Browser** | Google Chrome (Chromium-based) |
+| **Browsers** | Google Chrome (Chromium-based), Mozilla Firefox 136+ |
 | **Manifest Version** | V3 |
 
 ---
@@ -102,9 +112,11 @@ This community-driven modification focuses on feature expansion and long-term co
 | Feature | Description |
 |---------|-------------|
 | **Two-Phase Download Algorithm** | Scans page → Validates URLs → Selects best quality → Downloads |
+| **Gallery Save** | Checkboxes in the gallery grid: tick items and save them all at once |
 | **Quick Start Hotkey** | `Ctrl+Q` instantly starts mass download on current page |
 | **Persistent Progress UI** | Dedicated tab shows real-time download statistics |
 | **Pre-download Filtering** | Filter by type, size, stop-words before downloading |
+| **Hotlink Protection** | 403/404 URLs retried via page-context fetch (site cookies + Referer) |
 | **Circuit Breaker Protection** | Auto-disables validation on high failure rates (>70%) |
 | **Operation Control** | Cancel, retry failed downloads individually |
 
@@ -184,9 +196,8 @@ User Action → Content Script → Service Worker → Storage/Network
 
 #### Phase 1: Collection (Content Script)
 ```javascript
-// Location: content.js:4820-4844
-1. Scan DOM for all <img>, <video>, <a> elements
-2. Match URLs against Imagus sieves
+1. Scan DOM for all <img>, <video>, <a> elements (plus [onclick]/button probes)
+2. Match URLs against Imagus sieves via simulated hovers (monkey-patched capture)
 3. Group media by visual area/source link
 4. Send URL arrays to background for validation
 5. Immediately process single URLs through existing pipeline
@@ -206,13 +217,17 @@ User Action → Content Script → Service Worker → Storage/Network
 
 | Factor | Points | Description |
 |--------|--------|-------------|
-| Media Extension | +50 | .jpg, .png, .mp4, .webm, etc. |
+| Media Extension | +50 | .jpg, .png, .mp4, .webm, etc. (checked on the URL without `?query`/`#frag`) |
 | Dimensions in URL | +30 | Based on width × height / 10000 |
 | Quality Keywords | +20 | "original", "full", "hd", "master" |
-| Negative Keywords | -20 | "thumb", "small", "preview", "mini" |
+| Negative Keywords | -20 | "thumb", "small", "sample", "preview", "mini" |
 | HTTPS Protocol | +5 | Secure connection preferred |
 | Clean URL | +10 | No query parameters |
 | Script URLs | -15 | .php, .asp, .jsp, .cgi, .do |
+
+> The `sample` penalty is deliberate: rule34 marks the *downscaled* sample with `#`
+> (`low_quality_first`), so a naive "`#` first" tiebreak would pick the sample over
+> the full-size original. HD preference only applies within one quality class.
 
 ### Circuit Breaker Pattern
 
@@ -231,19 +246,23 @@ User Action → Content Script → Service Worker → Storage/Network
 
 | Protection | Value | Purpose |
 |------------|-------|---------|
-| Rate Limiting | 200ms | Delay between group processing |
-| URL Timeout | 1500ms | Max time per URL validation |
-| Group Timeout | 3000ms | Max time per URL group |
-| Chunk Size | 50ms | UI responsiveness for large sets |
-| Concurrency | 5 | Parallel validation requests |
+| URL validation timeout | 1500 ms | Max time per candidate HEAD/GET probe (group path) |
+| Fallback GET timeout | 3000 ms | Default per-request timeout in the filter queue |
+| Filter chunking | 100 elems / 50 ms | Keeps the page responsive during DOM pre-filter |
+| Inter-element pause | 150 ms | Breathing room between resolved items |
+| Concurrency (filters) | 5 | Parallel URL validation requests |
+| Concurrency (downloads) | 3 | Parallel `chrome.downloads` |
+| GET-fallback body cap | 10 MB | Validation downloads never read more than this |
+| Download watchdog | 5 min | A stuck download slot is force-released |
+| Circuit breaker window | last 10 / ≥8 fails or >70% | Heuristic-only fallback for 30 s |
 
 ---
 
 ## Installation 📥
 
 ### Prerequisites
-- Google Chrome 88+ (Manifest V3 support)
-- Developer Mode enabled
+- Google Chrome 88+ / Mozilla Firefox 136+ (Manifest V3 support)
+- Developer Mode enabled (Chrome) / `about:debugging` access (Firefox)
 
 ### Step-by-Step Installation
 
@@ -264,6 +283,14 @@ git checkout mv3-version
 4. Select the **`src-mv3-overlay`** folder
 5. Extension is now active ✓
 
+### Firefox Extension Loading
+
+1. Navigate to `about:debugging#/runtime/this-firefox`
+2. Click **"Load Temporary Add-on..."**
+3. Select **`src-mv3-overlay-firefox/manifest.json`**
+4. Grant the optional **userScripts** permission when the settings page asks
+5. Note: temporary add-ons are removed when Firefox closes ✓
+
 ### Verification
 
 ```
@@ -279,7 +306,7 @@ git checkout mv3-version
 ### Accessing Settings
 
 1. Click extension icon in toolbar
-2. Select **"Options"** or press `Ctrl+Shift+I`
+2. Select **"Options"** from the extension popup or context menu
 3. Navigate through tabs:
    - **General**: Core Imagus settings
    - **Sieves**: Media extraction rules
@@ -287,7 +314,7 @@ git checkout mv3-version
 
 ### Key Configuration Options
 
-#### Mass Download Settings
+#### Mass Download Settings (`da` namespace in `defaults.json`)
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -295,26 +322,27 @@ git checkout mv3-version
 | Max Concurrent Downloads | 3 | Parallel chrome.downloads |
 | Min Image Size | 45 KB | Skip images smaller than this |
 | Min Video Size | 2 MB | Skip videos smaller than this |
-| Excluded Extensions | .svg, .ico, .gif | Don't download these file types |
+| Excluded Extensions | .svg, .ico, .gif | Don't download these file types (matched by MIME and/or URL extension) |
 | Stop Words | ad, banner, icon, logo, avatar, profile, user | Exclude URLs containing these |
 | Download Unknown Types | true | Download files with unknown MIME type |
 | Resolution Timeout | 8 s | Max time to resolve a sieve rule |
 | Show Progress Tab | true | Auto-open progress tab on scan start |
 | Max Progress Records | 100 | Limit entries in download history |
 
-#### Filter Configuration (JSON)
+These values live under the `"da"` key in `data/defaults.json`:
 
 ```json
-{
-  "downloadAll": {
-    "minSize": 10240,
-    "maxSize": 524288000,
-    "stopWords": ["avatar", "profile", "thumb", "icon"],
-    "allowedTypes": ["image/jpeg", "image/png", "video/mp4"],
-    "blockedTypes": ["image/svg+xml", "image/gif"],
-    "concurrency": 5,
-    "timeout": 30000
-  }
+"da": {
+    "maxConcurrentFilters": 5,
+    "maxConcurrentDownloads": 3,
+    "minImageSize": 45,
+    "minVideoSize": 2,
+    "excludedExtensions": ".svg, .ico, .gif",
+    "excludedKeywords": "ad, banner, icon, logo, avatar, profile, user",
+    "downloadOnUnknown": true,
+    "resolutionTimeout": 8,
+    "showProgressTab": true,
+    "maxProgressRecords": 100
 }
 ```
 
@@ -369,6 +397,16 @@ if (url.match(/\/thumb\/(\d+)\//)) {
 5. Cancel or retry failed downloads as needed
 ```
 
+### Gallery Save
+
+```
+1. Hover a link that opens an album and open the gallery grid (toolbar G button or A key)
+2. Tick items with checkboxes, or use Select all
+3. Click Save — proven full-size URLs go straight into the download queue
+4. Links whose preview hasn't loaded yet are resolved through the engine automatically
+5. Progress appears in the same progress tab as mass download
+```
+
 ### Progress Tab Features
 
 | Feature | Description |
@@ -397,12 +435,16 @@ avatar, profile, icon, logo, watermark, preview
 
 ### Keyboard Shortcuts
 
+Global page hotkeys (rebindable in Options; disabled inside text inputs):
+
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+Q` | Start mass download |
-| `Ctrl+Shift+I` | Open options page |
-| `Ctrl+Shift+P` | Open progress tab |
-| `Esc` | Cancel current operation |
+| `A` | Open/close the gallery grid (then tick + Save) |
+| `Tab` | Toggle HD/standard rendition preference (hiRes, while overlay is shown) |
+| `P` | Open preferences popup |
+
+Cancel is always available via the **Cancel** button in the progress tab.
 
 ---
 
@@ -421,11 +463,10 @@ avatar, profile, icon, logo, watermark, preview
 ### Debug Mode
 
 ```javascript
-// Open Chrome DevTools on extension pages
-chrome://extensions/ → Imagus → "Inspect views: service worker"
+// MV3 has no background page — inspect the Service Worker instead:
+// chrome://extensions/ → Imagus Reborn MD → "service worker"
 
-// Console commands for debugging
-chrome.runtime.getBackgroundPage()
+// On any extension page (options / progress tab) console:
 chrome.storage.local.get(null, console.log)
 ```
 
@@ -465,6 +506,11 @@ This build is an experimental overlay on top of Imagus Reborn. Compared with the
 ### Save Log
 - The progress tab has a **Save Log** button that exports a text diagnostics file: per item — content type, file size, HTTP status, filter method, filter time, source, and HD flag — plus download statistics, the extension version, and the active `da`/`hz` settings.
 
+### Gallery Save (v2026.7.25.8)
+- The gallery grid now has checkboxes with a **Select all / Save** bar. Save feeds the proven full-size album URLs straight into the mass-download pipeline (validation, dedup, referer-retries and progress all reused).
+- Links whose preview hasn't resolved yet are resolved through the Imagus engine on demand; resolutions are serialized because the engine keeps one shared resolver timer, and a failed attempt's negative cache is reset before each new Save.
+- Sends are chunked so selecting hundreds of items cannot saturate the message port.
+
 > **Status:** the mass-download engine is under active development and may change between releases.
 
 ---
@@ -481,7 +527,7 @@ This build is an experimental overlay on top of Imagus Reborn. Compared with the
 | **MV3 порт** | Imagus Reborn (hababr/Imagus-Reborn) |
 | **Текущая ветка** | `mv3-version` |
 | **Лицензия** | MIT |
-| **Браузер** | Google Chrome (на базе Chromium) |
+| **Браузеры** | Google Chrome (на базе Chromium), Mozilla Firefox 136+ |
 | **Версия манифеста** | V3 |
 
 ---
@@ -498,9 +544,11 @@ This build is an experimental overlay on top of Imagus Reborn. Compared with the
 | Функция | Описание |
 |---------|----------|
 | **Двухфазный алгоритм загрузки** | Сканирование страницы → Валидация URL → Выбор лучшего качества → Загрузка |
+| **Gallery Save** | Чекбоксы в сетке галереи: отметьте элементы и сохраните все сразу |
 | **Горячая клавиша быстрого старта** | `Ctrl+Q` мгновенно запускает массовую загрузку на текущей странице |
-| **Постоянный UI прогресса** | Отдельная вкладка показывает статистику загрузки в реальном времени |
+| **Постоянный UI прогресса** | Отдельная вкладка показывает статистику загрузок в реальном времени |
 | **Предварительная фильтрация** | Фильтрация по типу, размеру, стоп-словам перед загрузкой |
+| **Обход hotlink-защиты** | При 403/404 URL повторяется через fetch со страницы (куки + Referer сайта) |
 | **Защита Circuit Breaker** | Авто-отключение валидации при высоком проценте ошибок (>70%) |
 | **Контроль операций** | Отмена, повторная загрузка неудачных файлов индивидуально |
 
@@ -579,9 +627,8 @@ src-mv3-overlay/
 
 #### Фаза 1: Сбор (Контент скрипт)
 ```javascript
-// Расположение: content.js:4820-4844
-1. Сканирование DOM для всех элементов <img>, <video>, <a>
-2. Сопоставление URL с ситами Imagus
+1. Сканирование DOM для всех элементов <img>, <video>, <a> (плюс пробы [onclick]/button)
+2. Сопоставление URL с ситами Imagus через имитацию наведения (перехват set/show)
 3. Группировка медиа по визуальной области/исходной ссылке
 4. Отправка массивов URL в фон для валидации
 5. Немедленная обработка одиночных URL через существующий конвейер
@@ -601,13 +648,17 @@ src-mv3-overlay/
 
 | Фактор | Баллы | Описание |
 |--------|-------|----------|
-| Расширение медиа | +50 | .jpg, .png, .mp4, .webm и т.д. |
+| Расширение медиа | +50 | .jpg, .png, .mp4, .webm и т.д. (ищется в URL без `?query`/`#frag`) |
 | Размеры в URL | +30 | На основе width × height / 10000 |
 | Ключевые слова качества | +20 | "original", "full", "hd", "master" |
-| Негативные ключевые слова | -20 | "thumb", "small", "preview", "mini" |
+| Негативные ключевые слова | -20 | "thumb", "small", "sample", "preview", "mini" |
 | HTTPS протокол | +5 | Предпочтение безопасному соединению |
 | Чистый URL | +10 | Без параметров запроса |
 | Скрипт URL | -15 | .php, .asp, .jsp, .cgi, .do |
+
+> Штраф за `sample` намеренный: rule34 помечает уменьшенный sample маркером `#`
+> (`low_quality_first`), поэтому наивный tiebreak «`#` первым» выбрал бы sample вместо
+> полного оригинала. Предпочтение HD применяется только внутри одного класса качества.
 
 ### Паттерн Circuit Breaker
 
@@ -626,19 +677,23 @@ src-mv3-overlay/
 
 | Защита | Значение | Назначение |
 |--------|----------|------------|
-| Ограничение скорости | 200мс | Задержка между обработкой групп |
-| Тайм-аут URL | 1500мс | Макс. время на валидацию URL |
-| Тайм-аут группы | 3000мс | Макс. время на группу URL |
-| Размер чанка | 50мс | Отзывчивость UI для больших наборов |
-| Параллелизм | 5 | Параллельные запросы валидации |
+| Таймаут валидации URL | 1500 мс | Макс. время на пробу кандидата (групповой путь) |
+| Таймаут fallback GET | 3000 мс | Таймаут по умолчанию в очереди фильтрации |
+| Порции фильтрации | 100 эл. / 50 мс | Отзывчивость страницы при пре-фильтре DOM |
+| Пауза между элементами | 150 мс | Передышка между разрешёнными элементами |
+| Параллелизм (фильтры) | 5 | Параллельные запросы валидации |
+| Параллелизм (загрузки) | 3 | Параллельные chrome.downloads |
+| Лимит тела GET-fallback | 10 МБ | Валидация не читает больше этого объёма |
+| Watchdog загрузок | 5 мин | Зависший слот загрузки принудительно освобождается |
+| Окно Circuit Breaker | посл. 10 / ≥8 ошибок или >70% | Fallback «только эвристика» на 30 с |
 
 ---
 
 ## Установка 📥
 
 ### Требования
-- Google Chrome 88+ (поддержка Manifest V3)
-- Включен режим разработчика
+- Google Chrome 88+ / Mozilla Firefox 136+ (поддержка Manifest V3)
+- Включен режим разработчика (Chrome) / доступ к `about:debugging` (Firefox)
 
 ### Пошаговая установка
 
@@ -653,11 +708,19 @@ git checkout mv3-version
 
 ### Загрузка расширения в Chrome
 
-1. Перейти на `chrome://extensions/`
+1. Перейти в `chrome://extensions/`
 2. Включить **"Режим разработчика"** (переключатель вверху справа)
 3. Нажать **"Загрузить распакованное"**
 4. Выбрать папку **`src-mv3-overlay`**
 5. Расширение теперь активно ✓
+
+### Загрузка расширения в Firefox
+
+1. Перейти в `about:debugging#/runtime/this-firefox`
+2. Нажать **"Загрузить временное дополнение..."**
+3. Выбрать **`src-mv3-overlay-firefox/manifest.json`**
+4. На странице настроек выдать опциональное разрешение **userScripts**
+5. Временные дополнения удаляются при закрытии Firefox ✓
 
 ### Проверка
 
@@ -674,7 +737,7 @@ git checkout mv3-version
 ### Доступ к настройкам
 
 1. Нажать на иконку расширения на панели инструментов
-2. Выбрать **"Настройки"** или нажать `Ctrl+Shift+I`
+2. Выбрать **"Настройки"** в контекстном меню или попапе расширения
 3. Перейти по вкладкам:
    - **Общие**: Основные настройки Imagus
    - **Сита**: Правила извлечения медиа
@@ -697,19 +760,20 @@ git checkout mv3-version
 | Показывать вкладку прогресса | true | Автоматически открывать вкладку прогресса |
 | Макс. записей прогресса | 100 | Лимит записей в истории загрузок |
 
-#### Конфигурация фильтра (JSON)
+Значения лежат под ключом `"da"` в `data/defaults.json`:
 
 ```json
-{
-  "downloadAll": {
-    "minSize": 10240,
-    "maxSize": 524288000,
-    "stopWords": ["avatar", "profile", "thumb", "icon"],
-    "allowedTypes": ["image/jpeg", "image/png", "video/mp4"],
-    "blockedTypes": ["image/svg+xml", "image/gif"],
-    "concurrency": 5,
-    "timeout": 30000
-  }
+"da": {
+    "maxConcurrentFilters": 5,
+    "maxConcurrentDownloads": 3,
+    "minImageSize": 45,
+    "minVideoSize": 2,
+    "excludedExtensions": ".svg, .ico, .gif",
+    "excludedKeywords": "ad, banner, icon, logo, avatar, profile, user",
+    "downloadOnUnknown": true,
+    "resolutionTimeout": 8,
+    "showProgressTab": true,
+    "maxProgressRecords": 100
 }
 ```
 
@@ -764,6 +828,16 @@ if (url.match(/\/thumb\/(\d+)\//)) {
 5. Отменить или повторить неудачные загрузки по мере необходимости
 ```
 
+### Gallery Save (сохранение из галереи)
+
+```
+1. Навести на ссылку с альбомом и открыть сетку галереи (кнопка G в тулбаре или клавиша A)
+2. Отметить элементы чекбоксами или использовать «Выбрать все»
+3. Нажать Save — проверенные полноразмерные URL уходят прямо в очередь загрузок
+4. Ссылки без загруженной превью автоматически разрешаются через движок Imagus
+5. Прогресс отображается в той же вкладке, что и при массовой загрузке
+```
+
 ### Функции вкладки прогресса
 
 | Функция | Описание |
@@ -792,12 +866,16 @@ avatar, profile, icon, logo, watermark, preview
 
 ### Горячие клавиши
 
+Глобальные хоткеи страницы (переназначаются в настройках; отключены в полях ввода):
+
 | Клавиши | Действие |
 |---------|----------|
 | `Ctrl+Q` | Запустить массовую загрузку |
-| `Ctrl+Shift+I` | Открыть страницу настроек |
-| `Ctrl+Shift+P` | Открыть вкладку прогресса |
-| `Esc` | Отменить текущую операцию |
+| `A` | Открыть/закрыть сетку галереи (затем отметка + Save) |
+| `Tab` | Переключить предпочтение HD/стандарт (hiRes, при открытом оверлее) |
+| `P` | Открыть попап настроек |
+
+Отмена всегда доступна кнопкой **Cancel** во вкладке прогресса.
 
 ---
 
@@ -816,11 +894,10 @@ avatar, profile, icon, logo, watermark, preview
 ### Режим отладки
 
 ```javascript
-// Открыть Chrome DevTools на страницах расширения
-chrome://extensions/ → Imagus → "Inspect views: service worker"
+// В MV3 нет background page — инспектируйте Service Worker:
+// chrome://extensions/ → Imagus Reborn MD → "service worker"
 
-// Консольные команды для отладки
-chrome.runtime.getBackgroundPage()
+// В консоли любой страницы расширения (настройки / прогресс):
 chrome.storage.local.get(null, console.log)
 ```
 
@@ -859,6 +936,11 @@ chrome.storage.local.get(null, console.log)
 
 ### Сохранение лога
 - Вкладка прогресса содержит кнопку **Save Log**, которая экспортирует текстовый диагностический файл: для каждого элемента — тип контента, размер файла, HTTP-статус, метод фильтрации, время фильтрации, источник и HD-флаг — плюс статистика загрузок, версия расширения и активные настройки `da`/`hz`.
+
+### Gallery Save (v2026.7.25.8)
+- В сетке галереи появились чекбоксы с панелью **Выбрать все / Save**. Сохранение передаёт проверенные полноразмерные URL альбома прямо в конвейер массовой загрузки (валидация, дедуп, referer-retry и прогресс переиспользуются).
+- Ссылки, чья превью ещё не разрешена, разрешаются через движок Imagus по требованию; разрешения сериализуются (у движка один общий таймер резолва), негативный кэш неудачной попытки сбрасывается перед каждым новым Save.
+- Отправки чанками, чтобы выбор сотен элементов не перегрузил порт сообщений.
 
 > **Статус:** движок массовой загрузки находится в активной разработке и может меняться между релизами.
 
@@ -900,4 +982,4 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
 ---
 
-*Last Updated: 2026 | Version: 2026.7.25.7-pre (Experimental)*
+*Last Updated: 2026-08-23 | Version: 2026.7.25.8 (Chrome + Firefox 136+)*

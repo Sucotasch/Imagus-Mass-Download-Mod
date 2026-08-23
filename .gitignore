@@ -20,5 +20,6 @@ Errors.txt
 queries.py
 stash_diff.txt
 upstream_patch_plan_v2026.7.21.md
-Audit/
+Audit/*
+!Audit/AUDIT_STATUS_CURRENT.md
 Imagus-Reborn-base/

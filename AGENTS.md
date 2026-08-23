@@ -20,7 +20,7 @@ Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + ori
 | `Docs/` | Developer docs (algorithm, structure, overlay strategy) | Docs only |
 | `_tmp_upstream/`, `upstream_v2026.7.21/` | Temporary upstream diff/comparison files | Do not edit — transient (gitignored) |
 | `minified/` / `unminified/` | Pre-built sieve artifacts | Not main source |
-| `Audit/` | External audit reports | Reference |
+| `Audit/` | Audit reports (root `Audit.md` moved here 2026-08-23 as `FULL_AUDIT_2026-08-18.md`). **Entry point: `Audit/AUDIT_STATUS_CURRENT.md`** — consolidated status of every audit item, verified against code. Historical dossiers keep their original BUG-xx numbering — always qualify IDs with audit date (`BUG-03@0720` ≠ `BUG-03@0721`) | Reference |
 
 **Default rule:** work in `src-mv3-overlay/` unless the user explicitly names another tree.
 
@@ -51,7 +51,7 @@ src-mv3-overlay/
 ├── options/                       # options, popup, download-progress, SieveUI
 ├── data/defaults.json             # hz / keys / tls / da
 ├── data/sieve.json                # Site media rules
-└── manifest.json                  # MV3 (Chrome version 2026.7.25.7; Firefox 2026.7.25.7-pre — Chrome rejects non-numeric suffixes)
+└── manifest.json                  # MV3 (versions numeric-only in both trees — Chrome rejects suffixes like `-pre`; FF tree adds gecko settings + relay content_scripts)
 ```
 
 ### Service worker wiring
@@ -63,7 +63,7 @@ importScripts('../mass-download/service-init.js', '../mass-download/service-core
 ```
 
 Mass-download `handleMessage` cases (after upstream `resolve`):  
-`downloadAll`, `openDownloadProgress`, `registerProgressTab`, `downloadMass`, `resolveAndDownloadGroups`, `updateStatus`, `updateFilterStats`, `stopScanning`, `getDownloadStatus`, `getDownloadLog`, `clearCompletedDownloads`, `clearAllDownloads`, `retryDownload`.
+`downloadAll`, `openDownloadProgress`, `registerProgressTab`, `downloadMass`, `resolveAndDownloadGroups`, `updateStatus`, `updateFilterStats`, `stopScanning`, `getDownloadStatus`, `getDownloadLog`, `clearCompletedDownloads`, `clearAllDownloads`, `retryDownload`, `refererDownloadReady`, `refererDownloadFailed`.
 
 `getDownloadLog` is the progress-tab **Save Log** path — it returns serialized items (with per-item `contentType`/`fileSize`/`filterTimeMs`/`httpStatus`/`filterMethod`/`source`/`isHd`/`elementInfo`/`filename`) + `downloadStats` + version + `sessionStart` + `da`/`hz.hiRes` settings, and is one of the handlers that must `return true` (async `sendResponse`).
 
@@ -75,13 +75,17 @@ Handlers live in `mass-download/service-core.js` (`handleDownloadAll`, `handleDo
 
 Inline sections (see `mass-download/content-block.js` for the canonical copy):
 
-1. Helpers (`_isElementVisible`, `_hasStopWords`, `_getMediaExt`) — early in IIFE  
+1. Helpers (`_isElementVisible`, `_hasStopWords`, `_resolveUrl`; gallery helpers `_mdSerialized` / `_mdResolveCandidates` / `_mdResolveCache`) — early in IIFE. `_getMediaExt` was removed (Audit N-09) — do not reintroduce  
 2. PVI properties (`downloadAllActive`, queues, …)  
 3. Hotkey in `PVI.key_action` (`cfg.keys.downloadAll`, typically Ctrl+Q)  
 4. Messages in `PVI.onMessage` (`downloadAll`, `stopScanning`, `groupAnalysisComplete`)  
 5. PVI methods (`downloadAll`, filter queue, keep-awake audio, status UI, …)
 
 When re-applying onto a new upstream: merge upstream `content.js`, then re-insert marked blocks from `content-block.js`.
+
+### Gallery Save (unmarked inline section)
+
+`_mdGalleryInstall` wraps `PVI.gallery` (checkboxes + Select all / Save bar on the grid). Lives in an **unmarked** section (`=== Gallery Save ===`) near the top of the IIFE — it is NOT inside the 5 marker pairs, but IS mirrored in `content-block.js` and checked by `tools/md-marker-check.mjs` only via the HELPERS section boundaries. Zero SW changes: Save feeds **proven** album URLs straight into `downloadMass`; page-links without a preview are resolved through the engine with **serialized** resolutions (`_mdSerialized` — the engine has ONE shared resolver timer) + negative-cache reset before each Save; sends are chunked 25 per 10ms.
 
 ## Key Files
 
@@ -104,7 +108,8 @@ Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `sr
 
 ## Architecture Gotchas
 
-- **Service Worker is ephemeral.** Keep-alive interval (~25s) in SW; mass download also uses a silent looping audio element in the content script.
+- **Service Worker is ephemeral.** Three keep-alive tiers: permanent `setInterval(chrome.runtime.getPlatformInfo, 25000)` (service.js), a session alarm `md-session-keepalive` (0.5 min, only while a scan/download session is active), and a silent looping audio element in the content script during scans.
+- **Referer-retry (hotlink protection):** filter-phase 403/404 → `triggerRefererDownload` → `downloadWithReferer` to content → page-context fetch (`credentials:'include'`) → object URL → `refererDownloadReady/Failed`. While a retry is in flight `activeRefererRetries` keeps the session alive; `refererRetryUrls` guards the watchdog against double slot-release. Chrome: object URL is created in the PAGE and revoked via message on release (SW has no `createObjectURL`).
 - **No `XMLHttpRequest` in SW.** Use `fetch()` + `AbortController`.
 - **Queues are in-memory only** (`filterQueue`, `downloadQueue`, `downloadStats` in SW). Worker restart loses progress; nothing is persisted to `chrome.storage` for queues.
 - **Clean stop:** on `stopScanning` / cancel, mark tasks canceled and abort every entry in `activeControllers` (keys should be unique IDs, not raw URLs).
@@ -116,6 +121,7 @@ Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `sr
 - **User scripts need Developer Mode.**
 - **Sieve rules starting with `_`** are user/local — never overwrite on auto-update.
 - **Weekly sieve auto-update** via `chrome.alarms` (upstream feature; mod may add retry/timeout hardening).
+- **Verification tools (run from repo root):** `node tools/md-unit-smoke.mjs` (dedup contract both trees + MIME/ext helpers) and `node tools/md-marker-check.mjs` (byte-sync of the 5 marker sections, both trees). The smoke test **cuts functions out of source text** assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` can break extraction. When diffing the two trees, use `git diff --no-index --ignore-cr-at-eol` — flat diffs show ~13 phantom files from CRLF noise (N-20); do not "fix" line endings tree-wide.
 
 ## Settings (`da` in `defaults.json`)
 
@@ -137,8 +143,8 @@ Localization: mod strings = `DA_*` in `_locales/[lang]/messages.json`; core Imag
 
 ## Mass Download Flow (short)
 
-1. **Content:** scan DOM → pre-filter (visibility + stop-words) → resolve via Imagus/PVI sieve (monkey-patch) → group ambiguous URLs → send to SW.  
-2. **SW filter phase:** dedup by raw URL in `processFilterQueue` / `processUrlGroupsWithValidation` (see gotchas — normalized dedup is deferred) → HEAD/GET validation, size/type filters, circuit breaker on high failure rate.  
+1. **Content:** scan DOM → pre-filter (visibility + stop-words + srcOnly probe) → resolve via Imagus/PVI sieve (monkey-patch) → group ambiguous URLs → send to SW.  
+2. **SW filter phase:** dedup by `fileKey` in `processFilterQueue` (single owner of `globalProcessedUrls`) / group analysis via `findBestUrlWithValidation` (strips `#`, hiRes tiebreak, builds `_candidates` fallback chains) → HEAD/GET validation, size/type filters, circuit breaker on high failure rate; HTML/404 can requeue the next candidate; 403/404 → referer-retry path.  
 3. **SW download phase:** `chrome.downloads.download`, progress updates to progress tab.  
 4. **UI:** popup / hotkey / options; progress tab registers via `registerProgressTab`; **Save Log** button pulls `getDownloadLog` into a diagnostics .txt.
 

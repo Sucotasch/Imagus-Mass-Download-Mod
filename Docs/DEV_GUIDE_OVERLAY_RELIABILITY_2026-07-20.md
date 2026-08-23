@@ -6,7 +6,7 @@
 | **Track** | Надёжность mass-download в `src-mv3-overlay` (concurrency, cancel, filters, settings) |
 | **Product concept** | Не менять: hover-to-enlarge Imagus + bulk download overlay |
 | **Code changes in this doc** | Нет — только guide |
-| **Source of truth for bugs** | [`Audit/FULL_AUDIT_STATUS_2026-07-20.md`](../Audit/FULL_AUDIT_STATUS_2026-07-20.md) |
+| **Source of truth for bugs** | [`Audit/AUDIT_STATUS_CURRENT.md`](../Audit/AUDIT_STATUS_CURRENT.md) (сводный статус всех аудитов) |
 | **Historical evidence** | [`Audit/FULL_AUDIT_2026-07-20.md`](../Audit/FULL_AUDIT_2026-07-20.md) |
 
 ---
@@ -36,7 +36,7 @@ If a change would require rewriting PVI as a global module or merging mass-downl
 ### Read first (in order)
 
 1. `AGENTS.md`  
-2. `Audit/FULL_AUDIT_STATUS_2026-07-20.md` (§2 matrix + §3 residuals)  
+2. `Audit/AUDIT_STATUS_CURRENT.md` (сводная таблица статусов)  
 3. This guide WP-0…WP-N  
 4. Optional deep: `Docs/MASS_DOWNLOAD_STRATEGY.md`, `Docs/MASS_DOWNLOAD_ALGORITHM.md`
 
@@ -494,7 +494,7 @@ Track complete when:
 | Content MD | markers in `content/content.js` |
 | Paste reference | `mass-download/content-block.js` |
 | Settings | `data/defaults.json` → `da` |
-| Bug status | `Audit/FULL_AUDIT_STATUS_2026-07-20.md` |
+| Bug status | `Audit/AUDIT_STATUS_CURRENT.md` |
 | Original audit | `Audit/FULL_AUDIT_2026-07-20.md` |
 | Re-base strategy | `Docs/MASS_DOWNLOAD_STRATEGY.md` |
 
@@ -549,7 +549,7 @@ The hover lifecycle:
 
 The mod never hovers; for every collected element it **simulates a hover** and captures the engine's output instead of rendering it:
 
-- Collect elements (`downloadAll` → `filterQueueAsynchronously`): `a[href], img, video, [onclick], button, [role="button"]` (selector depends on `da.downloadAllMode` `media`/`broad`). Pre-filter: `_isElementVisible` + `_hasStopWords`.
+- Collect elements (`downloadAll` → `filterQueueAsynchronously`): `a[href], img, video, [onclick], button, [role="button"]` (фиксированный селектор; настройки `da.downloadAllMode` не существует). Pre-filter: `_isElementVisible` + `_hasStopWords` + `_hasResolveCandidate` (srcOnly-проба, Fix D из §14.9).
 - For each element: save `original_set/show/TRG`, then **monkey-patch** `PVI.set = (src) => onResolved(src)` and `PVI.show = (msg) => R_* ? onResolved(null)`; set `PVI.TRG = el`, `PVI.x/y` to the element center; call `PVI.find(el, x, y)` and `PVI.load(src)`. Every capture restores the originals via `PVI._cleanupMonkeyPatch`.
 - Single URL → `Port.send({ cmd: "downloadMass", url, referer, isHd, elementInfo })`. More than one candidate URL → pushed to `ambiguousUrlGroups` → `resolveAndDownloadGroups` → SW scores/validates the group (see 14.4).
 - **Covered elements** (Stage 4b): when a container (`<a>`/button) resolves to media, its nested `<img>/<video>` are added to `downloadAllCoveredElements` so they are not scanned again (fixes `<a href=.jpeg><img src=.jpg>` double-downloads).
@@ -645,9 +645,17 @@ Correctness depends on **B**: `resetNode(el)` before `find` guarantees `el.IMGS_
 | `IMGS_HD_stack` | `set:1977–1980` | The engine keeps the REJECTED variant list (SD when hiRes on, HD when off) for the Tab toggle. The mod could log "downloaded SD, HD existed" per item for free. | low |
 | `d.noloop` | SW `resolve` shortcut (content-type already media) | Free "URL is directly valid" hint — could skip SW GET validation for these. | low |
 | `PVI.stack` replay | `resolve:1294` | Already benefits re-scans via fix A/B; could also serve as an offline album source when the site resolve later fails. | info |
-| `PVI.gallery` / pile | 2681+ | Visual album grid — display-only, nothing to reuse for downloads. | none |
+| `PVI.gallery` / pile | 2681+ | ~~Visual album grid — display-only, nothing to reuse for downloads.~~ **Устарело:** с Gallery Save (см. `MASS_DOWNLOAD_ALGORITHM.md` §Gallery Save) `PVI.gallery` оборачивается модом — чекбоксы + Select all/Save, скачивание через существующий `downloadMass`. | — |
 | `resolve_cache` message | content:3646 | **Dead upstream code**: guarded by `cfg.tls.sieveCacheRes` which is absent from `defaults.json`, and no SW handler exists upstream or here. There is NO resolution cache anywhere — the mod's own validation is the only one. Do not "fix" this in upstream files; remember on re-base. | info |
 | `httpPrepend` / `normalizeURL` | 1272 / 1280 | Engine equivalents of the mod's `_resolveUrl`/`ensureAbsoluteUrl` (the SW cannot know the page protocol — the duplication is deliberate and semantically equivalent). | info |
 | `isVideoUrl` + `#mp4/#mp3` markers | `set:1993–1999` | Engine's media classification; the mod's SW/progress-side regexes are the parallel implementation. Divergence harmless so far. | info |
 
 **Deliberate near-duplications (keep, but keep in sync):** hiRes candidate choice (engine `set`/`_preload` vs SW tiebreak in `findBestUrlWithValidation`), URL normalization (above), media-type classification (above), candidate-on-failure cascade (engine `IMGS_c_resolved` load-error cascade 2070–2090 — content/image-load domain — vs SW `_candidates` chain — download domain; different failure domains, both needed).
+
+### 14.11 Corrections 2026-08-23
+
+Три правки фактов в этом аддендуме после появления Gallery Save и stage-5f+ (правки внесены по месту):
+
+1. §14.2: селектор коллекции фиксированный — настройки `da.downloadAllMode` нет; пре-фильтр включает `_hasResolveCandidate` (Fix D).
+2. §14.10: `PVI.gallery` больше не «display-only» — используется Gallery Save.
+3. Номера строк по всему аддендуму могли сместиться после gallery-коммитов; при несовпадении ищите по именам функций/якорям, а не по числам.

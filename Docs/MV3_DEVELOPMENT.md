@@ -56,7 +56,7 @@ User-facing strings for the mod are added to `_locales/[lang]/messages.json` wit
 
 ## Security note: the `vdfDpshPtdhhd` window-message bridge (Audit U-05)
 
-`common/app.js` accepts window messages carrying the `vdfDpPshPtdhhd` marker and
+`common/app.js` accepts window messages carrying the `vdfDpshPtdhhd` marker and
 `content.js winOnMessage` acts on `toggle | preload | isFrame | from_frame | relay`.
 The marker is **not a secret** (extension code is inspectable) and page scripts
 share the same `window`, so a page CAN forge these — the practical exposure is
