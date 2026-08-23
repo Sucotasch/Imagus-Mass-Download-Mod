@@ -374,6 +374,24 @@ if (url.match(/\/thumb\/(\d+)\//)) {
 }
 ```
 
+### Download Directory & Small-Image Scale-Up
+
+Optional settings inherited from upstream Imagus Reborn 2026.8:
+
+- **Download directory** (Options → Sieves → ⚙ details panel): route downloads
+  into subfolders built from `{page_domain}`, `{link_domain}`, `{Y}`, `{M}`, `{D}`
+  templates, e.g. `{page_domain}/{Y}-{M}`.
+- **Scale up small images** (hotkey `` ```, rebindable): while an image popup
+  is open, toggle enlarging small images to fill the window.
+
+> ⚠ **Scope of the download directory:** it applies **only to native Imagus
+> downloads** — the Save/download action on the hover popup. It is intentionally
+> **not** used by **Mass Download (Ctrl+Q)** or by **Gallery Save**: bulk jobs
+> keep their own naming, so hundreds of files never land in dated subfolders
+> unexpectedly. Unlike upstream, this build implements the directory without
+> `chrome.downloads.onDeterminingFilename`, so other extensions and download
+> managers are unaffected.
+
 ---
 
 ## Usage Examples 📖
@@ -804,6 +822,24 @@ if (url.match(/\/thumb\/(\d+)\//)) {
     return url.replace('/thumb/', '/original/');
 }
 ```
+
+### Каталог загрузок и увеличение мелких изображений
+
+Опциональные настройки, унаследованные от upstream Imagus Reborn 2026.8:
+
+- **Каталог загрузок** (Настройки → Сита → панель ⚙): раскладывает загрузки по
+  подпапкам из шаблонов `{page_domain}`, `{link_domain}`, `{Y}`, `{M}`, `{D}`,
+  например `{page_domain}/{Y}-{M}`.
+- **Увеличение мелких изображений** (хотkey `` ```, переназначается): при
+  открытом попапе переключает растягивание маленьких картинок до окна.
+
+> ⚠ **Область действия каталога:** он применяется **только к штатным загрузкам
+> Imagus** — кнопке сохранения на попапе при наведении. В **массовой загрузке
+> (Ctrl+Q)** и в **Gallery Save** каталог намеренно **не используется**: массовые
+> задания сохраняют собственное именование, чтобы сотни файлов не уходили в
+> датированные подпапки. В отличие от upstream, эта сборка реализует каталог без
+> `chrome.downloads.onDeterminingFilename`, поэтому другие расширения и менеджеры
+> загрузок не затрагиваются.
 
 ---
 
