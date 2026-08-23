@@ -218,13 +218,28 @@
                 };
                 var immediate;
                 try {
-                    immediate = PVI.find(fake);
+                    // Match the rule EXACTLY like find()'s loop does
+                    // (scheme-less url against rule.link, first match wins),
+                    // then drive PVI.resolve() directly. Going through
+                    // find() proved unreliable for synthetic targets.
+                    var schemeless = String(url).replace(/^https?:\/\//, '');
+                    var hitRule = null, hitId = -1, hitGroups = null;
+                    var sieve = cfg.sieve || [];
+                    for (var ri = 0; ri < sieve.length; ri++) {
+                        var r = sieve[ri];
+                        if (!r || !r.link || !r.link.test(schemeless)) continue;
+                        hitRule = r; hitId = ri;
+                        hitGroups = (schemeless.match(r.link) || []).slice(1);
+                        break;
+                    }
+                    if (!hitRule || hitRule.res === undefined) { finish(null); return; }
+                    immediate = PVI.resolve(url, {
+                        id: hitId,
+                        $: [url].concat(hitGroups),
+                        loop_param: 'link',
+                        skip_resolve: false
+                    }, fake);
                 } catch (ex) {
-                    console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
-                    finish(null);
-                    return;
-                }
-                if (immediate === false || immediate === 1) {
                     console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
                     finish(null);
                     return;
@@ -604,6 +619,13 @@
             if (links.length > 0 && saveBtn) { saveBtn.textContent = 'Resolving\u2026'; saveBtn.disabled = true; }
 
             var pendingParts = (batch.length > 0 ? 1 : 0) + (links.length > 0 ? 1 : 0);
+            // NOTE: declared BEFORE finishPart — finishPart can fire
+            // synchronously from the chunker when every direct item fits the
+            // first chunk; var-hoisting would otherwise leave these
+            // undefined ("Cannot read properties of undefined").
+            var groups = [];
+            var unresolved = 0;
+            var nextIdx = 0;
             var finishPart = function () {
                 pendingParts--;
                 if (pendingParts > 0) return;
@@ -647,9 +669,6 @@
             // candidate GROUPS to findBestUrlWithValidation: whichever
             // variant actually answers with media gets downloaded (the
             // login-gated '#' original loses to its webp rendition).
-            var groups = [];
-            var unresolved = 0;
-            var nextIdx = 0;
             var launchLinks = function () {
                 if (links.length === 0) { finishPart(); return; }
                 while (nextIdx < links.length) {
