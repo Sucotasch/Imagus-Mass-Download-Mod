@@ -174,6 +174,14 @@
         };
 
         var cellCount = 0;
+        // Transient Refresh-button note ('Refresh failed' / 'Nothing to
+        // refresh'); cleared by the timer -> updatePanel() restores the
+        // state-derived label. The button label is OWNED by updatePanel():
+        // any panel (re)creation shows the truthful state, so a cancelled
+        // or superseded refresh can never leave a zombie 'Refreshing…'
+        // behind (v2 bug).
+        var refNote = null;
+        var refNoteTimer = null;
 
         var updatePanel = function () {
             if (!panel) return;
@@ -182,6 +190,34 @@
             var save = panel.querySelector('[data-a="save"]');
             save.textContent = 'Save (' + selected.size + ')';
             save.disabled = selected.size === 0;
+            panel.querySelector('[data-a="refresh"]').textContent =
+                refreshInFlight ? 'Refreshing\u2026' : (refNote || 'Refresh');
+        };
+
+        var flashRefNote = function (txt) {
+            refNote = txt;
+            updatePanel();
+            clearTimeout(refNoteTimer);
+            refNoteTimer = setTimeout(function () { refNote = null; updatePanel(); }, 2500);
+        };
+
+        // One live poll handle + per-album-id latches (race/storm fixes):
+        // - a stale interval used to survive up to 15 s and fire
+        //   gallery(0)+gallery(2) under the user's hands on ANY later
+        //   resolve, rebuilding the grid mid-interaction (Select/Save felt
+        //   "dead" after reopening the gallery);
+        // - the old boolean autoRefreshed flag was reset by EVERY gallery(0)
+        //   — including our own reopen — so one failing cell could loop
+        //   open→wipe forever. Keying the latch by album id gives exactly
+        //   one AUTO attempt per album per page session; manual Refresh is
+        //   never latched.
+        var refreshPoll = null;
+        var refreshInFlight = false;
+        var autoRefreshedFor = null;
+
+        var cancelRefreshPoll = function () {
+            if (refreshPoll) { clearInterval(refreshPoll); refreshPoll = null; }
+            refreshInFlight = false;
         };
 
         // Re-resolve the album. e-hentai-style albums are scraped once at
@@ -192,38 +228,74 @@
         // browser-cached items keep working — no loading trick can recover a
         // dead URL. The only cure is dropping the album cache and letting the
         // engine resolve it again (a fresh scrape brings fresh tokens).
-        var autoRefreshed = false;
+        //
+        // CRITICAL (the v1 bug): a VIEWED album leaves display-cache markers
+        // on the trigger (TRG.IMGS_c = last shown src / true). resolve()
+        // refuses cached triggers ("if (!trg || trg.IMGS_c) return false"),
+        // so deleting only IMGS_c_resolved/IMGS_album made the re-scrape a
+        // silent no-op — while reset(true) closed the grid through its own
+        // trailing gallery(0). Fix: PVI.resetNode() clears ALL per-node
+        // resolution caches (incl. IMGS_c and IMGS_album) on the anchor AND
+        // on its inner media node (find() resolves against trg.IMGS_TRG),
+        // and there is NO reset() — the stale grid stays visible until the
+        // fresh album lands and the poll rebuilds it.
         var refreshAlbum = function (auto) {
             var el = PVI.TRG;
-            if (!el || !el.isConnected) return;
-            var albumId = PVI.TRG.IMGS_album;
-            if (albumId && PVI.stack[albumId]) delete PVI.stack[albumId];
-            delete PVI.TRG.IMGS_c_resolved;
-            delete PVI.TRG.IMGS_album;
-            selected.clear();
-            albumRef = null;
+            if (!el || !el.isConnected || refreshInFlight) return;
+            var albumId = el.IMGS_album;
+            if (!albumId || !PVI.stack[albumId]) {
+                if (!auto) flashRefNote('Nothing to refresh');
+                return;
+            }
+            if (auto && autoRefreshedFor === albumId) return;
+            autoRefreshedFor = albumId;
+            refreshInFlight = true;
+            updatePanel();          // button => 'Refreshing…'
+            delete PVI.stack[albumId];
+            clearSelectionUi();     // fresh list => old selection invalid
+            albumRef = null;        // stale list: Select all / Save no-op until rebuild
             cellCount = 0;
-            try { PVI.reset(true); } catch (_) {}
-            PVI.TRG = el;
+            PVI.resetNode(el, false);
+            if (el.IMGS_TRG) PVI.resetNode(el.IMGS_TRG, false);
             try {
+                // find() itself schedules the scrape for res-rules (returns
+                // null then); a truthy result still goes through load().
+                // NOTE: the resolved handler registers the fresh album
+                // against PVI.resolving[d.id] (= el), NOT against the
+                // current PVI.TRG — so the scrape lands on OUR element even
+                // if the pointer drifted over the page meanwhile.
                 var src = PVI.find(el, PVI.x, PVI.y);
                 if (src) PVI.load(src);
-            } catch (_) { return; }
-            // The re-resolution lands asynchronously (resolved handler shows
-            // the first image); poll briefly for the fresh album and reopen
-            // the gallery grid on it. gallery(0) first: the old grid must be
-            // wiped or gallery(2) would reuse the stale cells.
+            } catch (ex) {
+                console.warn(cfg.app?.name + ': [gallery-refresh] ' + ex.message);
+            }
+            // Poll for the fresh album, then FORCE a clean rebuild.
+            // v2 bugs fixed here:
+            // - NO "PVI.TRG !== el" abort — a mouse twitch over the page
+            //   used to kill the poll, freezing 'Refreshing…' and leaving
+            //   the stale grid in place;
+            // - gallery(0)+gallery(2) always: upstream gallery(2) SKIPS the
+            //   rebuild when GLR still has children (state 2<->1 toggles),
+            //   which is exactly how the stale dead-cell grid survived a
+            //   manual reopen while the fresh URLs sat unused in the stack.
+            cancelRefreshPoll();
             var tries = 0;
-            var t = setInterval(function () {
-                if (PVI.TRG && PVI.TRG.IMGS_album && Array.isArray(PVI.stack[PVI.TRG.IMGS_album])) {
-                    clearInterval(t);
-                    try { PVI.gallery(0); PVI.gallery(2); } catch (_) {}
+            refreshPoll = setInterval(function () {
+                if (!refreshInFlight) { clearInterval(refreshPoll); refreshPoll = null; return; }
+                if (!el.isConnected) { cancelRefreshPoll(); updatePanel(); return; }
+                if (el.IMGS_album && Array.isArray(PVI.stack[el.IMGS_album])) {
+                    cancelRefreshPoll();
+                    try {
+                        PVI.TRG = el;           // pin: gallery() reads TRG.IMGS_album
+                        PVI.gallery(0);         // wipe stale cells + close
+                        PVI.gallery(2);         // rebuild from the FRESH list (+decorate)
+                    } catch (_) {}
+                    updatePanel();
                 } else if (++tries > 50) {
-                    clearInterval(t);
+                    cancelRefreshPoll();
+                    flashRefNote('Refresh failed');
                 }
             }, 300);
-            var rf = panel ? panel.querySelector('[data-a="refresh"]') : null;
-            if (rf && auto) rf.textContent = 'Refreshing…';
         };
 
         var buildPanel = function () {
@@ -267,12 +339,15 @@
             // The bar lives INSIDE GLR: state 0 wipes it with innerHTML="".
             // Only drop the stale reference; state 1 hides it via GLR display.
             panel = null;
+            cancelRefreshPoll();    // gallery gone => no reopen poll may fire later
             if (clearSelection) {
                 selected.clear();
                 albumRef = null;
                 cellCount = 0;
-                autoRefreshed = false;
+                // autoRefreshedFor deliberately survives close/reopen: one
+                // auto attempt per album id per page session.
             }
+            updatePanel();
         };
 
         var toggleAll = function () {
@@ -335,14 +410,11 @@
                     .catch(function () {
                         // CORS/network blocked the fetch too — every load
                         // context has failed: the URL itself is dead
-                        // (expired/consumed token). Re-resolve the album ONCE
-                        // per gallery session — a fresh scrape brings fresh
-                        // tokens.
+                        // (expired/consumed token). Ask for ONE album
+                        // re-resolve per album id (the latch lives inside
+                        // refreshAlbum) — a fresh scrape brings fresh tokens.
                         settle(m, false);
-                        if (!autoRefreshed) {
-                            autoRefreshed = true;
-                            setTimeout(function () { refreshAlbum(true); }, 500);
-                        }
+                        setTimeout(function () { refreshAlbum(true); }, 500);
                     });
             };
 
@@ -432,7 +504,21 @@
             ensureCss();
             // Re-open of an already-built grid (gallery() skips the rebuild):
             // boxes exist — ensure the bar is present and keep the selection.
+            // v2 bug fixed: after an aborted refresh albumRef was left null
+            // (Select all / Save silently no-op'd) — restore it from the
+            // CURRENT stack; and if the tracked bar got detached from GLR,
+            // drop the stale reference so buildPanel() rebuilds it.
             if (PVI.GLR.querySelector('.md-gcheck')) {
+                if (panel && !panel.isConnected) panel = null;
+                if (!albumRef) {
+                    var aid = PVI.TRG && PVI.TRG.IMGS_album;
+                    var lst = aid ? PVI.stack[aid] : null;
+                    if (Array.isArray(lst)) {
+                        albumRef = lst;
+                        cellCount = PVI.GLR.querySelectorAll('.md-gcheck').length;
+                        updatePanel();
+                    }
+                }
                 buildPanel();
                 return;
             }
