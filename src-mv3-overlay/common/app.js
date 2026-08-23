@@ -2,7 +2,7 @@
 
 let cfg;
 
-const catchEvent = {};
+window.catchEvent = {};
 const app = {};
 const platform = navigator.userAgent.includes('Firefox') ? "firefox" : "chrome";
 
@@ -58,7 +58,7 @@ function buildNodes(element, nodes) {
 window.addEventListener(
     "message",
     function (event) {
-        if (event.data.hasOwnProperty("vdfDpshPtdhhd")) {
+        if (event.data?.vdfDpshPtdhhd) {
             event.stopImmediatePropagation();
             catchEvent?.onmessage?.(event);
         }

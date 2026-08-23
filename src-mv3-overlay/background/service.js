@@ -646,23 +646,91 @@ function sanitizeFilename(filename) {
     return filename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, "_");
 }
 
+// Port of upstream 8.20 saveDir templates ({page_domain}/{link_domain}/{Y}{M}{D}).
+// Hardening vs upstream issues #134/#69: every path segment is sanitized and
+// stripped of trailing dots/spaces (Windows), unreplaced placeholders become
+// "unknown", empty segments are dropped.
+function getDownloadDirectory(msg) {
+    let dir = (cachedPrefs?.hz?.saveDir ?? "").trim();
+    if (!dir) return "";
+
+    if (msg.domain) {
+        dir = dir.replace(/\{page_domain\}/gi, msg.domain.toLowerCase());
+    }
+
+    // top domain of the link URL, e.g. "example.com" from "sub.example.com"
+    let linkDomain = "";
+    try {
+        linkDomain = new URL(msg.url).hostname.replace(/^(?:.*\.)?([^.]+\.[^.]+)$/, "$1");
+    } catch (_) {}
+    dir = dir.replace(/\{link_domain\}/gi, linkDomain.toLowerCase());
+
+    const now = new Date();
+    dir = dir.replace(/\{Y\}/gi, now.getFullYear());
+    dir = dir.replace(/\{M\}/gi, String(now.getMonth() + 1).padStart(2, "0"));
+    dir = dir.replace(/\{D\}/gi, String(now.getDate()).padStart(2, "0"));
+
+    dir = dir.replace(/^[/.]+/, "").replace(/\/+$/, "");
+    dir = dir.replace(/\{[^}]+\}/g, "unknown");
+
+    dir = dir.split("/")
+        .map(seg => sanitizeFilename(seg).replace(/[. ]+$/, ""))
+        .filter(Boolean)
+        .join("/");
+    return dir;
+}
+
+function getFilenameFromUrl(url) {
+    try {
+        const pathname = new URL(url).pathname;
+        return pathname.substring(pathname.lastIndexOf("/") + 1) || undefined;
+    } catch (_) {
+        return undefined;
+    }
+}
+
+async function getFilenameFromHeaders(url) {
+    try {
+        const resp = await fetch(url, { method: "HEAD" });
+        const match = /filename[^;=\n]*=["']?([^"';\n]*)/.exec(resp.headers.get("Content-Disposition") || "");
+        return match?.[1];
+    } catch (_) {
+        return undefined;
+    }
+}
+
 const downloadItems = {};
 async function download(msg, tab, sendResponse) {
     if (!msg.url) return;
 
     const ext = msg.priorityExt ?? msg.ext;
 
-    const filename =
+    let filename =
         msg.filename && ext
             ? `${msg.filename}.${ext}`
-            : msg.urlName;
+            : msg.filename || msg.urlName;
+
+    // Port of upstream 8.20 saveDir (plan WP-2 / decision Р1): the directory
+    // is prefixed into params.filename directly on BOTH platforms — no
+    // chrome.downloads.onDeterminingFilename, which upstream used on Chrome
+    // and which intercepted all browser downloads (#132), broke domain
+    // directories (#134) and renames (#69).
+    const dir = getDownloadDirectory(msg);
+    if (dir && !filename) {
+        filename = await getFilenameFromHeaders(msg.url) || getFilenameFromUrl(msg.url);
+    }
+    if (filename && dir) {
+        filename = `${dir}/${sanitizeFilename(filename)}`;
+    } else if (filename) {
+        filename = sanitizeFilename(filename);
+    }
 
     // Audit U-02: keep the object URL so it can be revoked once the download
     // reaches a terminal state (see onChanged below).
     const objectUrl = msg.blob ? URL.createObjectURL(msg.blob) : null;
     const params = {
         url: objectUrl || msg.url,
-        filename: filename ? sanitizeFilename(filename) : undefined,
+        filename: filename || undefined,
         conflictAction: "uniquify"
     };
 
@@ -688,20 +756,11 @@ async function download(msg, tab, sendResponse) {
         downloadItems[id] = msg;
     }
 }
-/* // seems like onDeterminingFilename exists only in Chrome, so commenting that out for now
-chrome.downloads.onDeterminingFilename?.addListener(function (item, suggest) {
-    if (!downloadItems[item.id]) return;
-    if (item.mime === "text/html") {
-        // calceling download of HTML files, most probably an error page
-        chrome.downloads.cancel(item.id);
-        const msg = downloadItems[item.id];
-
-        // request alternative download method
-        msg.alterDownload = true;
-        chrome.tabs.sendMessage(msg.tabId, msg);
-    }
-    delete downloadItems[item.id];
-}); */
+// NOTE: upstream 8.20 routes saveDir renaming through
+// chrome.downloads.onDeterminingFilename — deliberately NOT ported: the
+// listener fires for every browser download and broke download managers /
+// domain directories / renames (upstream issues #132/#134/#69). We prefix
+// the directory into params.filename instead (see download() above).
 
 chrome.downloads.onChanged.addListener(function (delta) {
     const msg = downloadItems[delta.id];
@@ -719,7 +778,9 @@ chrome.downloads.onChanged.addListener(function (delta) {
         return;
     }
 
-    if (delta.error || /\.html?$/.exec(delta.filename?.current)) {
+    // USER_* errors are user-initiated (cancel via the downloads UI) — do not
+    // fall back to the page-context retry for them (upstream 8.20 behavior).
+    if ((delta.error && !delta.error.current?.startsWith("USER_")) || /\.html?$/.exec(delta.filename?.current)) {
         // calceling download of HTML files, most probably an error page
         chrome.downloads.cancel(delta.id, () => {});
         chrome.downloads.erase({ id: delta.id }, () => {});

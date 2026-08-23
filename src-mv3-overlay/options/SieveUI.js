@@ -313,7 +313,7 @@ var sieve_sec,
                     attrs: { class: "rule_line" },
                     nodes: [
                         { tag: "label", nodes: ["Link:"] },
-                        { tag: "pre", attrs: { "data-name": "link", placeholder: "link", class: "sieve_shorter_inp tar_small" } },
+                        { tag: "pre", attrs: { "data-name": "link", placeholder: "link", class: "tar_small" } },
                         { tag: "input", attrs: { type: "checkbox", id: "link_ci", "data-name": "link_ci" } },
                         { tag: "label", attrs: { class: "checkbox" } },
                         { tag: "input", attrs: { type: "checkbox", id: "link_dc", "data-name": "link_dc" } },
@@ -359,7 +359,7 @@ var sieve_sec,
                     attrs: { class: "rule_line" },
                     nodes: [
                         { tag: "label", nodes: ["Img:"] },
-                        { tag: "pre", attrs: { "data-name": "img", placeholder: "img", class: "sieve_shorter_inp tar_small" } },
+                        { tag: "pre", attrs: { "data-name": "img", placeholder: "img", class: "tar_small" } },
                         { tag: "input", attrs: { type: "checkbox", id: "img_ci", "data-name": "img_ci" } },
                         { tag: "label", attrs: { class: "checkbox" } },
                         { tag: "input", attrs: { type: "checkbox", id: "img_dc", "data-name": "img_dc" } },
@@ -703,7 +703,7 @@ var sieve_sec,
 
         checkUpdate: async function () {
             // assume that Sieve updates from GitHub repo
-            const [_, user, repo] = /https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)/i.exec(cfg.sieveRepository) || [];
+            const [, user, repo] = /https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)/i.exec(cfg.sieveRepository) || [];
             if (!user || !repo) return;
             const conf = await chrome.storage.local.get({ sieveUpdateLast: 0 });
             const lastCheck = new Date(Number(conf.sieveUpdateLast));

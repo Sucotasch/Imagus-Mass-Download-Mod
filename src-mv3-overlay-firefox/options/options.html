@@ -52,7 +52,7 @@
 			</aside>
 		</div>
 
-		<section id="settings_sec" class="scroll" style="display: none;">
+		<section id="settings_sec" class="" style="display: none;">
 			<h4 data-lng="HZ_GENERAL"></h4>
 			<div class="prow tiptop">
 				<label for="hz_deactivate" data-lng="HZ_ACTIVATION"></label>
@@ -185,6 +185,14 @@
 				</span>
 			</div>
 
+			<div class="prow tiptop">
+				<div class="tip" data-lng="HZ_SAVEDIR_TIP"></div>
+				<label for="hz_saveDir" data-lng="HZ_SAVEDIR"></label>
+				<span>
+					<input id="hz_saveDir" name="hz_saveDir" type="text">
+				</span>
+			</div>
+
 			<h4 data-lng="HZ_MEDIA"></h4>
 
 			<div class="prow">
@@ -215,8 +223,9 @@
 			</div>
 
 			<div class="prow tiptop">
-				<label for="hz_hideControlsDelay" data-lng="HZ_HIDECONTROLSDELAY"></label>
 				<div class="tip" data-lng="HZ_HIDECONTROLS_TIP"></div>
+
+				<label for="hz_hideControlsDelay" data-lng="HZ_HIDECONTROLSDELAY"></label>
 				<span>
 					<input id="hz_hideControlsDelay" name="hz_hideControlsDelay" type="number" step="1" min="-1" max="10000">
 				</span>
@@ -437,6 +446,15 @@
 				</span>
 			</div>
 
+			<div class="prow tiptop">
+				<div class="tip" data-lng="HZ_SCALEUP_TIP"></div>
+				<label for="hz_scaleUp" data-lng="HZ_SCALEUP"></label>
+				<span>
+					<input id="hz_scaleUp" name="hz_scaleUp" type="checkbox" checked>
+					<label for="hz_scaleUp" class="checkbox"></label>
+				</span>
+			</div>
+
 			<!-- <div class="prow">
 				<label for="hz_move" data-lng="HZ_MOVE"></label>
 				<span>
@@ -503,17 +521,23 @@
 					</span>
 					<span>Classic:
 						<code style="outline: red dashed 1px; box-shadow: white 0px 0px 0px 1px;">outline: red dashed 1px;
-							box-shadow: white 0px 0px 0px 1px;</code>
+							box-shadow: white 0px 0px 0px 1px;
+							padding: 0;
+							translate: none;</code>
 					</span>
 					<span>Shadow:
 						<code style="box-shadow: white 0 0 0 1px,rgb(255, 120, 120) 0px 0px 5px 3px, rgb(255, 255, 255) 0px 0px 5px 3px;">padding: 1px;
 							translate: -1px -1px;
+							outline: none;
 							box-shadow:
 							&nbsp;&nbsp;rgb(255, 120, 120) 0px 0px 4px 2px,
 							&nbsp;&nbsp;rgb(255, 255, 255) 0px 0px 4px 2px;</code>
 					</span>
 					<span>Overlay:
 						<code style="position: relative;"><div style="position: absolute; inset: -1px; border-radius: 2px; background-color: rgba(255, 120, 120, 0.1); box-shadow: white 0px 0px 0px 1px, rgb(255, 120, 120) 0px 0px 0px 2px;"></div>background-color: rgba(255, 120, 120, 0.1);
+							translate: none;
+							padding: 0;
+							outline: none;
 							box-shadow:
 							&nbsp;&nbsp;white 0px 0px 0px 1px,
 							&nbsp;&nbsp;rgb(255, 120, 120) 0px 0px 0px 2px;</code>
@@ -615,7 +639,7 @@
 			</div>
 		</section>
 
-		<section id="tools_sec" class="scroll" style="display: none;">
+		<section id="tools_sec" class="" style="display: none;">
 			<div class="prow left advanced">
 				<span>
 					<input id="hz_scOffInInput" name="hz_scOffInInput" type="checkbox" checked>
@@ -642,16 +666,17 @@
 
 			<ul class="sub_shortcuts">
 				<li><b>Esc</b> <label data-lng="HZ_SC_CLEAR"></label></li>
-				<li><b>Alt + Shift +</b> <input id="keys_hz-toggle" name="keys_hz-toggle" value="D"> <label for="keys_hz-toggle" data-lng="HZ_SC_TOGGLE"></label></li>
-				<li><b>Alt + Shift +</b> <input id="keys_hz-preload" name="keys_hz-preload" value="L"> <label for="keys_hz-preload" data-lng="HZ_SC_PRELOAD"></label></li>
+				<li><b>Alt + Shift +</b> <input id="keys_hz-toggle" name="keys_hz-toggle" value="D" data-altshift="true"> <label for="keys_hz-toggle" data-lng="HZ_SC_TOGGLE"></label></li>
+				<li><b>Alt + Shift +</b> <input id="keys_hz-preload" name="keys_hz-preload" value="L" data-altshift="true"> <label for="keys_hz-preload" data-lng="HZ_SC_PRELOAD"></label></li>
 				<li><label for="keys_hz-fullZm"><input id="keys_hz-fullZm" name="keys_hz-fullZm" value="Z">, <b>Enter</b><span class="extra"></span> <span data-lng="HZ_SC_FULLZOOM"></span></label></li>
 				<li><label for="keys_gallery"><input id="keys_gallery" name="keys_gallery" value=""> <span data-lng="HZ_SC_GALLERY"></span></label></li>
 				<li><label for="keys_hiResToggle"><input id="keys_hiResToggle" name="keys_hiResToggle" value=""> <span data-lng="SC_HIRES"></span></label></li>
 				<li><label for="keys_hz-fullSpace"><input id="keys_hz-fullSpace" name="keys_hz-fullSpace" value="F"> <span data-lng="HZ_SC_FULLSPACE"></span></label></li>
+				<li><label for="keys_toggleScaleUp"><input id="keys_toggleScaleUp" name="keys_toggleScaleUp" value=""> <span data-lng="SC_TOGGSCALEUP"></span></label></li>
 				<li><label for="keys_hz-caption"><input id="keys_hz-caption" name="keys_hz-caption" value="C"> <span data-lng="HZ_SC_CAPTION"></span></label></li>
 				<li><label for="keys_openTab"><input id="keys_openTab" name="keys_openTab" value="O"> <span data-lng="HZ_SC_OPEN"></span></label></li>
 				<li><label for="keys_hz-history"><input id="keys_hz-history" name="keys_hz-history" value="H"> <span data-lng="HZ_SC_HISTORY"></span></label></li>
-				<li><label for="keys_downloadAll"><input id="keys_downloadAll" name="keys_downloadAll" value="Q">, <b>Ctrl + Q</b> <span data-lng="HZ_SC_MASS_DOWNLOAD"></span></label></li>
+				<li><label for="keys_downloadAll"><input id="keys_downloadAll" name="keys_downloadAll" value="Q" data-altshift="true">, <b>Ctrl + Q</b> <span data-lng="HZ_SC_MASS_DOWNLOAD"></span></label></li>
 				<li><label for="keys_hz-save"><input id="keys_hz-save" name="keys_hz-save" value="">, <b>Ctrl + S</b> <span data-lng="HZ_SC_SAVE"></span></label></li>
 				<li><label for="keys_hz-reset"><input id="keys_hz-reset" name="keys_hz-reset" value="">, <b>Esc</b> <span data-lng="HZ_SC_RESET"></span></label></li>
 				<li>
@@ -718,7 +743,6 @@
 					<li><b>+ Ctrl</b> in album or over the media</li>
 				</ul>
 			</ul>
-
 		</section>
 
 		<section id="sieve_sec" style="display: none;">
@@ -773,7 +797,7 @@
 			<h3 class="container_info" data-lng="LOADING"></h3>
 		</section>
 
-		<section id="grants_sec" class="scroll" style="display: none;">
+		<section id="grants_sec" class="" style="display: none;">
 			<div class="inpbutt">
 				<!-- <input name="vw" type="checkbox">
 				<input name="hz" type="checkbox">
@@ -788,25 +812,28 @@
 				</div>
 			</div>
 
-			<label>
-				<span data-lng="GRNT_WEBSITE"></span>
-				<textarea class="grants" name="grants_" tabindex="1" data-lng="GRNT_RULEPERLINE"  data-lngattr="placeholder"></textarea>
-			</label>
-			<div>
-				<span>
-					<input id="hz_grantUrlsEnabled" name="hz_grantUrlsEnabled" type="checkbox" checked>
-					<label for="hz_grantUrlsEnabled" class="checkbox"></label>
-				</span>
-				<label for="hz_grantUrlsEnabled" data-lng="GRNT_ELEMENT"></label>
+			<div class="prow wrap">
+				<label>
+					<span data-lng="GRNT_WEBSITE"></span>
+					<textarea class="grants" name="grants_" tabindex="1" data-lng="GRNT_RULEPERLINE"  data-lngattr="placeholder"></textarea>
+				</label>
 			</div>
-			<label>
-				<textarea class="grants" name="grantUrls_" tabindex="2" data-lng="GRNT_RULEPERLINE"  data-lngattr="placeholder"></textarea>
-			</label>
+
+			<div class="prow wrap">
+				<label>
+					<span>
+						<input id="hz_grantUrlsEnabled" name="hz_grantUrlsEnabled" type="checkbox" checked>
+						<label for="hz_grantUrlsEnabled" class="checkbox"></label>
+					</span>
+					<label for="hz_grantUrlsEnabled" data-lng="GRNT_ELEMENT"></label>
+					<textarea class="grants" name="grantUrls_" tabindex="2" data-lng="GRNT_RULEPERLINE"  data-lngattr="placeholder"></textarea>
+				</label>
+			</div>
 
 			<div id="grants_help" data-lng="GRNT_HELP"></div>
 		</section>
 
-		<section id="info_sec" class="scroll" style="display: none;">
+		<section id="info_sec" class="" style="display: none;">
 			<!-- <div class="action_buttons">
 				<span data-action="prefs-import" data-lng="PREF_IMPORT" data-lngattr="title">&darr;</span>
 				<span data-action="prefs-export" data-lng="PREF_EXPORT" data-lngattr="title">&uarr;</span>

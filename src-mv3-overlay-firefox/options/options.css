@@ -20,8 +20,8 @@ body {
     box-shadow: 0 0 4px #333;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
-    height: 100vh;
+    overflow-y: scroll !important;
+    height: auto !important;
     font: 13px / 150% Verdana, Lucida Grande, Lucida Sans Unicode, Tahoma, sans-serif;
     margin: 0 auto;
     min-height: 300px;
@@ -34,7 +34,8 @@ body {
 body > form {
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow: visible !important;
+    background-color: inherit;
 }
 h4 {
     margin: 24px 0 10px;
@@ -171,20 +172,25 @@ body > form > section {
     display: flex;
     flex-direction: column;
     position: relative;
-    overflow: hidden;
-    padding-right: 4px;
-    padding-left: 15px;
+    overflow: visible !important;
     width: max-content;
     min-width: 700px;
+    padding: 12px 8px 16px 16px;
+    background-color: inherit;
 }
 section.scroll {
     overflow: auto;
     padding-bottom: 40px;
+    scrollbar-gutter: stable;
 }
 nav {
-    margin-bottom: 20px;
     text-align: center;
-    padding: 6px 0 0;
+    padding: 6px 0 12px;
+    position: sticky;
+    height: 32px;
+    top: 0;
+    z-index: 10;
+    background-color: inherit;
 }
 nav > a {
     border-bottom: 3px solid transparent;
@@ -211,7 +217,8 @@ nav > .active {
     border: 1px solid transparent;
     color: transparent;
     font: 12px/150% Verdana, sans-serif;
-    height: 36px;
+    line-height: 20px;
+    height: 32px;
     left: -24px;
     max-width: 100%;
     opacity: 0;
@@ -254,7 +261,7 @@ nav > .active {
     display: inline-block;
     font: 700 15px Verdana, sans-serif;
     margin-right: 0px;
-    padding: 8px 6px;
+    padding: 6px 6px;
     text-align: center;
     text-shadow: 0 0 3px #000, 0 0 3px #000;
     box-sizing: border-box;
@@ -288,13 +295,15 @@ label {
 .prow {
     display: flex;
     justify-content: space-between;
-    padding: 4px 6px;
+    padding: 2px 6px;
     align-items: center;
     border-radius: 4px;
-    margin-left: 10px;
     gap: 4px;
     min-height: 30px;
     flex-shrink: 0;
+}
+h4 ~ .prow {
+    margin-left: 10px;
 }
 .prow.wrap {
     flex-wrap: wrap;
@@ -336,7 +345,7 @@ code,
 pre,
 input,
 select,
-textarea {
+textarea:not(.ace_text-input) {
     background-color: hsla(0, 0%, 95%, 0);
     background-image: linear-gradient(180deg, #fff, #f5f5f5);
     border: 1px solid #ddd;
@@ -348,7 +357,7 @@ textarea {
     padding: 3px;
     transition: color 0.2s, border-color 0.2s;
 }
-textarea {
+.prow textarea {
     font-family: monospace;
 }
 textarea:disabled {
@@ -371,7 +380,7 @@ code {
 select {
     max-width: 100%;
 }
-textarea {
+textarea:not(.ace_text-input) {
     box-sizing: border-box;
     resize: vertical;
     tab-size: 4;
@@ -390,8 +399,8 @@ select:focus,
 select:hover,
 pre.ace_editor:hover,
 pre.ace_focus,
-textarea:focus,
-textarea:hover {
+textarea:not(.ace_text-input):focus,
+textarea:not(.ace_text-input):hover {
     border: 1px solid #888;
 }
 .op_buttons input[type="checkbox"],
@@ -544,12 +553,16 @@ button.alert {
     width: 210px;
 }
 .inpbutt {
-    float: left;
-    margin-bottom: 15px;
     width: 100%;
     display: flex;
     align-items: center;
-    margin-top: 1px;
+    position: sticky;
+    top: 50px;
+    background-color: inherit;
+    margin: 0;
+    padding: 12px 0 10px;
+    margin-top: -12px;
+    z-index: 10;
 }
 .inpbutt + div {
     clear: both;
@@ -675,13 +688,13 @@ span.clear_search:hover {
     position: relative;
     z-index: 1;
 }
-#sieve_container > div textarea {
+#sieve_container .rule_line > textarea {
     resize: vertical;
     min-height: 95px;
     resize: both;
     transition: min-height .1s;
 }
-.expand {
+textarea.expand {
     min-height: 500px;
     transition: min-height .2s;
 }
@@ -775,20 +788,6 @@ span.clear_search:hover {
 #locales_table td:last-child {
     text-align: center;
 }
-@media (max-width: 1024px) {
-    body {
-        width: 650px;
-    }
-    .prow input[type="text"] {
-        width: 245px;
-    }
-    .prow input[type="color"] + input[type="text"] {
-        width: 183px;
-    }
-    .sieve_shorter_inp {
-        width: 88.7% !important;
-    }
-}
 
 section.warning {
     width: calc(100% - 28px);
@@ -814,8 +813,8 @@ section.warning {
     align-items: center;
 }
 
-.rule_line textarea,
-.rule_line pre {
+.rule_line > textarea,
+.rule_line > pre {
     flex-basis: 100%;
 }
 

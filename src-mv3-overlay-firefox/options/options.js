@@ -284,7 +284,6 @@ var setDefault = function (query) {
 var load = function () {
     var fields = document.querySelectorAll("input[name*=_], select[name*=_], textarea[name*=_]"),
         i = fields.length,
-        j,
         m,
         fld,
         fld_type,
@@ -412,8 +411,8 @@ var save = async function () {
     // to avoid conflicts with EXTENSION
     prefs.keys.hz_open = "";
 
-    const sieveRepoInput = document.getElementById("sieveRepository");
-    if (sieveRepoInput) prefs.sieveRepository = sieveRepoInput.value.trim();
+    const sieveRepoInputSave = document.getElementById("sieveRepository");
+    if (sieveRepoInputSave) prefs.sieveRepository = sieveRepoInputSave.value.trim();
 
     await Port.send({ cmd: "savePrefs", prefs: prefs });
     await readCfg();
@@ -467,7 +466,7 @@ function onValueChange (e) {
     }
 
     if (value !== undefined && t.defValue !== undefined && t.defValue != value ||
-        t.hasOwnProperty("defChecked") && t.defChecked !== undefined && t.defChecked !== t.checked
+        t.defChecked !== undefined && t.defChecked !== t.checked
     ) {
         input_changes[id] = true;
     } else {
@@ -627,7 +626,9 @@ window.addEventListener(
             color_trans(e.target, null);
             var keys = document.body.querySelectorAll('input[name^="keys_"]');
             for (var i = 0; i < keys.length; ++i) {
-                if (keys[i].value.toUpperCase() === key.toUpperCase() && e.target !== keys[i]) {
+                if (keys[i].value.toUpperCase() === key.toUpperCase() &&
+                    e.target !== keys[i] && e.target.dataset.altshift === keys[i].dataset.altshift)
+                {
                     color_trans(e.target, "red");
                     color_trans(keys[i], "red");
                     return false;
