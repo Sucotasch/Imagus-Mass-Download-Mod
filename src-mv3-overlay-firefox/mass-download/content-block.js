@@ -148,6 +148,19 @@
         // PVI.stack keyed by the link itself — the UI is never touched.
         var _mdResolveCache = new Map(); // normalized url -> { ts, cands|null }
 
+        // The engine keeps ONE shared resolver timer (PVI.timers.resolver):
+        // every resolve() clears the pending one. Concurrent resolutions
+        // therefore cancel each other silently — only the last dispatched
+        // request ever completes. All resolver callers MUST go through this
+        // chain so items are scraped strictly one at a time, like the engine
+        // itself does when a user views items one by one.
+        var _mdChain = Promise.resolve();
+        var _mdSerialized = function (fn) {
+            var run = _mdChain.then(fn, fn);
+            _mdChain = run.catch(function () {});
+            return run;
+        };
+
         // Direct media files must NOT go through the resolver: find() would
         // either return them unchanged or match an unrelated rule. Only
         // page-links / extension-less urls need engine resolution.
@@ -378,7 +391,7 @@
             // load the preferred candidate (non-'#' rendition first).
             var loadViaResolve = function (m) {
                 if (_mdIsDirectMedia(m.dataset.mdSrc)) { settle(m, false); return; }
-                _mdResolveCandidates(m.dataset.mdSrc)
+                _mdSerialized(function () { return _mdResolveCandidates(m.dataset.mdSrc); })
                     .then(function (cands) {
                         if (!m.isConnected || !cands) { settle(m, false); return; }
                         var pick = null;
@@ -574,10 +587,11 @@
             // them to the service worker as GROUPS — findBestUrlWithValidation
             // downloads whichever variant actually answers with a media type
             // (the login-gated '#' original loses to its webp rendition there,
-            // exactly like in mass mode). Pool of 3, mirroring the scan's
-            // MAX_ACTIVE pacing.
+            // exactly like in mass mode). Strictly sequential: the engine's
+            // single resolver timer cannot serve parallel scrapes.
             var groups = [];
-            var nextIdx = 0, inFlight = 0, POOL = 3;
+            var unresolved = 0;
+            var nextIdx = 0;
             var finalize = function () {
                 if (groups.length > 0) {
                     Port.send({
@@ -591,6 +605,8 @@
                         Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + groups.length + ' item(s) queued.', done: true });
                     }
                 }
+                if (unresolved > 0)
+                    console.warn(cfg.app?.name + ': [gallery-save] ' + unresolved + ' item(s) could not be resolved and were skipped');
                 if (saveBtn) {
                     saveBtn.textContent = groups.length > 0 ? 'Queued \u2713' : 'Save';
                     saveBtn.disabled = groups.length === 0;
@@ -599,9 +615,8 @@
                 clearSelectionUi();
             };
             var launch = function () {
-                while (nextIdx < items.length && inFlight < POOL) {
+                while (nextIdx < items.length) {
                     (function (raw) {
-                        inFlight++;
                         nextIdx++;
                         var seedList = Array.isArray(raw) ? raw : _mdFlattenOne(raw);
                         var finishGroup = function (cands) {
@@ -621,22 +636,25 @@
                         if (seedList && seedList.length > 1) {
                             // already a variant pair — no resolution needed
                             finishGroup(seedList);
-                            inFlight--;
-                            launch();
                             return;
                         }
                         var probe = (seedList ? seedList[0] : raw).replace(/^#/, '');
-                        if (_mdIsDirectMedia(probe)) { finishGroup(null); inFlight--; launch(); return; }
-                        _mdResolveCandidates(probe)
-                            .then(finishGroup)
-                            .catch(function () { finishGroup(null); })
-                            .then(function () {
-                                inFlight--;
-                                launch();
-                            });
+                        if (_mdIsDirectMedia(probe)) { finishGroup(null); return; }
+                        _mdSerialized(function () { return _mdResolveCandidates(probe); })
+                            .then(function (cands) {
+                                // an item that cannot be resolved is a PAGE
+                                // link the engine refused to scrape — sending
+                                // it raw would just fail again with
+                                // "Server returned HTML page"; count it and
+                                // skip instead
+                                if (!cands) { unresolved++; return; }
+                                finishGroup(cands);
+                            })
+                            .catch(function () { unresolved++; });
                     })(items[nextIdx]);
                 }
-                if (nextIdx >= items.length && inFlight === 0) finalize();
+                // wait for the serialized chain to drain before finalizing
+                _mdChain.then(finalize, finalize);
             };
             launch();
         };
