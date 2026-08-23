@@ -1363,7 +1363,7 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
     let processedGroups = 0;
     let foundUrls = 0;
     for (const group of groups) {
-        if (!scanInProgress) break;
+        if (!scanInProgress) { console.warn(manifest.name + ': [md] groups aborted: session inactive'); break; }
         try {
             const pick = await findBestUrlWithValidation(group.urls, referer);
             const bestUrl = pick.best ? pick.best.url : null;

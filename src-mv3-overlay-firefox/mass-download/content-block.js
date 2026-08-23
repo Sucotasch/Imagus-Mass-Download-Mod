@@ -629,6 +629,8 @@
             var finishPart = function () {
                 pendingParts--;
                 if (pendingParts > 0) return;
+                // TEMP bisect logging — remove after gallery-save stabilizes
+                console.warn(cfg.app?.name + ': [gallery-save] finalize: batch=' + batch.length + ' links=' + links.length + ' groups=' + groups.length + ' unresolved=' + unresolved);
                 var queued = batch.length + groups.length;
                 if (!scanWasActive) {
                     // Everything is queued BEFORE this lands (ordered port),
