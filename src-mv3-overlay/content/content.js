@@ -693,6 +693,11 @@
                 // The resolved candidate GROUPS must reach the service worker
                 // BEFORE the session-complete marker: findBestUrlWithValidation
                 // validates each group and queues the winning variant.
+                // FIRE-AND-FORGET, like every other send here: Port.send
+                // returns undefined whenever a Port.listener is registered
+                // (PVI.onMessage always is), so chaining .then on its result
+                // threw TypeError right after the finalize log — aborting
+                // finishPart before the groups ever left the page.
                 if (groups.length > 0) {
                     Port.send({
                         cmd: 'resolveAndDownloadGroups',
