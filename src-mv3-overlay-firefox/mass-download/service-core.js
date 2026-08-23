@@ -277,6 +277,12 @@ function handleDownloadMass(msg, sender) {
 
 function handleResolveGroups(msg, sender) {
     // See handleDownloadMass: no session revive (Audit N-02).
+    // TEMP bisect: surface delivery + session state on the progress page.
+    sendToProgressTab({
+        cmd: 'updateStatus',
+        status: '[dbg] groups=' + (msg.groups ? msg.groups.length : 0) + ', sessionActive=' + scanInProgress,
+        done: false
+    });
     processUrlGroupsWithValidation(msg.groups, msg.referer, sender);
 }
 
@@ -1363,7 +1369,9 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
     let processedGroups = 0;
     let foundUrls = 0;
     for (const group of groups) {
-        if (!scanInProgress) { console.warn(manifest.name + ': [md] groups aborted: session inactive'); break; }
+            // TEMP bisect: make the silent abort visible on the progress page.
+            sendToProgressTab({ cmd: 'updateStatus', status: '[dbg] groups aborted: session inactive', done: true });
+            break;
         try {
             const pick = await findBestUrlWithValidation(group.urls, referer);
             const bestUrl = pick.best ? pick.best.url : null;
