@@ -635,11 +635,15 @@
                 // BEFORE the session-complete marker: findBestUrlWithValidation
                 // validates each group and queues the winning variant.
                 if (groups.length > 0) {
+                    // TEMP bisect: delivery outcome of THIS exact send.
                     Port.send({
                         cmd: 'resolveAndDownloadGroups',
                         groups: groups,
                         referer: window.location.href
-                    });
+                    }).then(
+                        function () { console.warn(cfg.app?.name + ': [gallery-save] groups delivered (' + groups.length + ')'); },
+                        function (e) { console.warn(cfg.app?.name + ': [gallery-save] groups SEND FAILED: ' + ((e && e.message) || e)); }
+                    );
                 }
                 var queued = batch.length + groups.length;
                 if (!scanWasActive) {
