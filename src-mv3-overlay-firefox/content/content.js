@@ -381,7 +381,9 @@
             autoRefreshedFor = albumId;
             refreshInFlight = true;
             updatePanel();          // button => 'Refreshing…'
-            dbgLog('refresh start: old ' + listFingerprint(PVI.stack[albumId]));
+            // ALWAYS-ON lifecycle log: the fingerprints prove whether a
+            // re-scrape produced a NEW url list or replayed the cached one.
+            console.warn(cfg.app?.name + ': [gallery-refresh] start; old ' + listFingerprint(PVI.stack[albumId]));
             delete PVI.stack[albumId];
             clearSelectionUi();     // fresh list => old selection invalid
             albumRef = null;        // stale list: Select all / Save no-op until rebuild
@@ -399,36 +401,49 @@
             try {
                 // find() itself schedules the scrape for res-rules (returns
                 // null then); a truthy result still goes through load().
-                // NOTE: the resolved handler registers the fresh album
-                // against PVI.resolving[d.id] (= el), NOT against the
-                // current PVI.TRG — so the scrape lands on OUR element even
-                // if the pointer drifted over the page meanwhile.
-                var src = PVI.find(el, PVI.x, PVI.y);
+                // NO COORDINATES on purpose: find(trg, x, y) runs
+                // getElementsFromPoint(x, y) and resolves against whatever
+                // sits under that point — during a manual Refresh those are
+                // the CLICK-ON-THE-BUTTON coords, so the scrape targeted a
+                // random grid cell / page node instead of our anchor and the
+                // fresh album never registered. The resolved handler binds
+                // the result to PVI.resolving[d.id] (= el), not to TRG, so
+                // dropping x/y is safe for pointer drift too.
+                var src = PVI.find(el);
                 if (src) PVI.load(src);
             } catch (ex) {
-                console.warn(cfg.app?.name + ': [gallery-refresh] ' + ex.message);
+                console.warn(cfg.app?.name + ': [gallery-refresh] find/load threw: ' + ex.message);
                 cancelRefreshPoll();
                 flashRefNote('Refresh failed');
                 return;
             }
-            // Poll for the fresh album, then FORCE a clean rebuild.
-            // v2 bugs fixed here:
-            // - NO "PVI.TRG !== el" abort — a mouse twitch over the page
-            //   used to kill the poll, freezing 'Refreshing…' and leaving
-            //   the stale grid in place;
-            // - gallery(0)+gallery(2) always: upstream gallery(2) SKIPS the
-            //   rebuild when GLR still has children (state 2<->1 toggles),
-            //   which is exactly how the stale dead-cell grid survived a
-            //   manual reopen while the fresh URLs sat unused in the stack.
+            // Poll for the fresh album. v2 notes kept:
+            // - NO "PVI.TRG !== el" abort — a mouse twitch over the page must
+            //   not kill the renewal;
+            // - rebuild happens ONLY while the user is still looking at OUR
+            //   grid (galleryState 2 + TRG === el). If they wandered off, we
+            //   do NOT yank the viewport back — the renewed list simply waits
+            //   in PVI.stack for the next gallery open. Forcing gallery(0)+
+            //   gallery(2) from the poll was the "refresh kicks me out of
+            //   the gallery" symptom.
             cancelRefreshPoll();
             var tries = 0;
             var retried = false;
             refreshPoll = setInterval(function () {
                 if (!refreshInFlight) { cancelRefreshPoll(); return; }
-                if (!el.isConnected) { cancelRefreshPoll(); updatePanel(); return; }
+                if (!el.isConnected) { console.warn(cfg.app?.name + ': [gallery-refresh] anchor removed — abort'); cancelRefreshPoll(); updatePanel(); return; }
                 if (el.IMGS_album && Array.isArray(PVI.stack[el.IMGS_album])) {
-                    dbgLog('refresh OK: new ' + listFingerprint(PVI.stack[el.IMGS_album]));
-                    cancelRefreshPatchAndRebuild(el);
+                    console.warn(cfg.app?.name + ': [gallery-refresh] OK; new ' + listFingerprint(PVI.stack[el.IMGS_album]));
+                    cancelRefreshPoll();
+                    if (PVI.galleryState === 2 && PVI.TRG === el && PVI.GLR && PVI.GLR.isConnected) {
+                        try {
+                            PVI.TRG = el;       // pin: gallery() reads TRG.IMGS_album
+                            PVI.gallery(0);     // wipe stale cells
+                            PVI.gallery(2);     // rebuild from the FRESH list (+decorate)
+                        } catch (_) {}
+                    } else {
+                        console.warn(cfg.app?.name + ': [gallery-refresh] grid closed/moved — list renewed for next open');
+                    }
                     updatePanel();
                 } else if (++tries > 50) {
                     // Residual race: resolve() keeps ONE shared timer
@@ -439,30 +454,18 @@
                     if (!retried && refreshPatch && refreshPatch.sends === 0) {
                         retried = true;
                         tries = 0;
-                        dbgLog('no resolve dispatched (shared resolver timer stolen) — retrying once');
+                        console.warn(cfg.app?.name + ': [gallery-refresh] no resolve dispatched — retrying once');
                         try {
-                            var src2 = PVI.find(el, PVI.x, PVI.y);
+                            var src2 = PVI.find(el);
                             if (src2) PVI.load(src2);
                         } catch (_) {}
                         return;
                     }
-                    dbgLog('refresh TIMEOUT after 15s — scrape did not register');
+                    console.warn(cfg.app?.name + ': [gallery-refresh] TIMEOUT after 15s (sends=' + (refreshPatch ? refreshPatch.sends : '?') + ') — scrape did not register');
                     cancelRefreshPoll();
                     flashRefNote('Refresh failed');
                 }
             }, 300);
-        };
-
-        // Rebuild helper kept separate so the success path reads linearly:
-        // patch must be DOWN before gallery(0)/gallery(2) — the rebuild must
-        // behave like an ordinary user-driven reopen.
-        var cancelRefreshPatchAndRebuild = function (el) {
-            cancelRefreshPoll();
-            try {
-                PVI.TRG = el;           // pin: gallery() reads TRG.IMGS_album
-                PVI.gallery(0);         // wipe stale cells + close
-                PVI.gallery(2);         // rebuild from the FRESH list (+decorate)
-            } catch (_) {}
         };
 
         var buildPanel = function () {
@@ -788,57 +791,59 @@
             if (!albumRef || selected.size === 0) return;
             var hiRes = !!(cfg && cfg.hz && cfg.hz.hiRes);
             var seen = new Set();
-            var batch = [];
+            var groups = [];
             selected.forEach(function (i) {
-                var raw = itemUrl(albumRef[i], hiRes);
-                if (!raw) return;
-                var isHd = raw[0] === '#';
-                var url = _resolveUrl(raw.replace(/^#/, ''));
-                var key = _normalizeUrlKey(url);
-                if (key && seen.has(key)) return;
-                if (key) seen.add(key);
-                // Sibling variant for the SW's one-shot fallback: when hiRes
-                // picks the '#'-prefixed original and validation rejects it
-                // (login page / 403), the rendition variant gets its own try
-                // instead of a dead item.
-                var altUrl = null;
-                var u0 = Array.isArray(albumRef[i]) ? albumRef[i][0] : null;
-                if (Array.isArray(u0)) {
-                    var hdV = null, sdV = null;
-                    for (var v = 0; v < u0.length; v++) {
-                        if (typeof u0[v] !== 'string') continue;
-                        if (u0[v][0] === '#') { if (!hdV) hdV = u0[v]; }
-                        else if (!sdV) sdV = u0[v];
-                    }
-                    var altRaw = isHd ? sdV : hdV;
-                    if (altRaw) altUrl = _resolveUrl(altRaw.replace(/^#/, ''));
+                // MASS-DOWNLOAD PARITY: every selected item goes out as a
+                // CANDIDATE GROUP — the exact message shape the page scan
+                // sends for ambiguous results (processNextInQueue ->
+                // resolveAndDownloadGroups). The service worker validates
+                // every candidate and downloads whichever one actually
+                // answers with a media type: a login-gated '#' original
+                // loses to its webp rendition there, instead of killing the
+                // item as "Server returned HTML page" when we pre-picked a
+                // single variant content-side.
+                var item = albumRef[i];
+                var cands = [];
+                var u = Array.isArray(item) ? item[0] : item;
+                if (Array.isArray(u)) {
+                    for (var v = 0; v < u.length; v++)
+                        if (typeof u[v] === 'string' && u[v]) cands.push(u[v]);
+                } else if (typeof u === 'string' && u) {
+                    cands.push(u);
+                    var cap = Array.isArray(item) && typeof item[1] === 'string' ? item[1] : '';
+                    var m = /<imagus-extension type="videojs" url="([^"]+)"/i.exec(cap);
+                    if (m) cands.push(m[1]);
                 }
-                batch.push({ url: url, isHd: isHd, altUrl: altUrl });
+                if (!cands.length) return;
+                // Order encodes hz.hiRes: validation keeps the FIRST
+                // survivor, so the preferred variant goes first.
+                cands.sort(function (a, b) {
+                    return (((b[0] === '#') === hiRes) ? 1 : 0) - (((a[0] === '#') === hiRes) ? 1 : 0);
+                });
+                var primKey = _normalizeUrlKey(_resolveUrl(cands[0].replace(/^#/, '')));
+                if (primKey && seen.has(primKey)) return;
+                if (primKey) seen.add(primKey);
+                // '#' markers stay on the urls — the SW strips them per
+                // candidate and records isHd, byte-for-byte like the scan.
+                groups.push({
+                    urls: cands.map(function (c) { return _resolveUrl(c); }),
+                    referer: window.location.href
+                });
             });
-            if (batch.length === 0) return;
-            dbgLog('save: ' + batch.length + ' item(s); list ' + listFingerprint(albumRef));
+            if (groups.length === 0) return;
+            console.warn(cfg.app?.name + ': [gallery-save] ' + groups.length + ' group(s); list ' + listFingerprint(albumRef));
             var scanWasActive = !!PVI.downloadAllActive;
             if (!scanWasActive) Port.send({ cmd: 'openDownloadProgress' });
-            (function sendChunk(from) {
-                var end = Math.min(from + CHUNK, batch.length);
-                for (var i = from; i < end; i++) {
-                    Port.send({
-                        cmd: 'downloadMass',
-                        url: batch[i].url,
-                        altUrl: batch[i].altUrl || undefined,
-                        referer: window.location.href,
-                        isHd: batch[i].isHd,
-                        elementInfo: { tag: 'gallery', src: '' }
-                    });
-                }
-                if (end < batch.length) {
-                    setTimeout(function () { sendChunk(end); }, 10);
-                } else if (!scanWasActive) {
-                    // Close the standalone session only after the LAST chunk —
-                    // premature done:true cancels in-flight queue work (N-02).
-                    Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + batch.length + ' item(s) queued.', done: true });
-                }
-            })(0);
+            Port.send({
+                cmd: 'resolveAndDownloadGroups',
+                groups: groups,
+                referer: window.location.href
+            });
+            if (!scanWasActive) {
+                // Groups are queued BEFORE this lands (ordered port), so
+                // done:true only marks content-scan-complete for the SW.
+                Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + groups.length + ' item(s) queued.', done: true });
+            }
             // Keep the bar while the gallery is open (it is part of the
             // window now); just reset the selection — re-saving the same
             // items within one session would be deduped as duplicates anyway.

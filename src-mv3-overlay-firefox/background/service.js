@@ -483,7 +483,10 @@ function handleMessage(message, sender, sendResponse) {
                         bin += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
                     sendResponse({ ok: true, mime, bytes: buf.length, b64: btoa(bin) });
                 } catch (e) {
-                    sendResponse({ ok: false, reason: (e && e.message) || "fetch failed" });
+                    const reason = (e && e.message) || "fetch failed";
+                    // Always-on ground truth for gallery cell diagnostics.
+                    console.warn(chrome.runtime.getManifest().name + ": fetchMedia FAILED (" + reason + ") " + msg.url);
+                    sendResponse({ ok: false, reason: reason });
                 }
             })();
             return true;
