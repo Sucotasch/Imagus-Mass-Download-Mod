@@ -177,6 +177,29 @@
         var panel = null;
         var CHUNK = 25;
 
+        // Diagnostics toggle (da.debugGallery, defaults.json — deliberately
+        // without an options UI: internal troubleshooting switch). The
+        // fingerprints before/after a Refresh answer the decisive question —
+        // did the re-scrape produce a NEW url list or replay the cached one;
+        // the cell-stage logs show which load context fails.
+        var dbgOn = function () { return !!(cfg && cfg.da && cfg.da.debugGallery); };
+        var dbgLog = function (msg) {
+            if (dbgOn()) console.info(cfg.app?.name + ': [gallery-diag] ' + msg);
+        };
+        // First 5 media urls -> tiny stable hash. Stack lists carry the idx
+        // pointer at [0], items start at [1].
+        var listFingerprint = function (list) {
+            if (!Array.isArray(list)) return 'null';
+            var s = '';
+            for (var i = 1; i < Math.min(list.length, 6); i++) {
+                var u = Array.isArray(list[i]) ? list[i][0] : list[i];
+                s += (typeof u === 'string' ? u : JSON.stringify(u)) + '|';
+            }
+            var h = 5381;
+            for (var j = 0; j < s.length; j++) h = ((h << 5) + h + s.charCodeAt(j)) & 0x7fffffff;
+            return 'n=' + (list.length - 1) + ' fp=' + h.toString(36);
+        };
+
         // Album item -> downloadable url (mirrors the scan's album capture):
         // [[sd,hd],cap] variants picked per hz.hiRes like PVI.set; videojs
         // extension markers in the caption carry the url when item[0] is empty.
@@ -274,9 +297,66 @@
         var refreshInFlight = false;
         var autoRefreshedFor = null;
 
+        // --- Silent re-resolve window (S1) + cache bypass tagging (S2) -----
+        // When the forced re-scrape lands, the resolved handler sees
+        // trg === PVI.TRG && trg.IMGS_album and calls PVI.album(idx) — which
+        // runs gallery(1) (HIDES the grid) and set() (shows item #1 as the
+        // zoom overlay). That is exactly the reported "Refresh kicks me out
+        // of the gallery into the album view". During OUR window:
+        // - PVI.set / PVI.show / PVI.album are capture no-ops FOR OUR ELEMENT
+        //   only (identity guard on PVI.TRG): a concurrent user hover keeps
+        //   its normal display path through the originals;
+        // - Port.send tags {cmd:'resolve'} with bypassCache:true so the SW
+        //   refetches the scraped page with cache:'reload' instead of
+        //   possibly replaying an HTTP-cached body with the SAME dead token
+        //   urls. {loop} continuations re-enter resolve() while the patch is
+        //   live, so every cycle of a multi-page scrape is covered.
+        // restore() runs on every exit path via cancelRefreshPoll().
+        var refreshPatch = null;    // originals: { set, show, album, send, sends }
+
+        var restoreRefreshPatch = function () {
+            if (!refreshPatch) return;
+            PVI.set = refreshPatch.set;
+            PVI.show = refreshPatch.show;
+            PVI.album = refreshPatch.album;
+            Port.send = refreshPatch.send;
+            refreshPatch = null;
+        };
+
+        var installRefreshPatch = function (el) {
+            if (refreshPatch) restoreRefreshPatch();
+            refreshPatch = {
+                set: PVI.set,
+                show: PVI.show,
+                album: PVI.album,
+                send: Port.send,
+                sends: 0            // resolve requests actually dispatched
+            };
+            PVI.set = function (src) {
+                if (PVI.TRG === el) { dbgLog('set() captured — silent refresh'); return; }
+                return refreshPatch.set.apply(this, arguments);
+            };
+            PVI.show = function (what) {
+                if (PVI.TRG === el) { dbgLog('show(' + what + ') captured'); return; }
+                return refreshPatch.show.apply(this, arguments);
+            };
+            PVI.album = function () {
+                if (PVI.TRG === el) { dbgLog('album() captured — grid stays up'); return; }
+                return refreshPatch.album.apply(this, arguments);
+            };
+            Port.send = function (msg) {
+                if (msg && msg.cmd === 'resolve') {
+                    msg.bypassCache = true;
+                    refreshPatch.sends++;
+                }
+                return refreshPatch.send.call(Port, msg);
+            };
+        };
+
         var cancelRefreshPoll = function () {
             if (refreshPoll) { clearInterval(refreshPoll); refreshPoll = null; }
             refreshInFlight = false;
+            restoreRefreshPatch();
         };
 
         // Re-resolve the album. e-hentai-style albums are scraped once at
@@ -310,12 +390,21 @@
             autoRefreshedFor = albumId;
             refreshInFlight = true;
             updatePanel();          // button => 'Refreshing…'
+            dbgLog('refresh start: old ' + listFingerprint(PVI.stack[albumId]));
             delete PVI.stack[albumId];
             clearSelectionUi();     // fresh list => old selection invalid
             albumRef = null;        // stale list: Select all / Save no-op until rebuild
             cellCount = 0;
             PVI.resetNode(el, false);
             if (el.IMGS_TRG) PVI.resetNode(el.IMGS_TRG, false);
+            // S3: res-rule pagination state lives ON PVI (rule functions are
+            // bound to PVI; e.g. the e-hentai rule accumulates `this.res`
+            // across {loop} cycles). A loop aborted by an exception or a
+            // failed fetch never runs its trailing `delete this.res`, so the
+            // next scrape would PREPEND those old dead items to the "fresh"
+            // list. Drop the accumulator before re-resolving.
+            try { delete PVI.res; } catch (_) {}
+            installRefreshPatch(el);
             try {
                 // find() itself schedules the scrape for res-rules (returns
                 // null then); a truthy result still goes through load().
@@ -327,6 +416,9 @@
                 if (src) PVI.load(src);
             } catch (ex) {
                 console.warn(cfg.app?.name + ': [gallery-refresh] ' + ex.message);
+                cancelRefreshPoll();
+                flashRefNote('Refresh failed');
+                return;
             }
             // Poll for the fresh album, then FORCE a clean rebuild.
             // v2 bugs fixed here:
@@ -339,22 +431,47 @@
             //   manual reopen while the fresh URLs sat unused in the stack.
             cancelRefreshPoll();
             var tries = 0;
+            var retried = false;
             refreshPoll = setInterval(function () {
-                if (!refreshInFlight) { clearInterval(refreshPoll); refreshPoll = null; return; }
+                if (!refreshInFlight) { cancelRefreshPoll(); return; }
                 if (!el.isConnected) { cancelRefreshPoll(); updatePanel(); return; }
                 if (el.IMGS_album && Array.isArray(PVI.stack[el.IMGS_album])) {
-                    cancelRefreshPoll();
-                    try {
-                        PVI.TRG = el;           // pin: gallery() reads TRG.IMGS_album
-                        PVI.gallery(0);         // wipe stale cells + close
-                        PVI.gallery(2);         // rebuild from the FRESH list (+decorate)
-                    } catch (_) {}
+                    dbgLog('refresh OK: new ' + listFingerprint(PVI.stack[el.IMGS_album]));
+                    cancelRefreshPatchAndRebuild(el);
                     updatePanel();
                 } else if (++tries > 50) {
+                    // Residual race: resolve() keeps ONE shared timer
+                    // (PVI.timers.resolver) — a competing resolution between
+                    // our find() and its delayed send silently CANCELS ours.
+                    // If not a single tagged request was dispatched, retry
+                    // the scrape exactly once before reporting failure.
+                    if (!retried && refreshPatch && refreshPatch.sends === 0) {
+                        retried = true;
+                        tries = 0;
+                        dbgLog('no resolve dispatched (shared resolver timer stolen) — retrying once');
+                        try {
+                            var src2 = PVI.find(el, PVI.x, PVI.y);
+                            if (src2) PVI.load(src2);
+                        } catch (_) {}
+                        return;
+                    }
+                    dbgLog('refresh TIMEOUT after 15s — scrape did not register');
                     cancelRefreshPoll();
                     flashRefNote('Refresh failed');
                 }
             }, 300);
+        };
+
+        // Rebuild helper kept separate so the success path reads linearly:
+        // patch must be DOWN before gallery(0)/gallery(2) — the rebuild must
+        // behave like an ordinary user-driven reopen.
+        var cancelRefreshPatchAndRebuild = function (el) {
+            cancelRefreshPoll();
+            try {
+                PVI.TRG = el;           // pin: gallery() reads TRG.IMGS_album
+                PVI.gallery(0);         // wipe stale cells + close
+                PVI.gallery(2);         // rebuild from the FRESH list (+decorate)
+            } catch (_) {}
         };
 
         var buildPanel = function () {
@@ -465,6 +582,7 @@
                         m.onload = function () { m.onload = m.onerror = null; settle(m, 2, objUrl); };
                         m.onerror = function () { m.onload = m.onerror = null; URL.revokeObjectURL(objUrl); settle(m, false); };
                         m.setAttribute('src', objUrl);
+                        dbgLog('cell[' + m.dataset.idx + '] page-fetch OK');
                     })
                     .catch(function () {
                         // CORS/network blocked the fetch too — every load
@@ -472,6 +590,7 @@
                         // (expired/consumed token). Ask for ONE album
                         // re-resolve per album id (the latch lives inside
                         // refreshAlbum) — a fresh scrape brings fresh tokens.
+                        dbgLog('cell[' + m.dataset.idx + '] page-fetch FAILED — all contexts exhausted');
                         settle(m, false);
                         setTimeout(function () { refreshAlbum(true); }, 500);
                     });
@@ -494,6 +613,7 @@
                     m.removeEventListener('error', onFail);
                     if (!m.dataset.mdStage) {
                         // stage 1: one delayed retry for transient failures
+                        dbgLog('cell[' + m.dataset.idx + '] direct load failed -> retry');
                         m.dataset.mdStage = '1';
                         setTimeout(function () {
                             if (!m.isConnected) { settle(m, false); return; }
@@ -505,6 +625,7 @@
                     } else if (!m.dataset.mdStage2) {
                         // stage 2: page-context fetch -> blob (proven path
                         // for hotlink-protected hosts)
+                        dbgLog('cell[' + m.dataset.idx + '] retry failed -> page-fetch');
                         m.dataset.mdStage2 = '1';
                         active++;
                         loadViaPageFetch(m);
@@ -628,6 +749,7 @@
                 batch.push({ url: url, isHd: isHd });
             });
             if (batch.length === 0) return;
+            dbgLog('save: ' + batch.length + ' item(s); list ' + listFingerprint(albumRef));
             var scanWasActive = !!PVI.downloadAllActive;
             if (!scanWasActive) Port.send({ cmd: 'openDownloadProgress' });
             (function sendChunk(from) {

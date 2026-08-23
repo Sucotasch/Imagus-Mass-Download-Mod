@@ -500,11 +500,21 @@ function handleMessage(message, sender, sendResponse) {
                 data.params.url = [urlParts[1], postData];
             }
 
-            fetch(msg.url, {
+            const fetchOpts = {
                 method: postData ? "POST" : "GET",
                 body: postData,
                 headers: postData ? { "Content-Type": "application/x-www-form-urlencoded" } : {},
-            })
+            };
+            // Mass-download gallery Refresh tags its re-resolve requests with
+            // bypassCache: a plain fetch could replay an HTTP-cached page
+            // body — i.e. the SAME expired token URLs the refresh is trying
+            // to replace. 'reload' forces a network round-trip. Upstream
+            // flows never set the flag and keep default caching.
+            if (msg.bypassCache) {
+                fetchOpts.cache = "reload";
+                console.warn(chrome.runtime.getManifest().name + ": resolve (bypassCache) " + msg.url);
+            }
+            fetch(msg.url, fetchOpts)
                 .then((fetchResp) => {
                     const contentType = fetchResp.headers.get("Content-Type");
                     if (/^(image|video|audio)\//i.test(contentType)) {
