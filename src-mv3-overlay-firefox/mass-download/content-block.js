@@ -133,6 +133,108 @@
             return (typeof u === 'string' && u) ? u : null;
         };
 
+        // --- Lazy item resolver (mass-download parity) ----------------------
+        // Stack items can be direct media urls, ['#'-original, rendition]
+        // pairs, or PAGE links (e-hentai '/s/<imgkey>/<gid>-<n>' viewer urls)
+        // that the engine resolves only when the item is actually VIEWED.
+        // Shipping such links straight to the service worker yields
+        // "Server returned HTML page" (they are pages, not files) and broken
+        // grid previews. This helper runs one item through the SAME pipeline
+        // a thumbnail link takes during mass download: a synthetic find()
+        // trigger. Upstream itself uses this exact pattern for {loop}
+        // continuations in its resolved handler. For a target that is not
+        // PVI.TRG that handler is silent-by-design: the result lands on the
+        // fake element (IMGS_c_resolved) or registers as a mini-album in
+        // PVI.stack keyed by the link itself — the UI is never touched.
+        var _mdResolveCache = new Map(); // normalized url -> { ts, cands|null }
+
+        // Direct media files must NOT go through the resolver: find() would
+        // either return them unchanged or match an unrelated rule. Only
+        // page-links / extension-less urls need engine resolution.
+        var _mdIsDirectMedia = function (u) {
+            if (typeof u !== 'string') return true;
+            if (u.slice(0, 5) === 'data:' || u.slice(0, 5) === 'blob:') return true;
+            return /\.(?:jpe?g|png|gif|webp|bmp|avif|jfif|svg)(?:[?#]|$)/i.test(u)
+                || /\.(?:mp4|webm|m4v|mov|ogv|mkv|mp3|wav|flac|ogg|m4a)(?:[?#]|$)/i.test(u);
+        };
+
+        var _mdFlattenCandidates = function (into, val) {
+            if (Array.isArray(val)) {
+                // caption-shaped item [[variants], title]: unwrap once
+                if (Array.isArray(val[0])) val = val[0];
+                for (var i = 0; i < val.length; i++) _mdFlattenCandidates(into, val[i]);
+                return;
+            }
+            if (typeof val === 'string' && val && into.indexOf(val) === -1) into.push(val);
+        };
+
+        var _mdExtractFromFake = function (fake) {
+            // A registered mini-album carries the FULL variant lists —
+            // prefer it over a possibly single-variant IMGS_c_resolved.
+            if (fake.IMGS_album && Array.isArray(PVI.stack[fake.IMGS_album])) {
+                var list = PVI.stack[fake.IMGS_album], out = [];
+                for (var i = 1; i < list.length; i++) _mdFlattenCandidates(out, list[i]);
+                if (out.length) return out;
+            }
+            if (fake.IMGS_c_resolved !== undefined) {
+                var out2 = [];
+                _mdFlattenCandidates(out2, fake.IMGS_c_resolved);
+                if (out2.length) return out2;
+            }
+            return null;
+        };
+
+        var _mdResolveCandidates = function (url) {
+            return new Promise(function (resolve) {
+                var key = _normalizeUrlKey(url);
+                var hit = key ? _mdResolveCache.get(key) : null;
+                if (hit && hit.cands) return resolve(hit.cands);
+                // negative results are cached briefly so a failing item cannot
+                // hammer the resolver from both the grid and Save
+                if (hit && !hit.cands && Date.now() - hit.ts < 30000) return resolve(null);
+                var fake = { href: url, IMGS_TRG: PVI.TRG || null };
+                var done = false;
+                var poll = null, timer = null;
+                var finish = function (cands) {
+                    if (done) return;
+                    done = true;
+                    clearInterval(poll);
+                    clearTimeout(timer);
+                    if (key) _mdResolveCache.set(key, { ts: Date.now(), cands: cands });
+                    resolve(cands);
+                };
+                var immediate;
+                try {
+                    immediate = PVI.find(fake);
+                } catch (ex) {
+                    finish(null);
+                    return;
+                }
+                if (immediate === false || immediate === 1) { finish(null); return; }
+                if (immediate) {
+                    // answered synchronously: either a stack replay
+                    // (resolve() set fake.IMGS_album and returned the current
+                    // media url) or a direct src — prefer the album form,
+                    // which carries every variant.
+                    finish(_mdExtractFromFake(fake) || _mdFlattenOne(immediate));
+                    return;
+                }
+                // async: the engine scheduled the scrape; poll our element.
+                var timeoutMs = Math.max(3, (cfg && cfg.da && cfg.da.resolutionTimeout) || 8) * 1000;
+                poll = setInterval(function () {
+                    var cands = _mdExtractFromFake(fake);
+                    if (cands) finish(cands);
+                }, 150);
+                timer = setTimeout(function () { finish(_mdExtractFromFake(fake)); }, timeoutMs);
+            });
+        };
+
+        var _mdFlattenOne = function (res) {
+            var out = [];
+            _mdFlattenCandidates(out, res);
+            return out.length ? out : null;
+        };
+
         var ensureCss = function () {
             var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
             if (!sr || sr.getElementById('md-gallery-style')) return;
@@ -270,6 +372,28 @@
             };
 
             // Route one media element through the fallback chain.
+            // Stage 2 (resolver): the url may be a PAGE link (e-hentai
+            // '/s/<imgkey>/<gid>-<n>' items) rather than a file. Resolve it
+            // through the engine exactly like a mass-download thumbnail, then
+            // load the preferred candidate (non-'#' rendition first).
+            var loadViaResolve = function (m) {
+                if (_mdIsDirectMedia(m.dataset.mdSrc)) { settle(m, false); return; }
+                _mdResolveCandidates(m.dataset.mdSrc)
+                    .then(function (cands) {
+                        if (!m.isConnected || !cands) { settle(m, false); return; }
+                        var pick = null;
+                        for (var i = 0; i < cands.length; i++)
+                            if (cands[i][0] !== '#') { pick = cands[i]; break; }
+                        if (!pick) pick = cands[0];
+                        pick = pick.replace(/^#/, '');
+                        if (pick.indexOf('&amp;') !== -1) pick = pick.replace(/&amp;/g, '&');
+                        m.dataset.mdSrc = pick;
+                        armLoad(m);
+                        m.setAttribute('src', pick);
+                    })
+                    .catch(function () { settle(m, false); });
+            };
+
             var loadViaPageFetch = function (m) {
                 var url = m.dataset.mdSrc;
                 fetch(url, { credentials: 'include' })
@@ -317,9 +441,14 @@
                         }, 1500);
                         settle(m, false); // release the slot during the wait
                     } else if (!m.dataset.mdStage2) {
-                        // stage 2: page-context fetch -> blob (proven path
-                        // for hotlink-protected hosts)
+                        // stage 2: resolve page-links into real media urls
                         m.dataset.mdStage2 = '1';
+                        active++;
+                        loadViaResolve(m);
+                        settle(m, false); // slot managed by the resolver chain
+                    } else if (!m.dataset.mdStage3) {
+                        // stage 3: last resort — page-context blob fetch
+                        m.dataset.mdStage3 = '1';
                         active++;
                         loadViaPageFetch(m);
                         settle(m, false); // slot managed by the fetch chain
@@ -416,49 +545,100 @@
             if (!albumRef || selected.size === 0) return;
             var hiRes = !!(cfg && cfg.hz && cfg.hz.hiRes);
             var seen = new Set();
-            var batch = [];
+            var items = [];
             selected.forEach(function (i) {
-                var raw = itemUrl(albumRef[i], hiRes);
-                if (!raw) return;
-                var isHd = raw[0] === '#';
-                var url = _resolveUrl(raw.replace(/^#/, ''));
-                var key = _normalizeUrlKey(url);
+                // collect EVERY variant of the item (not one picked variant):
+                // the group lets the SW fall back to the working rendition
+                var item = albumRef[i];
+                var cands = [];
+                _mdFlattenCandidates(cands, Array.isArray(item) ? item[0] : item);
+                if (!cands.length) {
+                    // videojs marker fallback carried in the caption
+                    var cap = Array.isArray(item) && typeof item[1] === 'string' ? item[1] : '';
+                    var m = /<imagus-extension type="videojs" url="([^"]+)"/i.exec(cap);
+                    if (m) cands.push(m[1]);
+                }
+                if (!cands.length) return;
+                var key = _normalizeUrlKey(_resolveUrl(cands[0].replace(/^#/, '')));
                 if (key && seen.has(key)) return;
                 if (key) seen.add(key);
-                batch.push({ url: url, isHd: isHd });
+                items.push(cands.length === 1 ? cands[0] : cands);
             });
-            if (batch.length === 0) return;
+            if (items.length === 0) return;
             var scanWasActive = !!PVI.downloadAllActive;
             if (!scanWasActive) Port.send({ cmd: 'openDownloadProgress' });
-            (function sendChunk(from) {
-                var end = Math.min(from + CHUNK, batch.length);
-                for (var i = from; i < end; i++) {
+            var saveBtn = panel ? panel.querySelector('[data-a="save"]') : null;
+            if (saveBtn) { saveBtn.textContent = 'Resolving\u2026'; saveBtn.disabled = true; }
+            // MASS-DOWNLOAD PARITY: resolve every selected item through the
+            // engine (page-links become candidate pairs), then hand ALL of
+            // them to the service worker as GROUPS — findBestUrlWithValidation
+            // downloads whichever variant actually answers with a media type
+            // (the login-gated '#' original loses to its webp rendition there,
+            // exactly like in mass mode). Pool of 3, mirroring the scan's
+            // MAX_ACTIVE pacing.
+            var groups = [];
+            var nextIdx = 0, inFlight = 0, POOL = 3;
+            var finalize = function () {
+                if (groups.length > 0) {
                     Port.send({
-                        cmd: 'downloadMass',
-                        url: batch[i].url,
-                        referer: window.location.href,
-                        isHd: batch[i].isHd,
-                        elementInfo: { tag: 'gallery', src: '' }
+                        cmd: 'resolveAndDownloadGroups',
+                        groups: groups,
+                        referer: window.location.href
                     });
+                    if (!scanWasActive) {
+                        // Groups are queued BEFORE this lands (ordered port),
+                        // so done:true only marks content-scan-complete.
+                        Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + groups.length + ' item(s) queued.', done: true });
+                    }
                 }
-                if (end < batch.length) {
-                    setTimeout(function () { sendChunk(end); }, 10);
-                } else if (!scanWasActive) {
-                    // Close the standalone session only after the LAST chunk —
-                    // premature done:true cancels in-flight queue work (N-02).
-                    Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + batch.length + ' item(s) queued.', done: true });
+                if (saveBtn) {
+                    saveBtn.textContent = groups.length > 0 ? 'Queued \u2713' : 'Save';
+                    saveBtn.disabled = groups.length === 0;
+                    setTimeout(updatePanel, 1500);
                 }
-            })(0);
-            // Keep the bar while the gallery is open (it is part of the
-            // window now); just reset the selection — re-saving the same
-            // items within one session would be deduped as duplicates anyway.
-            var save = panel ? panel.querySelector('[data-a="save"]') : null;
-            if (save) {
-                save.textContent = 'Queued \u2713';
-                save.disabled = true;
-                setTimeout(function () { updatePanel(); }, 1500);
-            }
-            clearSelectionUi();
+                clearSelectionUi();
+            };
+            var launch = function () {
+                while (nextIdx < items.length && inFlight < POOL) {
+                    (function (raw) {
+                        inFlight++;
+                        nextIdx++;
+                        var seedList = Array.isArray(raw) ? raw : _mdFlattenOne(raw);
+                        var finishGroup = function (cands) {
+                            var urls = _mdFlattenOne(cands) || seedList || [String(raw).replace(/^#/, '')];
+                            // order encodes hz.hiRes: the SW keeps the FIRST
+                            // candidate that validates, so the preferred
+                            // variant goes first
+                            urls.sort(function (a, b) {
+                                return (((b.charAt(0) === '#') === hiRes) ? 1 : 0)
+                                     - (((a.charAt(0) === '#') === hiRes) ? 1 : 0);
+                            });
+                            groups.push({
+                                urls: urls.map(function (u) { return _resolveUrl(u); }),
+                                referer: window.location.href
+                            });
+                        };
+                        if (seedList && seedList.length > 1) {
+                            // already a variant pair — no resolution needed
+                            finishGroup(seedList);
+                            inFlight--;
+                            launch();
+                            return;
+                        }
+                        var probe = (seedList ? seedList[0] : raw).replace(/^#/, '');
+                        if (_mdIsDirectMedia(probe)) { finishGroup(null); inFlight--; launch(); return; }
+                        _mdResolveCandidates(probe)
+                            .then(finishGroup)
+                            .catch(function () { finishGroup(null); })
+                            .then(function () {
+                                inFlight--;
+                                launch();
+                            });
+                    })(items[nextIdx]);
+                }
+                if (nextIdx >= items.length && inFlight === 0) finalize();
+            };
+            launch();
         };
 
         var origGallery = PVI.gallery;
