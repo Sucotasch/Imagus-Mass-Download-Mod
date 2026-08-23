@@ -631,6 +631,16 @@
                 if (pendingParts > 0) return;
                 // TEMP bisect logging — remove after gallery-save stabilizes
                 console.warn(cfg.app?.name + ': [gallery-save] finalize: batch=' + batch.length + ' links=' + links.length + ' groups=' + groups.length + ' unresolved=' + unresolved);
+                // The resolved candidate GROUPS must reach the service worker
+                // BEFORE the session-complete marker: findBestUrlWithValidation
+                // validates each group and queues the winning variant.
+                if (groups.length > 0) {
+                    Port.send({
+                        cmd: 'resolveAndDownloadGroups',
+                        groups: groups,
+                        referer: window.location.href
+                    });
+                }
                 var queued = batch.length + groups.length;
                 if (!scanWasActive) {
                     // Everything is queued BEFORE this lands (ordered port),
