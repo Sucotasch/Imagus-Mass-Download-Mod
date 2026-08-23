@@ -506,6 +506,10 @@ function handleMessage(message, sender, sendResponse) {
                 headers: postData ? { "Content-Type": "application/x-www-form-urlencoded" } : {},
             })
                 .then((fetchResp) => {
+                    // Ground truth for gallery item resolution: what the
+                    // /s/ page fetch actually returns (status + type).
+                    if (/\/s\/\w+\/\d+-\d+/.test(msg.url))
+                        console.warn(chrome.runtime.getManifest().name + ": resolve fetch " + msg.url + " -> " + fetchResp.status + " " + (fetchResp.headers.get("Content-Type") || "?"));
                     const contentType = fetchResp.headers.get("Content-Type");
                     if (/^(image|video|audio)\//i.test(contentType)) {
                         data.m = msg.url;
