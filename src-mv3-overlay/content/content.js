@@ -332,18 +332,9 @@
                 send: Port.send,
                 sends: 0            // resolve requests actually dispatched
             };
-            PVI.set = function (src) {
-                if (PVI.TRG === el) { dbgLog('set() captured — silent refresh'); return; }
-                return refreshPatch.set.apply(this, arguments);
-            };
-            PVI.show = function (what) {
-                if (PVI.TRG === el) { dbgLog('show(' + what + ') captured'); return; }
-                return refreshPatch.show.apply(this, arguments);
-            };
-            PVI.album = function () {
-                if (PVI.TRG === el) { dbgLog('album() captured — grid stays up'); return; }
-                return refreshPatch.album.apply(this, arguments);
-            };
+            PVI.set = function () { dbgLog('set() captured (silent refresh window)'); };
+            PVI.show = function (what) { dbgLog('show(' + what + ') captured'); };
+            PVI.album = function () { dbgLog('album() captured'); };
             Port.send = function (msg) {
                 if (msg && msg.cmd === 'resolve') {
                     msg.bypassCache = true;
@@ -515,7 +506,12 @@
             // The bar lives INSIDE GLR: state 0 wipes it with innerHTML="".
             // Only drop the stale reference; state 1 hides it via GLR display.
             panel = null;
-            cancelRefreshPoll();    // gallery gone => no reopen poll may fire later
+            // An IN-FLIGHT Refresh must survive close: when the fresh album
+            // registers, the poll pins TRG and REOPENS the grid
+            // (gallery(0)+gallery(2)). Cancelling here turned every mouse-out
+            // during the multi-second scrape into "refresh kicked me out of
+            // the gallery" — the grid never came back.
+            if (!refreshInFlight) cancelRefreshPoll();
             if (clearSelection) {
                 selected.clear();
                 albumRef = null;
@@ -569,6 +565,32 @@
             };
 
             // Route one media element through the fallback chain.
+            // Stage 2 (SW) loads in the SAME context the mass-download filter
+            // validates in: extension-side GET with session cookies
+            // (credentials:'include') and a Content-Type gate — a login page
+            // comes back as ok:false instead of a broken icon. Bytes travel
+            // base64 so the payload stays JSON-safe over the message bus;
+            // cells are paced (MAX_ACTIVE) and capped SW-side.
+            var loadViaSw = function (m) {
+                Port.send({ cmd: 'fetchMedia', url: m.dataset.mdSrc })
+                    .then(function (r) {
+                        if (!r || !r.ok) throw new Error(r && r.reason || 'sw fetch failed');
+                        if (!m.isConnected) { settle(m, false); return; }
+                        var bin = atob(r.b64);
+                        var arr = new Uint8Array(bin.length);
+                        for (var k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+                        var objUrl = URL.createObjectURL(new Blob([arr], { type: r.mime }));
+                        m.onload = function () { m.onload = m.onerror = null; settle(m, 2, objUrl); };
+                        m.onerror = function () { m.onload = m.onerror = null; URL.revokeObjectURL(objUrl); settle(m, false); };
+                        m.setAttribute('src', objUrl);
+                        dbgLog('cell[' + m.dataset.idx + '] SW fetch OK (' + r.mime + ')');
+                    })
+                    .catch(function (e) {
+                        dbgLog('cell[' + m.dataset.idx + '] SW fetch FAILED: ' + (e && e.message));
+                        settle(m, false);
+                    });
+            };
+
             var loadViaPageFetch = function (m) {
                 var url = m.dataset.mdSrc;
                 fetch(url, { credentials: 'include' })
@@ -623,10 +645,16 @@
                         }, 1500);
                         settle(m, false); // release the slot during the wait
                     } else if (!m.dataset.mdStage2) {
-                        // stage 2: page-context fetch -> blob (proven path
-                        // for hotlink-protected hosts)
-                        dbgLog('cell[' + m.dataset.idx + '] retry failed -> page-fetch');
+                        // stage 2: SW-mediated fetch (mass-download context)
+                        dbgLog('cell[' + m.dataset.idx + '] retry failed -> SW fetch');
                         m.dataset.mdStage2 = '1';
+                        active++;
+                        loadViaSw(m);
+                        settle(m, false); // slot managed by the fetch chain
+                    } else if (!m.dataset.mdStage3) {
+                        // stage 3: page-context fetch -> blob (last resort)
+                        dbgLog('cell[' + m.dataset.idx + '] SW fetch failed -> page-fetch');
+                        m.dataset.mdStage3 = '1';
                         active++;
                         loadViaPageFetch(m);
                         settle(m, false); // slot managed by the fetch chain
@@ -664,13 +692,36 @@
                 var i = parseInt(m.dataset.idx, 10);
                 var item = list[i];
                 var hasPreview = Array.isArray(item) && !!item[2];
-                var s = m.getAttribute('src');
-                if (hasPreview || !s) {
+                if (hasPreview || !item) {
                     if (io) io.unobserve(m);
                     return; // small previews are not the limited resource
                 }
+                // VARIANT SELECTION — mass-download parity. Upstream builds a
+                // cell with a blind src[0]; for [#original, rendition] pairs
+                // that is the '#'-prefixed original, which many hosts answer
+                // with a LOGIN PAGE (text/html) instead of a file, and the
+                // cell dies with no alternative tried. itemUrl() applies the
+                // same pick as the scan's album capture / Save: hiRes-aware,
+                // non-# preferred, protocol-relative resolved. Cells always
+                // prefer the DISPLAY rendition (hiRes=false): a fullimg
+                // original can be a 50MB zip — wrong thing for a grid cell;
+                // Save still honors hz.hiRes via its own itemUrl call.
+                var raw = itemUrl(item, false);
+                if (!raw) { if (io) io.unobserve(m); return; }
+                var s = _resolveUrl(raw.replace(/^#/, ''));
                 if (s.indexOf('&amp;') !== -1) s = s.replace(/&amp;/g, '&');
                 m.removeAttribute('src');
+                m.dataset.mdStage = '';
+                m.dataset.mdStage2 = '';
+                m.dataset.mdStage3 = '';
+                // A variant pick may change the media kind (video cell <->
+                // image url): swap the element so load/error events apply.
+                if (m.localName === 'video' && !/\.(mp4|webm|mov|m4v|ogv)([?#]|$)/i.test(s)) {
+                    var im = doc.createElement('img');
+                    im.dataset.idx = m.dataset.idx;
+                    m.replaceWith(im);
+                    m = im;
+                }
                 m.dataset.mdSrc = s;
                 if (io) io.observe(m);
                 else queue.push(m); // very old engines: pace without laziness
@@ -746,7 +797,23 @@
                 var key = _normalizeUrlKey(url);
                 if (key && seen.has(key)) return;
                 if (key) seen.add(key);
-                batch.push({ url: url, isHd: isHd });
+                // Sibling variant for the SW's one-shot fallback: when hiRes
+                // picks the '#'-prefixed original and validation rejects it
+                // (login page / 403), the rendition variant gets its own try
+                // instead of a dead item.
+                var altUrl = null;
+                var u0 = Array.isArray(albumRef[i]) ? albumRef[i][0] : null;
+                if (Array.isArray(u0)) {
+                    var hdV = null, sdV = null;
+                    for (var v = 0; v < u0.length; v++) {
+                        if (typeof u0[v] !== 'string') continue;
+                        if (u0[v][0] === '#') { if (!hdV) hdV = u0[v]; }
+                        else if (!sdV) sdV = u0[v];
+                    }
+                    var altRaw = isHd ? sdV : hdV;
+                    if (altRaw) altUrl = _resolveUrl(altRaw.replace(/^#/, ''));
+                }
+                batch.push({ url: url, isHd: isHd, altUrl: altUrl });
             });
             if (batch.length === 0) return;
             dbgLog('save: ' + batch.length + ' item(s); list ' + listFingerprint(albumRef));
@@ -758,6 +825,7 @@
                     Port.send({
                         cmd: 'downloadMass',
                         url: batch[i].url,
+                        altUrl: batch[i].altUrl || undefined,
                         referer: window.location.href,
                         isHd: batch[i].isHd,
                         elementInfo: { tag: 'gallery', src: '' }

@@ -452,6 +452,36 @@ function handleMessage(message, sender, sendResponse) {
                 .catch(() => {});   // Audit N-23: no unhandled rejection on 404/network error
             return true;
 
+        case "fetchMedia": {
+            // Gallery-grid cell loading through the SAME context the
+            // mass-download filter validates in (B): extension-side GET with
+            // session cookies — a bare <img> from the page can get a login
+            // page instead of the file — plus a Content-Type gate so
+            // text/html is rejected as a failed candidate, never rendered.
+            // Bytes travel base64: message payloads stay JSON-safe over the
+            // bus regardless of structured-clone support; cells are paced
+            // content-side and capped here, so the ~33% overhead is fine.
+            const MAX_CELL_BYTES = 64 * 1024 * 1024;
+            (async () => {
+                try {
+                    const resp = await fetch(msg.url, { credentials: "include" });
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
+                    const mime = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+                    if (!/^(image|video)\//.test(mime)) throw new Error("type " + (mime || "?"));
+                    const buf = new Uint8Array(await resp.arrayBuffer());
+                    if (buf.length > MAX_CELL_BYTES) throw new Error("too large");
+                    let bin = "";
+                    const CH = 0x8000;
+                    for (let i = 0; i < buf.length; i += CH)
+                        bin += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
+                    sendResponse({ ok: true, mime, bytes: buf.length, b64: btoa(bin) });
+                } catch (e) {
+                    sendResponse({ ok: false, reason: (e && e.message) || "fetch failed" });
+                }
+            })();
+            return true;
+        }
+
         case "open":
             openUrl(msg, sender);
             break;
