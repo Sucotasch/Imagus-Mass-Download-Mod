@@ -264,7 +264,7 @@
                 // negative results are cached briefly so a failing item cannot
                 // hammer the resolver from both the grid and Save
                 if (hit && !hit.cands && Date.now() - hit.ts < 30000) return resolve(null);
-                var fake = { href: url, IMGS_TRG: PVI.TRG || null };
+                var fake = { href: url };
                 var done = false;
                 var poll = null, timer = null;
                 var finish = function (cands) {
@@ -279,12 +279,12 @@
                 try {
                     immediate = PVI.find(fake);
                 } catch (ex) {
-                    console.warn(cfg.app?.name + ': [gallery-resolve] find threw for ' + url);
+                    console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
                     finish(null);
                     return;
                 }
                 if (immediate === false || immediate === 1) {
-                    console.warn(cfg.app?.name + ': [gallery-resolve] no rule matched: ' + url);
+                    console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
                     finish(null);
                     return;
                 }
@@ -293,22 +293,17 @@
                     // (resolve() set fake.IMGS_album and returned the current
                     // media url) or a direct src — prefer the album form,
                     // which carries every variant.
-                    var syncCands = _mdExtractFromFake(fake) || _mdFlattenOne(immediate);
-                    console.warn(cfg.app?.name + ': [gallery-resolve] sync ' + (syncCands ? syncCands.length : 0) + ' cand(s): ' + url);
-                    finish(syncCands);
+                    finish(_mdExtractFromFake(fake) || _mdFlattenOne(immediate));
                     return;
                 }
                 // async: the engine scheduled the scrape; poll our element.
                 var timeoutMs = Math.max(3, (cfg && cfg.da && cfg.da.resolutionTimeout) || 8) * 1000;
                 poll = setInterval(function () {
                     var cands = _mdExtractFromFake(fake);
-                    if (cands) {
-                        console.warn(cfg.app?.name + ': [gallery-resolve] OK (' + cands.length + '): ' + url);
-                        finish(cands);
-                    }
+                    if (cands) finish(cands);
                 }, 150);
                 timer = setTimeout(function () {
-                    console.warn(cfg.app?.name + ': [gallery-resolve] TIMEOUT — scrape never registered: ' + url);
+                    console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
                     finish(_mdExtractFromFake(fake));
                 }, timeoutMs);
             });

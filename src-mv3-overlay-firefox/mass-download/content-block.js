@@ -205,7 +205,7 @@
                 // negative results are cached briefly so a failing item cannot
                 // hammer the resolver from both the grid and Save
                 if (hit && !hit.cands && Date.now() - hit.ts < 30000) return resolve(null);
-                var fake = { href: url, IMGS_TRG: PVI.TRG || null };
+                var fake = { href: url };
                 var done = false;
                 var poll = null, timer = null;
                 var finish = function (cands) {
@@ -220,10 +220,15 @@
                 try {
                     immediate = PVI.find(fake);
                 } catch (ex) {
+                    console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
                     finish(null);
                     return;
                 }
-                if (immediate === false || immediate === 1) { finish(null); return; }
+                if (immediate === false || immediate === 1) {
+                    console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
+                    finish(null);
+                    return;
+                }
                 if (immediate) {
                     // answered synchronously: either a stack replay
                     // (resolve() set fake.IMGS_album and returned the current
@@ -238,7 +243,10 @@
                     var cands = _mdExtractFromFake(fake);
                     if (cands) finish(cands);
                 }, 150);
-                timer = setTimeout(function () { finish(_mdExtractFromFake(fake)); }, timeoutMs);
+                timer = setTimeout(function () {
+                    console.warn(cfg.app?.name + ': [gallery-resolve] failed: ' + url);
+                    finish(_mdExtractFromFake(fake));
+                }, timeoutMs);
             });
         };
 
@@ -578,6 +586,9 @@
                 items.push(cands.length === 1 ? cands[0] : cands);
             });
             if (items.length === 0) return;
+            // A previous failed attempt must not poison this one: drop the
+            // negative cache entries so every item gets a fresh try.
+            _mdResolveCache.forEach(function (v, k) { if (!v.cands) _mdResolveCache.delete(k); });
             var scanWasActive = !!PVI.downloadAllActive;
             if (!scanWasActive) Port.send({ cmd: 'openDownloadProgress' });
             var saveBtn = panel ? panel.querySelector('[data-a="save"]') : null;
