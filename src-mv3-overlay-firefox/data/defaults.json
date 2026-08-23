@@ -105,8 +105,7 @@
 		"downloadOnUnknown": true,
 		"resolutionTimeout": 8,
 		"showProgressTab": true,
-		"maxProgressRecords": 100,
-		"debugGallery": false
+		"maxProgressRecords": 100
 	},
 	"grants": [],
 	"grantUrls": [],

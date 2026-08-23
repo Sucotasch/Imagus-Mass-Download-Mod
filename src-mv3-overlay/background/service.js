@@ -452,39 +452,6 @@ function handleMessage(message, sender, sendResponse) {
                 .catch(() => {});   // Audit N-23: no unhandled rejection on 404/network error
             return true;
 
-        case "fetchMedia": {
-            // Gallery-grid cell loading through the SAME context the
-            // mass-download filter validates in (B): extension-side GET with
-            // session cookies — a bare <img> from the page can get a login
-            // page instead of the file — plus a Content-Type gate so
-            // text/html is rejected as a failed candidate, never rendered.
-            // Bytes travel base64: message payloads stay JSON-safe over the
-            // bus regardless of structured-clone support; cells are paced
-            // content-side and capped here, so the ~33% overhead is fine.
-            const MAX_CELL_BYTES = 64 * 1024 * 1024;
-            (async () => {
-                try {
-                    const resp = await fetch(msg.url, { credentials: "include" });
-                    if (!resp.ok) throw new Error("HTTP " + resp.status);
-                    const mime = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
-                    if (!/^(image|video)\//.test(mime)) throw new Error("type " + (mime || "?"));
-                    const buf = new Uint8Array(await resp.arrayBuffer());
-                    if (buf.length > MAX_CELL_BYTES) throw new Error("too large");
-                    let bin = "";
-                    const CH = 0x8000;
-                    for (let i = 0; i < buf.length; i += CH)
-                        bin += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
-                    sendResponse({ ok: true, mime, bytes: buf.length, b64: btoa(bin) });
-                } catch (e) {
-                    const reason = (e && e.message) || "fetch failed";
-                    // Always-on ground truth for gallery cell diagnostics.
-                    console.warn(chrome.runtime.getManifest().name + ": fetchMedia FAILED (" + reason + ") " + msg.url);
-                    sendResponse({ ok: false, reason: reason });
-                }
-            })();
-            return true;
-        }
-
         case "open":
             openUrl(msg, sender);
             break;
@@ -526,21 +493,11 @@ function handleMessage(message, sender, sendResponse) {
                 data.params.url = [urlParts[1], postData];
             }
 
-            const fetchOpts = {
+            fetch(msg.url, {
                 method: postData ? "POST" : "GET",
                 body: postData,
                 headers: postData ? { "Content-Type": "application/x-www-form-urlencoded" } : {},
-            };
-            // Mass-download gallery Refresh tags its re-resolve requests with
-            // bypassCache: a plain fetch could replay an HTTP-cached page
-            // body — i.e. the SAME expired token URLs the refresh is trying
-            // to replace. 'reload' forces a network round-trip. Upstream
-            // flows never set the flag and keep default caching.
-            if (msg.bypassCache) {
-                fetchOpts.cache = "reload";
-                console.warn(chrome.runtime.getManifest().name + ": resolve (bypassCache) " + msg.url);
-            }
-            fetch(msg.url, fetchOpts)
+            })
                 .then((fetchResp) => {
                     const contentType = fetchResp.headers.get("Content-Type");
                     if (/^(image|video|audio)\//i.test(contentType)) {

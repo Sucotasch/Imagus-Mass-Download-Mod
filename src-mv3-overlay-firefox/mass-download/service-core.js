@@ -264,23 +264,14 @@ function handleDownloadMass(msg, sender) {
     // canceled by the filter guards. Only handleOpenDownloadProgress (session
     // start) and handleRetryDownload (explicit user action) may set it.
     ensureSessionKeepalive();
-    const massTask = {
+    filterQueue.push({
         url: ensureAbsoluteUrl(msg.url),
         referer: msg.referer,
         isPrivate: sender.tab?.incognito,
         source: 'element',
         isHd: !!msg.isHd,
         elementInfo: msg.elementInfo || null
-    };
-    // Gallery Save sibling variant (D): when the picked variant fails the
-    // filter (a '#'-prefixed original answering with the login HTML page is
-    // the typical case), the existing Stage-5f candidate machinery
-    // re-queues the rendition through its own validation round instead of
-    // failing the item.
-    if (typeof msg.altUrl === 'string' && msg.altUrl) {
-        massTask._candidates = [{ url: msg.altUrl, isHd: !massTask.isHd }];
-    }
-    filterQueue.push(massTask);
+    });
     processFilterQueue();
 }
 
