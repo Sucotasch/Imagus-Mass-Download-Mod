@@ -579,35 +579,55 @@
 
         var doSave = function () {
             if (!albumRef || selected.size === 0) return;
-            var hiRes = !!(cfg && cfg.hz && cfg.hz.hiRes);
             var seen = new Set();
             var batch = [];
             var links = [];
-            selected.forEach(function (i) {
-                var item = albumRef[i];
-                var cands = [];
-                _mdFlattenCandidates(cands, Array.isArray(item) ? item[0] : item);
-                if (!cands.length) {
-                    // videojs marker fallback carried in the caption
-                    var cap = Array.isArray(item) && typeof item[1] === 'string' ? item[1] : '';
-                    var m = /<imagus-extension type="videojs" url="([^"]+)"/i.exec(cap);
-                    if (m) cands.push(m[1]);
+            // WHAT YOU SEE IS WHAT YOU SAVE. Every grid cell that finished
+            // loading holds its WORKING media url in dataset.mdSrc (staged by
+            // the loader / resolver stage). That url is network-proven for
+            // this session — prefer it over anything derived from the stack.
+            var mdByCell = {};
+            if (PVI.GLR) Array.prototype.forEach.call(PVI.GLR.querySelectorAll('[data-mdsrc]'), function (m) {
+                var u = m.dataset.mdSrc;
+                // blob: object urls are content-script scoped — the service
+                // worker cannot fetch them; those items fall through to the
+                // resolver phase instead.
+                if (u && u.slice(0, 5) !== 'blob:' && _mdIsDirectMedia(u)) {
+                    var k = String(m.dataset.idx);
+                    if (!(k in mdByCell)) mdByCell[k] = u;
                 }
-                if (!cands.length) return;
-                var key = _normalizeUrlKey(_resolveUrl(cands[0].replace(/^#/, '')));
-                if (key && seen.has(key)) return;
-                if (key) seen.add(key);
-                if (cands.length === 1) {
-                    var single = cands[0];
-                    // DIRECT media url -> the proven d337b12 path verbatim
-                    // (plain downloadMass task). Anything else is a PAGE link
-                    // or a variant pair and goes through the group pipeline.
-                    if (_mdIsDirectMedia(single.replace(/^#/, ''))) {
-                        batch.push({ url: _resolveUrl(single.replace(/^#/, '')), isHd: single[0] === '#' });
-                        return;
+            });
+            selected.forEach(function (i) {
+                var cellUrl = mdByCell[String(i)];
+                var item = albumRef[i];
+                var cands = null;
+                if (!cellUrl && item) {
+                    cands = [];
+                    _mdFlattenCandidates(cands, Array.isArray(item) ? item[0] : item);
+                    if (!cands.length) {
+                        // videojs marker fallback carried in the caption
+                        var cap = Array.isArray(item) && typeof item[1] === 'string' ? item[1] : '';
+                        var m2 = /<imagus-extension type="videojs" url="([^"]+)"/i.exec(cap);
+                        if (m2) cands.push(m2[1]);
                     }
                 }
-                links.push(cands);
+                // pick the candidate: proven cell url > first non-'#'
+                // rendition > first variant stripped of its '#' marker
+                var pick = cellUrl || null;
+                if (!pick && cands) {
+                    for (var ci = 0; ci < cands.length; ci++)
+                        if (cands[ci][0] !== '#') { pick = cands[ci]; break; }
+                    if (!pick && cands.length) pick = cands[0];
+                }
+                if (!pick) return;
+                var isHd = pick.charAt(0) === '#';
+                var url = _resolveUrl(pick.replace(/^#/, ''));
+                var key = _normalizeUrlKey(url);
+                if (key && seen.has(key)) return;
+                if (key) seen.add(key);
+                if (_mdIsDirectMedia(url)) batch.push({ url: url, isHd: isHd });
+                else links.push(url);   // page-link without a working preview:
+                                        // needs one engine resolution pass
             });
             if (batch.length === 0 && links.length === 0) return;
             // A previous failed attempt must not poison this one: drop the
@@ -618,106 +638,68 @@
             var saveBtn = panel ? panel.querySelector('[data-a="save"]') : null;
             if (links.length > 0 && saveBtn) { saveBtn.textContent = 'Resolving\u2026'; saveBtn.disabled = true; }
 
-            var pendingParts = (batch.length > 0 ? 1 : 0) + (links.length > 0 ? 1 : 0);
-            // NOTE: declared BEFORE finishPart — finishPart can fire
-            // synchronously from the chunker when every direct item fits the
-            // first chunk; var-hoisting would otherwise leave these
-            // undefined ("Cannot read properties of undefined").
-            var groups = [];
+            var queuedCount = 0;
             var unresolved = 0;
-            var nextIdx = 0;
-            var finishPart = function () {
+            var pendingParts = (batch.length > 0 ? 1 : 0) + (links.length > 0 ? 1 : 0);
+            // NOTE: declared BEFORE finish — finish can fire synchronously
+            // from the chunker when every direct item fits the first chunk.
+            var finish = function () {
                 pendingParts--;
                 if (pendingParts > 0) return;
-                // TEMP bisect logging — remove after gallery-save stabilizes
-                console.warn(cfg.app?.name + ': [gallery-save] finalize: batch=' + batch.length + ' links=' + links.length + ' groups=' + groups.length + ' unresolved=' + unresolved);
-                // The resolved candidate GROUPS must reach the service worker
-                // BEFORE the session-complete marker: findBestUrlWithValidation
-                // validates each group and queues the winning variant.
-                // FIRE-AND-FORGET, like every other send here: Port.send
-                // returns undefined whenever a Port.listener is registered
-                // (PVI.onMessage always is), so chaining .then on its result
-                // threw TypeError right after the finalize log — aborting
-                // finishPart before the groups ever left the page.
-                if (groups.length > 0) {
-                    Port.send({
-                        cmd: 'resolveAndDownloadGroups',
-                        groups: groups,
-                        referer: window.location.href
-                    });
-                }
-                var queued = batch.length + groups.length;
                 if (!scanWasActive) {
                     // Everything is queued BEFORE this lands (ordered port),
                     // so done:true only marks content-scan-complete (N-02).
-                    Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + queued + ' item(s) queued.', done: true });
+                    Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + queuedCount + ' item(s) queued.', done: true });
                 }
                 if (unresolved > 0)
                     console.warn(cfg.app?.name + ': [gallery-save] ' + unresolved + ' item(s) could not be resolved and were skipped');
                 if (saveBtn) {
-                    saveBtn.textContent = queued > 0 ? 'Queued \u2713' : 'Save';
+                    saveBtn.textContent = queuedCount > 0 ? 'Queued \u2713' : 'Save';
                     saveBtn.disabled = false;
                     setTimeout(updatePanel, 1500);
                 }
                 clearSelectionUi();
             };
+            var sendMass = function (url) {
+                queuedCount++;
+                Port.send({
+                    cmd: 'downloadMass',
+                    url: url,
+                    referer: window.location.href,
+                    isHd: false,
+                    elementInfo: { tag: 'gallery', src: '' }
+                });
+            };
 
-            // 1) DIRECT items — the exact d337b12 chunked downloadMass path.
-            if (batch.length > 0) {
-                (function sendChunk(from) {
-                    var end = Math.min(from + CHUNK, batch.length);
-                    for (var i = from; i < end; i++) {
-                        Port.send({
-                            cmd: 'downloadMass',
-                            url: batch[i].url,
-                            referer: window.location.href,
-                            isHd: batch[i].isHd,
-                            elementInfo: { tag: 'gallery', src: '' }
-                        });
-                    }
-                    if (end < batch.length) setTimeout(function () { sendChunk(end); }, 10);
-                    else finishPart();
-                })(0);
-            }
+            // Part 1 — ready urls, chunked exactly like d337b12.
+            (function sendChunk(from) {
+                var end = Math.min(from + CHUNK, batch.length);
+                for (var i = from; i < end; i++) sendMass(batch[i].url);
+                if (end < batch.length) setTimeout(function () { sendChunk(end); }, 10);
+                else finish();
+            })(0);
 
-            // 2) PAGE-LINK / PAIR items — resolve through the engine (same
-            // pipeline mass download uses for thumbnails), strictly
-            // sequentially (single shared resolver timer), then hand the
-            // candidate GROUPS to findBestUrlWithValidation: whichever
-            // variant actually answers with media gets downloaded (the
-            // login-gated '#' original loses to its webp rendition).
+            // Part 2 — page-links without a preview yet: one serialized
+            // engine resolution each (single shared resolver timer), then the
+            // preferred rendition goes out as a plain downloadMass task.
+            var nextIdx = 0;
             var launchLinks = function () {
-                if (links.length === 0) { finishPart(); return; }
                 while (nextIdx < links.length) {
-                    (function (cands) {
+                    (function (probe) {
                         nextIdx++;
-                        var finishGroup = function (urls) {
-                            // order encodes hz.hiRes: the SW keeps the FIRST
-                            // candidate that validates
-                            urls.sort(function (a, b) {
-                                return (((b.charAt(0) === '#') === hiRes) ? 1 : 0)
-                                     - (((a.charAt(0) === '#') === hiRes) ? 1 : 0);
-                            });
-                            groups.push({
-                                urls: urls.map(function (u) { return _resolveUrl(u); }),
-                                referer: window.location.href
-                            });
-                        };
-                        if (cands.length > 1) { finishGroup(cands.slice()); return; }
-                        var probe = cands[0].replace(/^#/, '');
                         _mdSerialized(function () { return _mdResolveCandidates(probe); })
-                            .then(function (resolved) {
-                                // an item that cannot be resolved is a PAGE
-                                // link the engine refused to scrape — sending
-                                // it raw would just fail again with
-                                // "Server returned HTML page"; count and skip
-                                if (resolved) finishGroup(resolved);
-                                else { unresolved++; finishGroup(cands); }
+                            .then(function (cands) {
+                                var pick = null;
+                                if (cands) for (var ci = 0; ci < cands.length; ci++)
+                                    if (cands[ci][0] !== '#') { pick = cands[ci]; break; }
+                                if (!pick && cands && cands.length) pick = cands[0];
+                                if (pick) sendMass(_resolveUrl(pick.replace(/^#/, '')));
+                                else unresolved++;
                             })
-                            .catch(function () { unresolved++; finishGroup(cands); });
+                            .catch(function () { unresolved++; });
                     })(links[nextIdx]);
                 }
-                _mdChain.then(finishPart, finishPart);
+                _mdChain.then(finish, finish);
             };
             launchLinks();
         };

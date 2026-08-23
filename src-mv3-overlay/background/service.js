@@ -580,7 +580,6 @@ function handleMessage(message, sender, sendResponse) {
             break;
         case 'resolveAndDownloadGroups':
             handleResolveGroups(msg, sender);
-            console.warn(chrome.runtime.getManifest().name + ': [md] resolveAndDownloadGroups received: ' + (msg.groups ? msg.groups.length : 'null') + ' group(s)');
             break;
         case 'updateStatus':
             handleUpdateStatus(msg);
