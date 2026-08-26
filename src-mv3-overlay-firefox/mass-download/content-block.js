@@ -118,21 +118,6 @@
         var panel = null;
         var CHUNK = 25;
 
-        // Album item -> downloadable url (mirrors the scan's album capture):
-        // [[sd,hd],cap] variants picked per hz.hiRes like PVI.set; videojs
-        // extension markers in the caption carry the url when item[0] is empty.
-        var itemUrl = function (item, hiRes) {
-            var u = Array.isArray(item) ? item[0] : item;
-            var cap = Array.isArray(item) && typeof item[1] === 'string' ? item[1] : '';
-            var m = /<imagus-extension type="videojs" url="([^"]+)"/i.exec(cap);
-            if ((!u || typeof u !== 'string') && m) u = m[1];
-            if (Array.isArray(u)) {
-                var hd = u.find(function (x) { return typeof x === 'string' && x[0] === '#'; });
-                u = (hiRes && hd) || u.find(function (x) { return typeof x === 'string' && x[0] !== '#'; }) || u[0];
-            }
-            return (typeof u === 'string' && u) ? u : null;
-        };
-
         // --- Lazy item resolver (mass-download parity) ----------------------
         // Stack items can be direct media urls, ['#'-original, rendition]
         // pairs, or PAGE links (e-hentai '/s/<imgkey>/<gid>-<n>' viewer urls)
@@ -470,24 +455,34 @@
                         // stage 1: one delayed retry for transient failures
                         m.dataset.mdStage = '1';
                         setTimeout(function () {
-                            if (!m.isConnected) { settle(m, false); return; }
+                            // no slot is held during the wait — nothing to release
+                            if (!m.isConnected) return;
                             active++;
                             armLoad(m);
                             m.setAttribute('src', m.dataset.mdSrc);
                         }, 1500);
                         settle(m, false); // release the slot during the wait
                     } else if (!m.dataset.mdStage2) {
-                        // stage 2: resolve page-links into real media urls
+                        // stage 2: resolve page-links into real media urls.
+                        // Release the load slot FIRST, then reserve one for
+                        // the resolver chain — every terminal path of the
+                        // chain settles exactly once, so the count balances.
                         m.dataset.mdStage2 = '1';
+                        settle(m, false);
                         active++;
                         loadViaResolve(m);
-                        settle(m, false); // slot managed by the resolver chain
                     } else if (!m.dataset.mdStage3) {
                         // stage 3: last resort — page-context blob fetch
+                        // (same slot contract as stage 2)
                         m.dataset.mdStage3 = '1';
+                        settle(m, false);
                         active++;
                         loadViaPageFetch(m);
-                        settle(m, false); // slot managed by the fetch chain
+                    } else {
+                        // unreachable today (stage 3 settles via onload/
+                        // onerror, never re-arms the load listeners) —
+                        // safety: never leak the current slot
+                        settle(m, false);
                     }
                 };
                 m.addEventListener('load', onOk);
@@ -647,8 +642,10 @@
                 pendingParts--;
                 if (pendingParts > 0) return;
                 if (!scanWasActive) {
-                    // Everything is queued BEFORE this lands (ordered port),
-                    // so done:true only marks content-scan-complete (N-02).
+                    // Both parts completed — every item is queued before this
+                    // done:true lands. N-02: an early done lets the SW's
+                    // checkAllQueuesEmpty kill the session 100ms later, and
+                    // late downloadMass items arrive as canceled.
                     Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + queuedCount + ' item(s) queued.', done: true });
                 }
                 if (unresolved > 0)
@@ -660,13 +657,13 @@
                 }
                 clearSelectionUi();
             };
-            var sendMass = function (url) {
+            var sendMass = function (url, isHd) {
                 queuedCount++;
                 Port.send({
                     cmd: 'downloadMass',
                     url: url,
                     referer: window.location.href,
-                    isHd: false,
+                    isHd: !!isHd,
                     elementInfo: { tag: 'gallery', src: '' }
                 });
             };
@@ -674,9 +671,9 @@
             // Part 1 — ready urls, chunked exactly like d337b12.
             (function sendChunk(from) {
                 var end = Math.min(from + CHUNK, batch.length);
-                for (var i = from; i < end; i++) sendMass(batch[i].url);
+                for (var i = from; i < end; i++) sendMass(batch[i].url, batch[i].isHd);
                 if (end < batch.length) setTimeout(function () { sendChunk(end); }, 10);
-                else finish();
+                else if (batch.length > 0) finish(); // empty batch owns no part
             })(0);
 
             // Part 2 — page-links without a preview yet: one serialized
@@ -693,13 +690,16 @@
                                 if (cands) for (var ci = 0; ci < cands.length; ci++)
                                     if (cands[ci][0] !== '#') { pick = cands[ci]; break; }
                                 if (!pick && cands && cands.length) pick = cands[0];
-                                if (pick) sendMass(_resolveUrl(pick.replace(/^#/, '')));
+                                if (pick) sendMass(_resolveUrl(pick.replace(/^#/, '')), pick.charAt(0) === '#');
                                 else unresolved++;
                             })
                             .catch(function () { unresolved++; });
                     })(links[nextIdx]);
                 }
-                _mdChain.then(finish, finish);
+                // The pristine chain (links === 0) resolves on a microtask —
+                // attaching finish() there would double-fire it next to Part
+                // 1's own finish. Only the links part owns a finish().
+                if (links.length > 0) _mdChain.then(finish, finish);
             };
             launchLinks();
         };
