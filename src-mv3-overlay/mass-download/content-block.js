@@ -506,6 +506,10 @@
                 }
             };
 
+            // A previous decorate() may still hold an observer (gallery was
+            // hidden via state 1, not fully closed): release it before wiring
+            // the new one so detached cells from the old grid are not pinned.
+            if (gridIo) { gridIo.disconnect(); gridIo = null; }
             try {
                 gridIo = new IntersectionObserver(function (entries) {
                     entries.forEach(function (en) {
