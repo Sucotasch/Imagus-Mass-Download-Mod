@@ -642,8 +642,21 @@ async function deinitTabs() {
 }
 
 function sanitizeFilename(filename) {
-    // replace invalid chars (\ / : * ? " < > |) + control chars
-    return filename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, "_");
+    // Replace invalid chars (\ / : * ? " < > |) + control chars
+    let s = filename.replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, "_");
+    // Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9) — any
+    // extension after the reserved name is ignored by the OS, and a bare
+    // reserved name without extension causes a download error. Rename by
+    // prefixing with an underscore so the file is still visible.
+    if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(s)) {
+        s = '_' + s;
+    }
+    // Trailing dots and spaces are silently stripped by Windows (NTFS), which
+    // can lead to collisions or hidden files. Replace them explicitly.
+    s = s.replace(/[. ]+$/, '_');
+    // NTFS max component length: 255 code points. Trim before that.
+    if (s.length > 255) s = s.slice(0, 255);
+    return s;
 }
 
 // Port of upstream 8.20 saveDir templates ({page_domain}/{link_domain}/{Y}{M}{D}).

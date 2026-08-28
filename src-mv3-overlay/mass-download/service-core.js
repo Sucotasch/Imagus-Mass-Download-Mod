@@ -122,6 +122,15 @@ function isExcludedType(url, contentType, excludedList) {
     return false;
 }
 
+// Safe normalization of the user's excludedExtensions preference: a
+// non-string value (e.g. a corrupted or hand-edited chrome.storage entry)
+// must never reach .split() and crash the filter pipeline.
+function getExcludedExtensions(da) {
+    const raw = da && da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif';
+    if (typeof raw !== 'string') return [];
+    return raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
 function getFilterTimeouts() {
     const baseSec = Number(cachedPrefs?.da?.resolutionTimeout);
     const sec = Number.isFinite(baseSec) && baseSec >= 1 ? baseSec : 8;
@@ -146,11 +155,10 @@ async function readBodyCapped(response, maxBytes) {
         try { if (response.body) await response.body.cancel(); } catch (_) {}
         return { tooLarge: true };
     }
-    if (known != null) {
-        const blob = await response.blob();
-        if (blob.size > maxBytes) return { tooLarge: true };
-        return { blob };
-    }
+    // Always stream with a cap — never trust Content-Length for the actual
+    // body size: a small/absent header with a large (e.g. chunked/gzipped)
+    // body would otherwise be fully buffered by response.blob() before the
+    // size check, leaking an unbounded amount of memory into the SW.
     const reader = response.body && response.body.getReader ? response.body.getReader() : null;
     if (!reader) {
         try { if (response.body) await response.body.cancel(); } catch (_) {}
@@ -425,8 +433,7 @@ function handleRefererDownloadReady(msg, sender) {
         return;
     }
     const da = cachedPrefs.da || {};
-    const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
-        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const excludedExtensions = getExcludedExtensions(da);
     const minImageSize = (da.minImageSize != null ? da.minImageSize : 45) * 1024;
     const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
     const downloadOnUnknown = da.downloadOnUnknown !== false;
@@ -506,8 +513,7 @@ function handleRefererDownloadFailed(msg) {
         return;
     }
     const da = cachedPrefs.da || {};
-    const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
-        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const excludedExtensions = getExcludedExtensions(da);
     if (isExcludedType(url, '', excludedExtensions)) {
         const existing = downloadProgress[url];
         updateDownloadProgress(url, 'skipped', 0, 'Excluded type', null, existing ? existing.task : null);
@@ -664,10 +670,16 @@ function triggerRefererDownload(task) {
         return Promise.resolve();
     }
     updateDownloadProgress(task.url, 'pending', 0, 'Retrying via page context', null, task);
-    activeRefererRetries++;
     const retryUrl = task.url;
     const startedSession = sessionId;
-    refererRetryUrls.add(retryUrl);
+    // Guard against two concurrent referer-retries of the same URL: the Set
+    // does not grow on a second add(), but the unbounded counter would tick
+    // up, causing a permanent slot leak (the second ready/ready lookup finds
+    // the set empty and skips the decrement).
+    if (!refererRetryUrls.has(retryUrl)) {
+        activeRefererRetries++;
+        refererRetryUrls.add(retryUrl);
+    }
     setTimeout(() => {
         // Review fix #1: decrement ONLY if this retry is still unsettled — a
         // landed ready/failed already returned its slot through
@@ -734,8 +746,7 @@ async function processFilterQueue() {
         // means "exclude nothing". `||` silently replaced all of these with
         // defaults.
         const da = cachedPrefs.da || {};
-        const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
-            .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        const excludedExtensions = getExcludedExtensions(da);
         const minImageSize = (da.minImageSize != null ? da.minImageSize : 45) * 1024;
         const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
         const downloadOnUnknown = da.downloadOnUnknown !== false;
@@ -759,15 +770,15 @@ async function processFilterQueue() {
             activeControllers.delete(task._id);
 
             const contentType = response.headers.get('Content-Type') || '';
-            const contentLength = response.headers.get('Content-Length');
+            const contentLength = parseContentLength(response.headers);
 
-            if (!response.ok || !contentLength || contentType.startsWith('text/html')) {
+            if (!response.ok || contentLength == null || contentType.startsWith('text/html')) {
                 task.httpStatus = response.status;
                 task.filterMethod = 'HEAD';
                 throw new Error('Fallback to GET');
             }
 
-            const size = parseInt(contentLength, 10);
+            const size = contentLength;
             task.contentType = contentType;
             task.fileSize = size;
             task.httpStatus = response.status;
@@ -1021,8 +1032,7 @@ function pickNextCandidate(task) {
     if (!task || !Array.isArray(task._candidates) || task._candidates.length === 0) return null;
     if (!scanInProgress || userCanceled) return null;
     const da = cachedPrefs.da || {};
-    const excludedExtensions = (da.excludedExtensions != null ? da.excludedExtensions : '.svg, .ico, .gif')
-        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const excludedExtensions = getExcludedExtensions(da);
     const currentKey = candidateKey(task.url);
     let next = null;
     while (task._candidates.length > 0) {

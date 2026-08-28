@@ -116,6 +116,7 @@
         var selected = new Set();   // album item indices
         var albumRef = null;        // captured PVI.stack list of the open gallery
         var panel = null;
+        var gridIo = null;          // pacing IntersectionObserver, disconnected on close
         var CHUNK = 25;
 
         // --- Lazy item resolver (mass-download parity) ----------------------
@@ -344,6 +345,9 @@
             // Only drop the stale reference; state 1 hides it via GLR display.
             panel = null;
             if (clearSelection) {
+                // The gallery closed: release the pacing observer so it can
+                // no longer pin detached grid cells in memory (Audit BUG-12).
+                if (gridIo) { gridIo.disconnect(); gridIo = null; }
                 selected.clear();
                 albumRef = null;
                 cellCount = 0;
@@ -381,7 +385,6 @@
             var queue = [];
             var active = 0;
             var MAX_ACTIVE = 3;
-            var io = null;
 
             var settle = function (m, ok, url) {
                 active--;
@@ -417,12 +420,15 @@
 
             var loadViaPageFetch = function (m) {
                 var url = m.dataset.mdSrc;
-                fetch(url, { credentials: 'include' })
+                var controller = new AbortController();
+                var timeoutId = setTimeout(function () { controller.abort(); }, 30000);
+                fetch(url, { credentials: 'include', signal: controller.signal })
                     .then(function (r) {
                         if (!r.ok) throw new Error('HTTP ' + r.status);
                         return r.blob();
                     })
                     .then(function (b) {
+                        clearTimeout(timeoutId);
                         if (!m.isConnected) { settle(m, false); return; }
                         var objUrl = URL.createObjectURL(b);
                         m.onload = function () { m.onload = m.onerror = null; settle(m, 2, objUrl); };
@@ -430,6 +436,7 @@
                         m.setAttribute('src', objUrl);
                     })
                     .catch(function () {
+                        clearTimeout(timeoutId);
                         // CORS/network blocked the fetch too — leave the
                         // error state; the URL itself is likely dead.
                         settle(m, false);
@@ -500,17 +507,17 @@
             };
 
             try {
-                io = new IntersectionObserver(function (entries) {
+                gridIo = new IntersectionObserver(function (entries) {
                     entries.forEach(function (en) {
                         if (!en.isIntersecting) return;
                         var m = en.target;
-                        io.unobserve(m);
+                        if (gridIo) gridIo.unobserve(m);
                         queue.push(m);
                     });
                     startNext();
                 }, { root: PVI.GLR, rootMargin: '200px' });
             } catch (_) {
-                io = null;
+                gridIo = null;
             }
 
             Array.prototype.forEach.call(PVI.GLR.querySelectorAll('img[data-idx], video[data-idx]'), function (m) {
@@ -519,13 +526,13 @@
                 var hasPreview = Array.isArray(item) && !!item[2];
                 var s = m.getAttribute('src');
                 if (hasPreview || !s) {
-                    if (io) io.unobserve(m);
+                    if (gridIo) gridIo.unobserve(m);
                     return; // small previews are not the limited resource
                 }
                 if (s.indexOf('&amp;') !== -1) s = s.replace(/&amp;/g, '&');
                 m.removeAttribute('src');
                 m.dataset.mdSrc = s;
-                if (io) io.observe(m);
+                if (gridIo) gridIo.observe(m);
                 else queue.push(m); // very old engines: pace without laziness
             });
             startNext();
@@ -582,7 +589,7 @@
             // the loader / resolver stage). That url is network-proven for
             // this session — prefer it over anything derived from the stack.
             var mdByCell = {};
-            if (PVI.GLR) Array.prototype.forEach.call(PVI.GLR.querySelectorAll('[data-mdsrc]'), function (m) {
+            if (PVI.GLR) Array.prototype.forEach.call(PVI.GLR.querySelectorAll('[data-md-src]'), function (m) {
                 var u = m.dataset.mdSrc;
                 // blob: object urls are content-script scoped — the service
                 // worker cannot fetch them; those items fall through to the
@@ -746,6 +753,7 @@
 
 // >>> MASS-DOWNLOAD-HOTKEY
             } else if (key === cfg.keys.downloadAll) {
+                if (!e.isTrusted) { pv = false; return; }
                 if (e.shiftKey || e.ctrlKey) {
                     PVI.downloadAll(doc);
                     pv = true;
@@ -1188,8 +1196,10 @@
             // whole video in tab memory just to measure it. Over the cap the
             // SW falls back to a browser-context download, which streams.
             const MAX_PAGE_FETCH = 10 * 1024 * 1024;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000);
             try {
-                let resp = await fetch(url, { credentials: 'include' });
+                let resp = await fetch(url, { credentials: 'include', signal: controller.signal });
                 if (!resp.ok) {
                     throw new Error('HTTP ' + resp.status);
                 }
@@ -1220,8 +1230,10 @@
                 // materializes + revokes its own URL.
                 if (platform === 'firefox') msg.blob = blob;
                 else msg.objectUrl = URL.createObjectURL(blob);
+                clearTimeout(timeoutId);
                 Port.send(msg);
             } catch (e) {
+                clearTimeout(timeoutId);
                 Port.send({
                     cmd: 'refererDownloadFailed',
                     url: url,
