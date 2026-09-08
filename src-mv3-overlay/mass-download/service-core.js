@@ -153,7 +153,7 @@ async function readBodyCapped(response, maxBytes) {
     const known = parseContentLength(response.headers);
     if (known != null && known > maxBytes) {
         try { if (response.body) await response.body.cancel(); } catch (_) {}
-        return { tooLarge: true };
+        return { tooLarge: true, declared: known };
     }
     // Always stream with a cap — never trust Content-Length for the actual
     // body size: a small/absent header with a large (e.g. chunked/gzipped)
@@ -172,7 +172,7 @@ async function readBodyCapped(response, maxBytes) {
         received += value.byteLength;
         if (received > maxBytes) {
             try { await reader.cancel(); } catch (_) {}
-            return { tooLarge: true };
+            return { tooLarge: true, declared: null };
         }
         chunks.push(value);
     }
@@ -877,14 +877,7 @@ async function processFilterQueue() {
                     }
                 } else {
                     const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
-                    if (capped.tooLarge) {
-                        task.filterTimeMs = Date.now() - filterStart;
-                        task.httpStatus = response.status;
-                        task.filterMethod = 'GET';
-                        task.contentType = contentType;
-                        updateDownloadProgress(task.url, 'skipped', 0, 'Too large for fallback', null, task);
-                        downloadStats.skipped++;
-                    } else if (capped.error) {
+                    if (capped.error) {
                         task.filterTimeMs = Date.now() - filterStart;
                         task.httpStatus = response.status;
                         task.filterMethod = 'GET';
@@ -895,11 +888,20 @@ async function processFilterQueue() {
                             updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
                         }
                     } else {
-                        const blob = capped.blob;
-                        const size = blob.size;
-                        const type = blob.type || contentType;
+                        // capped.tooLarge: the GET-fallback body hit the 10 MiB cap.
+                        // The body was only buffered to MEASURE the file — the
+                        // response headers already proved the media type, so a big
+                        // file is NOT a failure (it used to be dropped as 'Too large
+                        // for fallback' here while the same URL downloaded fine in the
+                        // browser, e.g. ArtUntamed '.../full' jpegs > 10 MiB). The real
+                        // transfer (chrome.downloads) streams, so enqueue it: no
+                        // unbounded SW memory, and size = declared Content-Length
+                        // when the server sent one, else unknown ('-' in log/size).
+                        const blob = capped.blob || null;
+                        const type = blob ? (blob.type || contentType) : contentType;
+                        const size = blob ? blob.size : (capped.declared != null ? capped.declared : 0);
                         task.contentType = type;
-                        task.fileSize = size;
+                        task.fileSize = blob ? blob.size : (capped.declared != null ? capped.declared : null);
                         task.httpStatus = response.status;
                         task.filterMethod = 'GET';
 
@@ -910,9 +912,9 @@ async function processFilterQueue() {
                         } else {
                             let passed = true;
                             if (type.startsWith('image/')) {
-                                if (minImageSize > 0 && size < minImageSize) passed = false;
+                                if (size > 0 && minImageSize > 0 && size < minImageSize) passed = false;
                             } else if (type.startsWith('video/')) {
-                                if (minVideoSize > 0 && size < minVideoSize) passed = false;
+                                if (size > 0 && minVideoSize > 0 && size < minVideoSize) passed = false;
                             } else if (!downloadOnUnknown) {
                                 passed = false;
                             }
