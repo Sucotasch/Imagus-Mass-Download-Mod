@@ -9,6 +9,17 @@ Thumbs.db
 # Gemini CLI metadata
 .gemini/
 
+# Agent/CLI metadata (2026-09-08 hygiene)
+.agents/
+.claude/
+.unlazy/
+
+# Live mass-download logs and downloaded test files (user URLs; 2026-09-08)
+log/
+
+# Obsolete user issue notes (solutions accepted, kept for reference)
+Errors2.txt
+
 # Temporary / staging files
 _tmp_upstream/
 upstream_v2026.7.21/
