@@ -212,7 +212,7 @@
         if (items.length === 0) {
             progressBody.innerHTML = `
         <tr>
-          <td colspan="5" class="empty-state">
+          <td colspan="6" class="empty-state">
             No downloads in progress. Start a download to see progress here.
           </td>
         </tr>
@@ -235,6 +235,7 @@
           <div class="file-info"><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.url)}</a></div>
           <div class="file-info">${escapeHtml(item.fileType.toUpperCase())}</div>
         </td>
+        <td class="file-info">${item.fileSize ? escapeHtml(formatSize(item.fileSize)) : '-'}</td>
         <td>
           <span class="status-badge status-${escapeHtml(item.status)}">${escapeHtml(getStatusText(item.status))}</span>
           ${item.error ? `<div class="error-details">${escapeHtml(item.error)}</div>` : ''}

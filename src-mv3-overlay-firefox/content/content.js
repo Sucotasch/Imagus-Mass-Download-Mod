@@ -346,9 +346,10 @@
                 + '#imagus-gallery > .md-gbar{position:sticky;top:0;width:auto;height:40px;box-sizing:border-box;flex-basis:100%;display:flex;gap:8px;justify-content:flex-start;align-items:center;padding:5px 10px;margin:-8px -8px -40px;background:transparent;pointer-events:none;z-index:10;font:13px/1.2 sans-serif;}'
                 + '.md-gbar button{padding:6px 14px;border:0;border-radius:6px;background:#3a4150;color:#fff;font-weight:600;cursor:pointer;pointer-events:auto;box-shadow:0 1px 4px rgba(0,0,0,.45);}'
                 + '.md-gbar button:hover{background:#4a5364;}'
-                + '.md-gbar .md-gsave{background:#2f7df6;}'
-                + '.md-gbar .md-gsave:hover{background:#4b91f8;}'
-                + '.md-gbar .md-gsave:disabled{background:#2a2f38;color:#8a919c;cursor:default;}'
+                // All bar buttons share the neutral style; the disabled
+                // state is the only visual variation (a disabled hover
+                // cannot override it: this rule follows button:hover).
+                + '.md-gbar button:disabled{background:#2a2f38;color:#8a919c;cursor:default;}'
                 + '.md-gcheck{position:absolute;bottom:6px;left:6px;width:20px;height:20px;border:2px solid #fff;border-radius:5px;background:rgba(0,0,0,.45);cursor:pointer;z-index:3;}'
                 + '.md-gcell.md-gsel > .md-gcheck{background:#2f7df6;border-color:#fff;}'
                 + '.md-gcell.md-gsel > img,.md-gcell.md-gsel > video{outline:3px solid #2f7df6;outline-offset:-3px;}';
@@ -377,12 +378,10 @@
             bAll.dataset.a = 'all';
             var bSave = doc.createElement('button');
             bSave.dataset.a = 'save';
-            bSave.className = 'md-gsave';
             var bSaveAll = doc.createElement('button');
             bSaveAll.dataset.a = 'saveall';
-            bSaveAll.className = 'md-gsave';
-            // BG-UI: created label-less (data-a + className only; updatePanel
-            // just toggles disabled) -> a blank blue pill. Label it once here.
+            // BG-UI: created label-less (data-a only; updatePanel just toggles
+            // disabled) -> an unlabeled button. Label it once here.
             bSaveAll.textContent = 'Save All';
             panel.appendChild(bAll);
             panel.appendChild(bSave);

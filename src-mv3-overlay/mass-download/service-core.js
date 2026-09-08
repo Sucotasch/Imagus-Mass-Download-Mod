@@ -652,7 +652,8 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
         url: url, status: status, progress: progress,
         error: error, downloadId: downloadId,
         referer: task ? task.referer : null,
-        filename: task ? task.filename : null
+        filename: task ? task.filename : null,
+        fileSize: task ? task.fileSize : null
     });
     downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
 
