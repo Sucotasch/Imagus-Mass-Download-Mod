@@ -131,6 +131,45 @@ function getExcludedExtensions(da) {
     return raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 }
 
+// P2 (audit 2026-09-08): derive a display filename from the URL — same F5
+// algorithm processDownloadQueue uses (garbage-basename detection, path-
+// shaped query, MIME-based extension), plus filesystem sanitization. Used
+// for rows that die in the FILTER phase ('skipped'/'failed'), which never
+// reach processDownloadQueue and previously showed a raw URL basename
+// ('index.php' for every XenForo item). Pure function; sanitized; safe for
+// both display (progress tab, Save Log) and reuse by the download phase.
+function deriveFilename(url, contentType) {
+    try {
+        const u = new URL(url);
+        const pathname = u.pathname;
+        let name = pathname.split('/').pop();
+        const garbage = /^(?:index\.\w+|full|view|get|image|photo|media|attachment|page|file)$/i;
+        if (!name || garbage.test(name) || !/\.[a-z0-9]{1,8}$/i.test(name)) {
+            let segs = pathname.split('/').filter(Boolean);
+            if (u.search.length > 1) {
+                const q = u.search.slice(1).split('&')[0].split('=').pop();
+                if (q && q.indexOf('/') > -1) segs = segs.concat(q.split('/').filter(Boolean));
+            }
+            let best = '';
+            for (let si = segs.length - 1; si >= 0; si--) {
+                const s = segs[si];
+                if (!garbage.test(s) && s.length > 2) { best = s; break; }
+            }
+            if (best) {
+                const mime = (contentType || '').split(';')[0].trim().toLowerCase();
+                const ext = MIME_TO_EXT[mime] || '';
+                const hasRealExt = /\.[a-z]{2,5}$/i.test(best);
+                if (ext && !hasRealExt) best = best + ext;
+            }
+            if (best) name = best;
+        }
+        if (!name) return undefined;
+        return String(name).replace(/[\\/:*?"<>|\r\n\x00-\x1f]/g, '_');
+    } catch (_) {
+        return undefined;
+    }
+}
+
 function getFilterTimeouts() {
     const baseSec = Number(cachedPrefs?.da?.resolutionTimeout);
     const sec = Number.isFinite(baseSec) && baseSec >= 1 ? baseSec : 8;
@@ -647,6 +686,18 @@ function serializeAllProgress() {
 }
 
 function updateDownloadProgress(url, status, progress, error, downloadId, task) {
+    // P2: rows that die in the filter phase never reach
+    // processDownloadQueue, so task.filename was never derived and the
+    // progress tab / Save Log showed a raw URL basename ('index.php' for
+    // every XenForo item). Derive + memoize once, on any terminal status,
+    // BEFORE the live push and the downloadProgress record so both see it.
+    // The download phase keeps its own derivation (processDownloadQueue)
+    // — this only fills the gap for rows that never get there.
+    if (task && !task.filename &&
+        (status === 'skipped' || status === 'failed' || status === 'canceled' || status === 'completed')) {
+        const derived = deriveFilename(url, task.contentType);
+        if (derived) task.filename = derived;
+    }
     sendToProgressTab({
         cmd: 'updateDownloadStatus',
         url: url, status: status, progress: progress,

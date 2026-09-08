@@ -324,10 +324,26 @@
 
         var cellCount = 0;
 
+        // P1 (audit 2026-09-08): true while a gallery save is in flight. A
+        // checkbox click during the resolve phase called updatePanel(), which
+        // unconditionally re-enabled the Save buttons mid-save; a second Save
+        // then re-entered doSave -> openDownloadProgress -> an unconditional
+        // resetMassDownloadSession() that aborted in-flight fetches and
+        // re-downloaded completed files as uniquified duplicates. The flag
+        // guards updatePanel's button writes and doSave re-entry. It is
+        // cleared ONLY in afterReports: hidePanel does not reset it (hiding
+        // the gallery does not cancel the in-flight save) — if the chain ever
+        // wedges permanently the buttons stay locked until page reload
+        // (fail-closed by design; previously the accidental unlock caused
+        // duplicate disk files).
+        var saving = false;
+
         var updatePanel = function () {
             if (!panel) return;
-            var all = cellCount > 0 && selected.size === cellCount;
-            panel.querySelector('[data-a="all"]').textContent = all ? 'Deselect all' : 'Select all';
+            panel.querySelector('[data-a="all"]').textContent = cellCount > 0 && selected.size === cellCount ? 'Deselect all' : 'Select all';
+            // During a save the buttons are locked by doSave — do not let a
+            // checkbox click rewrite their labels/disabled state.
+            if (saving) return;
             var save = panel.querySelector('[data-a="save"]');
             save.textContent = 'Save Selected (' + selected.size + ')';
             save.disabled = selected.size === 0;
@@ -347,7 +363,10 @@
             var bSaveAll = doc.createElement('button');
             bSaveAll.dataset.a = 'saveall';
             // BG-UI: created label-less (data-a only; updatePanel just toggles
-            // disabled) -> an unlabeled button. Label it once here.
+            // disabled) -> an unlabeled button. Label both once here: P1 —
+            // a bar rebuilt while a save is running would otherwise show an
+            // EMPTY Save button (updatePanel is guarded during a save).
+            bSave.textContent = 'Save Selected';
             bSaveAll.textContent = 'Save All';
             panel.appendChild(bAll);
             panel.appendChild(bSave);
@@ -620,6 +639,10 @@
         var doSave = function (all) {
             if (!albumRef) return;
             if (!all && selected.size === 0) return;
+            // P1: a save is already in flight — the chunker/resolver chain
+            // owns the buttons until afterReports; re-entry would restart
+            // the download session mid-flight (duplicate disk files).
+            if (saving) return;
             // Save All: every grid cell index, not the manual selection.
             // .md-gcheck = one checkbox per cell (media nodes also carry
             // data-idx — selecting them would duplicate every index).
@@ -701,6 +724,10 @@
             };
             (targets || selected).forEach(eachItem);
             if (batch.length === 0 && links.length === 0 && unresolved === 0) return;
+            // P1: from here to afterReports the save owns the panel —
+            // updatePanel must not touch the Save buttons and doSave must
+            // not re-enter.
+            saving = true;
             // A previous failed attempt must not poison this one: drop the
             // negative cache entries so every item gets a fresh try.
             _mdResolveCache.forEach(function (v, k) { if (!v.cands) _mdResolveCache.delete(k); });
@@ -737,7 +764,10 @@
                     })();
                 };
                 var afterReports = function () {
-                    if (!scanWasActive) {
+                    // P1: release the panel FIRST — clearSelectionUi below
+                    // calls updatePanel, which must see the buttons unlocked
+                    // so the live label/disabled state is rewritten.
+                    saving = false;                    if (!scanWasActive) {
                         // Both parts completed — every item is queued before this
                         // done:true lands. N-02: an early done lets the SW's
                         // checkAllQueuesEmpty kill the session 100ms later, and

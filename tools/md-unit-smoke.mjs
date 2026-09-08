@@ -41,10 +41,11 @@ const code = [
     cutFn('normalizeExt'),
     cutFn('getUrlExtension'),
     cutFn('isExcludedType'),
+    cutFn('deriveFilename'),
 ].join('\n');
 
-const factory = new Function(`${code}\nreturn { normalizeExt, getUrlExtension, isExcludedType };`);
-const { normalizeExt, getUrlExtension, isExcludedType } = factory();
+const factory = new Function(`${code}\nreturn { normalizeExt, getUrlExtension, isExcludedType, deriveFilename };`);
+const { normalizeExt, getUrlExtension, isExcludedType, deriveFilename } = factory();
 
 // --- getUrlExtension: pathname-based, ignores query/hash (old host-dot bug) ---
 assert.equal(getUrlExtension('https://example.com/a/photo.png'), '.png');
@@ -78,6 +79,25 @@ assert.ok(!isExcludedType('https://ex.com/a.mp4', 'video/mp4', ['.png', '.svg'])
 assert.ok(!isExcludedType('https://ex.com/a.png', 'image/png', []));
 // Case-insensitive list entries:
 assert.ok(isExcludedType('https://ex.com/a.PNG', '', ['.png']));
+
+// --- deriveFilename (P2, audit 2026-09-08): display name for filter-phase
+// deaths; mirrors the F5 algorithm of processDownloadQueue + sanitization ---
+// Front-controller URL: basename 'index.php' is garbage — the meaningful
+// segment comes from the path-shaped query, ext from the MIME type:
+assert.equal(deriveFilename('https://artuntamed.com/index.php?media/galleries/224305/attachments/117336/full', 'image/jpeg'), '117336.jpg');
+// Plain media URL: real basename kept, ext from URL not MIME:
+assert.equal(deriveFilename('https://wimg.rule34.xxx/images/123/abc.jpg?TS=1', ''), 'abc.jpg');
+// MIME ext appended only when the segment lacks a real letter-only
+// extension ('.NNN' counts as one — i-flag; a numeric id '.117336'
+// does not, so the MIME ext is appended):
+assert.equal(deriveFilename('https://ex.com/get?media/slug.NNN/full', 'video/mp4'), 'slug.NNN');
+assert.equal(deriveFilename('https://ex.com/get?media/slug.117336/full', 'video/mp4'), 'slug.117336.mp4');
+// FS-unsafe characters sanitized:
+assert.equal(deriveFilename('https://ex.com/a/b/c:q*.png', ''), 'c_q_.png');
+// Garbage tail segment 'full' skipped, earlier segment wins:
+assert.equal(deriveFilename('https://ex.com/media/slug.117336/full', ''), 'slug.117336');
+// Unparseable input: undefined, never a throw:
+assert.equal(deriveFilename('not a url at all', ''), undefined);
 
 console.log('md-unit-smoke: all assertions passed');
 
