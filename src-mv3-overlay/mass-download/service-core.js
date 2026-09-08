@@ -305,6 +305,17 @@ function handleUpdateFilterStats(msg) {
     sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
 }
 
+// Gallery Save diagnostics: an item whose link could not be resolved by the
+// engine died silently in the content (console-only warn) — nothing reached
+// the progress tab or the Save Log. Report it as a skipped entry so the
+// failure is visible and analyzable (url + reason in the log).
+function handleReportSkippedItem(msg) {
+    if (!msg || typeof msg.url !== 'string' || !msg.url) return;
+    const reason = typeof msg.reason === 'string' && msg.reason ? msg.reason : 'Could not resolve item';
+    updateDownloadProgress(msg.url, 'skipped', 0, reason, null, null);
+    downloadStats.skipped++;
+}
+
 function handleStopScanning() {
     scanInProgress = false;
     contentScanDone = true;
@@ -640,7 +651,8 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
         cmd: 'updateDownloadStatus',
         url: url, status: status, progress: progress,
         error: error, downloadId: downloadId,
-        referer: task ? task.referer : null
+        referer: task ? task.referer : null,
+        filename: task ? task.filename : null
     });
     downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
 
@@ -965,8 +977,41 @@ function processDownloadQueue() {
 
         const rawFilename = task.filename || (() => {
             try {
-                const pathname = new URL(task.url).pathname;
+                const u = new URL(task.url);
+                const pathname = u.pathname;
                 const name = pathname.split('/').pop();
+                const garbage = /^(?:index\.\w+|full|view|get|image|photo|media|attachment|page|file)$/i;
+                if (!name || garbage.test(name) || !/\.[a-z0-9]{1,8}$/i.test(name)) {
+                    // Extension-less or front-controller media URL (e.g. XenForo
+                    // '.../media/slug.123/full' or 'index.php?media/slug.123/full'):
+                    // the basename would be 'full'/'index.php' — identical for
+                    // every item, so conflictAction uniquifies 'full (1)',
+                    // 'full (2)'… Build a distinctive name instead: the last
+                    // MEANINGFUL segment of the path (or of a path-shaped query),
+                    // plus the real extension from the MIME type the filter
+                    // phase already recorded on the task.
+                    let segs = pathname.split('/').filter(Boolean);
+                    // path-shaped query: 'media/slug.123/full' (XenForo route in
+                    // the query string, not the path)
+                    if (u.search.length > 1) {
+                        const q = u.search.slice(1).split('&')[0].split('=').pop();
+                        if (q && q.indexOf('/') > -1) segs = segs.concat(q.split('/').filter(Boolean));
+                    }
+                    let best = '';
+                    for (let si = segs.length - 1; si >= 0; si--) {
+                        const s = segs[si];
+                        if (!garbage.test(s) && s.length > 2) { best = s; break; }
+                    }
+                    if (best) {
+                        const mime = (task.contentType || '').split(';')[0].trim().toLowerCase();
+                        const ext = MIME_TO_EXT[mime] || '';
+                        // Append the real extension unless the segment already
+                        // ends with a letter-only file extension ('slug.117336'
+                        // ends in digits — an id, not an ext).
+                        const hasRealExt = /\.[a-z]{2,5}$/i.test(best);
+                        return ext && !hasRealExt ? best + ext : best;
+                    }
+                }
                 return name || undefined;
             } catch (_) {
                 return undefined;
@@ -1181,8 +1226,9 @@ function ensureAbsoluteUrl(url) {
 
 // File identity key: what IS the file, regardless of representation. Strips the
 // HD '#' marker, resolves protocol-relative to https (so '//host/x' and
-// 'https://host/x' are the same file), drops the query string (cache-busters),
-// collapses '//' in the path (sieve typos like wimg//images), and treats .jpeg
+// 'https://host/x' are the same file), drops the query only on real media-file
+// paths (cache-busters ?TS=...), collapses '//' in the path (sieve typos like
+// wimg//images), and treats .jpeg
 // as .jpg. This is the GLOBAL dedup key (globalProcessedUrls and content's
 // downloadAllUniqueUrls share this contract).
 function fileKey(url) {
@@ -1198,8 +1244,26 @@ function fileKey(url) {
         const host = (slash > -1) ? rest0.slice(0, slash) : rest0;
         let path = (slash > -1) ? rest0.slice(slash) : '';
         const q = path.indexOf('?');
-        if (q > -1) path = path.slice(0, q);
-        path = path.replace(/\/{2,}/g, '/');
+        if (q > -1) {
+            // BG-4: drop the query ONLY when the path ends in a real media
+            // extension - cache-busters (?TS=...) attach to media files.
+            // On front-controller URLs (index.php?media/slug.123/full,
+            // view.php?id=...) the query IS the file identity; dropping it
+            // collapses distinct files into one key (ArtUntamed gallery:
+            // 11 items all keyed to index.php -> 1 download). Keeping it
+            // costs only a rare duplicate when a buster rides a front-
+            // controller URL; silently losing files is the worse failure.
+            const head = path.slice(0, q);
+            if (/\.(?:a?png|avif|bmp|gif|ico|jpe?g|m4a|m4v|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|ogv|opus|svg|tiff?|wav|weba|webm|webp|wmv)$/i.test(head)) {
+                path = head.replace(/\/{2,}/g, '/');
+            } else {
+                // keep the identity query; collapse '//' only in the path
+                // part so a query value (e.g. a nested url) is untouched
+                path = head.replace(/\/{2,}/g, '/') + path.slice(q);
+            }
+        } else {
+            path = path.replace(/\/{2,}/g, '/');
+        }
         return scheme + (host ? host : '') + path.replace(/\.jpeg$/i, '.jpg');
     } catch (_) {
         return url;

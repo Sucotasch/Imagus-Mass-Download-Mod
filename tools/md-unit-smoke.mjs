@@ -118,15 +118,43 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
         '#https://example.com/gallery/full.png',
         'https://example.com/a/b.webm?key=1#frag',
         'https://example.com/noext',
+        // BG-4 (2026-09-07): front-controller URLs keep their identity query
+        'https://artuntamed.com/index.php?media/galleries/224305/full',
+        'https://artuntamed.com/index.php?media/galleries/224305/attachments/117336/full',
+        'https://artuntamed.com/index.php?media/galleries/999999/full',
+        'https://cdn.e-hentai.org/fullimg.php?gid=224305&page=2&x=9',
+        '#https://artuntamed.com/index.php?media/galleries/224305/full',
     ];
     for (const u of samples) {
         assert.strictEqual(fileKey(u), normalizeKey(u), `${tree}: contract mismatch on ${u}`);
     }
     // Spot-check the semantics themselves (once, on the Chrome tree):
     if (tree === 'src-mv3-overlay') {
+        // BG-4: query dropped ONLY on real media-file paths (cache-busters)
         assert.equal(fileKey('https://h.com/a.jpg?TS=1'), 'https://h.com/a.jpg');
+        assert.equal(fileKey('https://h.com/a.jpg?TS=1#frag'), 'https://h.com/a.jpg');
+        assert.equal(fileKey('https://h.com/a.jpeg?x=1'), 'https://h.com/a.jpg');
         assert.equal(fileKey('//h.com/a//b.jpeg'), 'https://h.com/a/b.jpg');
         assert.equal(fileKey('#https://h.com/x.png'), 'https://h.com/x.png');
+        // BG-4: identity-carrying query on a front-controller path is KEPT
+        assert.equal(fileKey('https://h.com/index.php?id=5&x=1'), 'https://h.com/index.php?id=5&x=1');
+        assert.equal(fileKey('#https://h.com/index.php?media/1/full'), 'https://h.com/index.php?media/1/full');
+        // The ArtUntamed failure mode: 11 gallery items, path '/index.php' for
+        // all, identity ONLY in the query -> 11 distinct keys, not 1.
+        const at = [
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1300/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1301/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1302/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1303/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1304/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1305/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1306/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1307/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1308/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1309/full',
+            'https://artuntamed.com/index.php?media/galleries/224305/artworks/1310/full',
+        ];
+        assert.equal(new Set(at.map(fileKey)).size, 11, 'BG-4: ArtUntamed 11 items must key distinctly');
     }
 }
 

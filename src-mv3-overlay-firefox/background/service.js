@@ -600,6 +600,10 @@ function handleMessage(message, sender, sendResponse) {
             handleUpdateFilterStats(msg);
             mdAck();
             break;
+        case 'reportSkippedItem':
+            handleReportSkippedItem(msg);
+            mdAck();
+            break;
         case 'stopScanning':
             handleStopScanning();
             mdAck();

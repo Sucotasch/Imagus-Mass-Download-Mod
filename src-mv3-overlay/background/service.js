@@ -587,6 +587,9 @@ function handleMessage(message, sender, sendResponse) {
         case 'updateFilterStats':
             handleUpdateFilterStats(msg);
             break;
+        case 'reportSkippedItem':
+            handleReportSkippedItem(msg);
+            break;
         case 'stopScanning':
             handleStopScanning();
             break;

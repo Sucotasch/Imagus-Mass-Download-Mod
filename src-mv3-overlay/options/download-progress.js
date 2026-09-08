@@ -150,6 +150,12 @@
         // Update item properties
         Object.assign(downloadItems[id], data);
 
+        // BG-3: the SW knows the real filename (derived at download start,
+        // incl. extension-less media pages where the URL basename is
+        // 'full'/'index.php'). Prefer it over the URL-basename guess so the
+        // row shows what actually saved.
+        if (data.filename) downloadItems[id].fileName = data.filename;
+
         // Cap records to prevent unbounded growth
         const keys = Object.keys(downloadItems);
         if (keys.length > maxProgressRecords) {

@@ -55,8 +55,9 @@
     };
     // Stage 4a: FILE identity key shared with the service worker's fileKey —
     // strip HD '#', resolve protocol-relative to https (so '//host/x' and
-    // 'https://host/x' are the same file), drop the query string (cache-busters),
-    // collapse '//' in the path, treat .jpeg as .jpg. This is the global dedup
+    // 'https://host/x' are the same file), drop the query only on real
+    // media-file paths (cache-busters ?TS=...), collapse '//' in the path,
+    // treat .jpeg as .jpg. This is the global dedup
     // contract (downloadAllUniqueUrls here, globalProcessedUrls in the SW).
     var _normalizeUrlKey = function (url) {
         if (typeof url !== 'string') return '';
@@ -71,8 +72,26 @@
             var host = (slash > -1) ? rest0.slice(0, slash) : rest0;
             var path = (slash > -1) ? rest0.slice(slash) : '';
             var q = path.indexOf('?');
-            if (q > -1) path = path.slice(0, q);
-            path = path.replace(/\/{2,}/g, '/');
+            if (q > -1) {
+                // BG-4: drop the query ONLY when the path ends in a real media
+                // extension - cache-busters (?TS=...) attach to media files.
+                // On front-controller URLs (index.php?media/slug.123/full,
+                // view.php?id=...) the query IS the file identity; dropping it
+                // collapses distinct files into one key (ArtUntamed gallery:
+                // 11 items all keyed to index.php -> 1 download). Keeping it
+                // costs only a rare duplicate when a buster rides a front-
+                // controller URL; silently losing files is the worse failure.
+                var head = path.slice(0, q);
+                if (/\.(?:a?png|avif|bmp|gif|ico|jpe?g|m4a|m4v|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|ogv|opus|svg|tiff?|wav|weba|webm|webp|wmv)$/i.test(head)) {
+                    path = head.replace(/\/{2,}/g, '/');
+                } else {
+                    // keep the identity query; collapse '//' only in the path
+                    // part so a query value (e.g. a nested url) is untouched
+                    path = head.replace(/\/{2,}/g, '/') + path.slice(q);
+                }
+            } else {
+                path = path.replace(/\/{2,}/g, '/');
+            }
             return scheme + (host ? host : '') + path.replace(/\.jpeg$/i, '.jpg');
         } catch (_) {
             return url;
@@ -86,6 +105,11 @@
         var isHd = url[0] === '#';
         var rest = isHd ? url.slice(1) : url;
         if (rest.indexOf('//') === 0) rest = location.protocol + rest;
+        // BG-1: root-relative ('/index.php?media/...') URLs exist only in page
+        // context - the SW has no document to resolve them against, so a bare
+        // relative url would die in fetch(). Absolutize against the page
+        // origin, exactly as the browser resolves an <img src="/...">.
+        else if (rest[0] === '/') rest = location.origin + rest;
         return isHd ? '#' + rest : rest;
     };
 
@@ -304,8 +328,10 @@
             var all = cellCount > 0 && selected.size === cellCount;
             panel.querySelector('[data-a="all"]').textContent = all ? 'Deselect all' : 'Select all';
             var save = panel.querySelector('[data-a="save"]');
-            save.textContent = 'Save (' + selected.size + ')';
+            save.textContent = 'Save Selected (' + selected.size + ')';
             save.disabled = selected.size === 0;
+            var saveAll = panel.querySelector('[data-a="saveall"]');
+            if (saveAll) saveAll.disabled = cellCount === 0;
         };
 
         var buildPanel = function () {
@@ -318,13 +344,21 @@
             var bSave = doc.createElement('button');
             bSave.dataset.a = 'save';
             bSave.className = 'md-gsave';
+            var bSaveAll = doc.createElement('button');
+            bSaveAll.dataset.a = 'saveall';
+            bSaveAll.className = 'md-gsave';
+            // BG-UI: created label-less (data-a + className only; updatePanel
+            // just toggles disabled) -> a blank blue pill. Label it once here.
+            bSaveAll.textContent = 'Save All';
             panel.appendChild(bAll);
             panel.appendChild(bSave);
+            panel.appendChild(bSaveAll);
             panel.addEventListener('click', function (ev) {
                 var b = ev.target.closest ? ev.target.closest('button') : null;
                 if (!b) return;
                 if (b.dataset.a === 'all') toggleAll();
-                else if (b.dataset.a === 'save') doSave();
+                else if (b.dataset.a === 'save') doSave(false);
+                else if (b.dataset.a === 'saveall') doSave(true);
             });
             // First child of the grid so the sticky bar leads the scroll flow.
             PVI.GLR.insertBefore(panel, PVI.GLR.firstChild);
@@ -392,6 +426,7 @@
                     // page-fetch fallback materialized the image
                     m.dataset.mdSrc = url;
                 }
+                if (ok) m.dataset.mdOk = '1'; // network-proven (load or blob fetch)
                 startNext();
             };
 
@@ -583,11 +618,24 @@
             try { paceGrid(list); } catch (_) { /* pacing is an optimization */ }
         };
 
-        var doSave = function () {
-            if (!albumRef || selected.size === 0) return;
+        var doSave = function (all) {
+            if (!albumRef) return;
+            if (!all && selected.size === 0) return;
+            // Save All: every grid cell index, not the manual selection.
+            // .md-gcheck = one checkbox per cell (media nodes also carry
+            // data-idx — selecting them would duplicate every index).
+            var targets = all
+                ? Array.prototype.map.call(PVI.GLR.querySelectorAll('.md-gcheck'), function (b) { return parseInt(b.dataset.idx, 10); })
+                : null;
             var seen = new Set();
             var batch = [];
             var links = [];
+            // BG-2: counters live BEFORE eachItem - its synchronous death
+            // branch pushes into them, while the send plumbing reads them
+            // when finish() reports.
+            var queuedCount = 0;
+            var unresolved = 0;
+            var unresolvedUrls = [];
             // WHAT YOU SEE IS WHAT YOU SAVE. Every grid cell that finished
             // loading holds its WORKING media url in dataset.mdSrc (staged by
             // the loader / resolver stage). That url is network-proven for
@@ -598,12 +646,19 @@
                 // blob: object urls are content-script scoped — the service
                 // worker cannot fetch them; those items fall through to the
                 // resolver phase instead.
-                if (u && u.slice(0, 5) !== 'blob:' && _mdIsDirectMedia(u)) {
+                // mdOk = the loader network-proved this url for THIS session
+                // (img/video load event or page-fetch blob) — trust it as a
+                // download target even when it has no file extension
+                // (extension-less media pages, e.g. XenForo '.../full').
+                // The SW validation (HEAD/GET content-type/size filters,
+                // referer-retry on 403/404) still applies downstream.
+                var proven = m.dataset.mdOk === '1';
+                if (u && u.slice(0, 5) !== 'blob:' && (proven || _mdIsDirectMedia(u))) {
                     var k = String(m.dataset.idx);
                     if (!(k in mdByCell)) mdByCell[k] = u;
                 }
             });
-            selected.forEach(function (i) {
+            var eachItem = function (i) {
                 var cellUrl = mdByCell[String(i)];
                 var item = albumRef[i];
                 var cands = null;
@@ -625,48 +680,89 @@
                         if (cands[ci][0] !== '#') { pick = cands[ci]; break; }
                     if (!pick && cands.length) pick = cands[0];
                 }
-                if (!pick) return;
+                if (!pick) {
+                    // BG-2: no working preview and no resolvable candidate - a
+                    // genuine death (was a silent return, invisible in the
+                    // progress tab / Save Log). Count + record the album url
+                    // so finish() emits a skipped row for it.
+                    unresolved++;
+                    var diedUrl = item;
+                    if (Array.isArray(diedUrl)) diedUrl = Array.isArray(diedUrl[0]) ? diedUrl[0][0] : diedUrl[0];
+                    if (typeof diedUrl === 'string' && diedUrl) unresolvedUrls.push(diedUrl.replace(/^#/, ''));
+                    return;
+                }
                 var isHd = pick.charAt(0) === '#';
                 var url = _resolveUrl(pick.replace(/^#/, ''));
                 var key = _normalizeUrlKey(url);
                 if (key && seen.has(key)) return;
                 if (key) seen.add(key);
-                if (_mdIsDirectMedia(url)) batch.push({ url: url, isHd: isHd });
+                if (_mdIsDirectMedia(url) || mdByCell[String(i)]) batch.push({ url: url, isHd: isHd });
                 else links.push(url);   // page-link without a working preview:
                                         // needs one engine resolution pass
-            });
-            if (batch.length === 0 && links.length === 0) return;
+            };
+            (targets || selected).forEach(eachItem);
+            if (batch.length === 0 && links.length === 0 && unresolved === 0) return;
             // A previous failed attempt must not poison this one: drop the
             // negative cache entries so every item gets a fresh try.
             _mdResolveCache.forEach(function (v, k) { if (!v.cands) _mdResolveCache.delete(k); });
             var scanWasActive = !!PVI.downloadAllActive;
             if (!scanWasActive) Port.send({ cmd: 'openDownloadProgress' });
             var saveBtn = panel ? panel.querySelector('[data-a="save"]') : null;
+            var saveAllBtn = panel ? panel.querySelector('[data-a="saveall"]') : null;
+            // Both save buttons lock for the whole save — a second click
+            // while the chunker/resolver is running would double-send.
+            if (saveBtn) saveBtn.disabled = true;
+            if (saveAllBtn) saveAllBtn.disabled = true;
             if (links.length > 0 && saveBtn) { saveBtn.textContent = 'Resolving\u2026'; saveBtn.disabled = true; }
 
-            var queuedCount = 0;
-            var unresolved = 0;
             var pendingParts = (batch.length > 0 ? 1 : 0) + (links.length > 0 ? 1 : 0);
             // NOTE: declared BEFORE finish — finish can fire synchronously
             // from the chunker when every direct item fits the first chunk.
             var finish = function () {
                 pendingParts--;
                 if (pendingParts > 0) return;
-                if (!scanWasActive) {
-                    // Both parts completed — every item is queued before this
-                    // done:true lands. N-02: an early done lets the SW's
-                    // checkAllQueuesEmpty kill the session 100ms later, and
-                    // late downloadMass items arrive as canceled.
-                    Port.send({ cmd: 'updateStatus', status: 'Gallery save: ' + queuedCount + ' item(s) queued.', done: true });
-                }
-                if (unresolved > 0)
-                    console.warn(cfg.app?.name + ': [gallery-save] ' + unresolved + ' item(s) could not be resolved and were skipped');
-                if (saveBtn) {
-                    saveBtn.textContent = queuedCount > 0 ? 'Queued \u2713' : 'Save';
-                    saveBtn.disabled = false;
-                    setTimeout(updatePanel, 1500);
-                }
-                clearSelectionUi();
+                // Unresolved gallery items must be VISIBLE: report each one
+                // to the SW as a skipped progress entry (progress tab + Save
+                // Log) instead of a console-only warn. Sent BEFORE the
+                // done:true status (the SW drains the session 100ms after
+                // done — N-02) and CHUNKED like downloadMass (25 per 10ms)
+                // so a large failing set cannot saturate the message port.
+                var reportSkipped = function (onDone) {
+                    var ri = 0;
+                    (function nextSkip() {
+                        var rend = Math.min(ri + CHUNK, unresolvedUrls.length);
+                        for (; ri < rend; ri++)
+                            Port.send({ cmd: 'reportSkippedItem', url: unresolvedUrls[ri], reason: 'Could not resolve gallery item' });
+                        if (ri < unresolvedUrls.length) setTimeout(nextSkip, 10);
+                        else onDone();
+                    })();
+                };
+                var afterReports = function () {
+                    if (!scanWasActive) {
+                        // Both parts completed — every item is queued before this
+                        // done:true lands. N-02: an early done lets the SW's
+                        // checkAllQueuesEmpty kill the session 100ms later, and
+                        // late downloadMass items arrive as canceled.
+                        var msg = 'Gallery save: ' + queuedCount + ' item(s) queued.';
+                        if (unresolved > 0) msg += ' ' + unresolved + ' could not be resolved.';
+                        Port.send({ cmd: 'updateStatus', status: msg, done: true });
+                    }
+                    if (unresolved > 0)
+                        console.warn(cfg.app?.name + ': [gallery-save] ' + unresolved + ' item(s) could not be resolved and were skipped');
+                    // clearSelectionUi calls updatePanel synchronously, which
+                    // rewrites the button label — set the "Queued ✓" feedback
+                    // AFTER it, then restore the live label on the delayed
+                    // updatePanel timer (1.5s).
+                    clearSelectionUi();
+                    if (saveBtn) {
+                        saveBtn.textContent = queuedCount > 0 ? 'Queued \u2713' : 'Save Selected';
+                        saveBtn.disabled = false;
+                        setTimeout(updatePanel, 1500);
+                    }
+                    if (saveAllBtn) saveAllBtn.disabled = false;
+                };
+                if (unresolvedUrls.length > 0) reportSkipped(afterReports);
+                else afterReports();
             };
             var sendMass = function (url, isHd) {
                 queuedCount++;
@@ -702,9 +798,9 @@
                                     if (cands[ci][0] !== '#') { pick = cands[ci]; break; }
                                 if (!pick && cands && cands.length) pick = cands[0];
                                 if (pick) sendMass(_resolveUrl(pick.replace(/^#/, '')), pick.charAt(0) === '#');
-                                else unresolved++;
+                                else { unresolved++; unresolvedUrls.push(probe); }
                             })
-                            .catch(function () { unresolved++; });
+                            .catch(function () { unresolved++; unresolvedUrls.push(probe); });
                     })(links[nextIdx]);
                 }
                 // The pristine chain (links === 0) resolves on a microtask —
@@ -713,6 +809,10 @@
                 if (links.length > 0) _mdChain.then(finish, finish);
             };
             launchLinks();
+            // BG-2: an all-dead save (every target failed the pick phase)
+            // owns no part, so no finish() would fire - invoke it so the
+            // skipped reports and the status line still land.
+            if (batch.length === 0 && links.length === 0) finish();
         };
 
         var origGallery = PVI.gallery;
@@ -741,6 +841,8 @@
         downloadAllTotal: 0,
         downloadAllFound: 0,
         downloadAllFiltered: 0,
+        downloadAllCoveredCount: 0,
+        downloadAllUnresolved: 0,
         downloadAllUniqueUrls: new Set(),
         downloadAllCoveredElements: new Set(),
         downloadAllSendResponse: null,
@@ -941,6 +1043,8 @@
             PVI.downloadAllTotal = allElements.length;
             PVI.downloadAllFound = 0;
             PVI.downloadAllFiltered = 0;
+            PVI.downloadAllCoveredCount = 0;
+            PVI.downloadAllUnresolved = 0;
             PVI.downloadAllUniqueUrls.clear();
             PVI.downloadAllCoveredElements.clear();
             PVI.ambiguousUrlGroups = [];
@@ -975,9 +1079,14 @@
                         referer: window.location.href
                     });
                 } else {
+                    // Diagnostics: at Found=0 the bare "Finished" line left
+                    // no way to tell WHERE the items died (pre-filter?
+                    // covered? no rule match at all?). The summary counts
+                    // every stage so an empty scan is analyzable from the
+                    // progress tab alone.
                     const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
                     PVI._updateDownloadAllStatus(finalMessage);
-                    Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items.`, done: true });
+                    Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true });
                     PVI.downloadAllActive = false;
                     PVI._stopKeepAwake(finalMessage);
                     if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
@@ -1042,6 +1151,10 @@
 
                 try {
                     if (result == null || result === false) {
+                        // BG-2 diagnostics: the engine produced nothing for a
+                        // prefilter-passed element (no rule match / timeout).
+                        // One aggregate figure in the final summary line.
+                        PVI.downloadAllUnresolved++;
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
                     }
@@ -1080,7 +1193,11 @@
                             }
                         }
                         // the container covers its nested thumbnail media (4b)
-                        if (el.querySelectorAll) el.querySelectorAll('img, video').forEach(child => PVI.downloadAllCoveredElements.add(child));
+                        if (el.querySelectorAll) {
+                            const covered = el.querySelectorAll('img, video');
+                            covered.forEach(child => PVI.downloadAllCoveredElements.add(child));
+                            PVI.downloadAllCoveredCount += covered.length;
+                        }
                         Port.send({ cmd: 'updateStatus', status: `Found ${PVI.downloadAllFound} items (album)... (${itemsScanned}/${PVI.downloadAllTotal})`, done: false });
                         setTimeout(PVI.processNextInQueue, 150);
                         return;
@@ -1106,6 +1223,7 @@
                         ? (result.find(u => typeof u === 'string' && u[0] === '#') || result[0])
                         : result;
                     if (typeof url !== 'string' || !url) {
+                        PVI.downloadAllUnresolved++;
                         setTimeout(PVI.processNextInQueue, 10);
                         return;
                     }
@@ -1123,7 +1241,9 @@
                         // Stage 4b: a container element that resolves to a media
                         // item covers its nested <img>/<video> — same item.
                         if (el.localName !== 'img' && el.localName !== 'video' && el.querySelectorAll) {
-                            el.querySelectorAll('img, video').forEach(child => PVI.downloadAllCoveredElements.add(child));
+                            const covered = el.querySelectorAll('img, video');
+                            covered.forEach(child => PVI.downloadAllCoveredElements.add(child));
+                            PVI.downloadAllCoveredCount += covered.length;
                         }
                         Port.send({
                             cmd: 'downloadMass',
@@ -1183,7 +1303,8 @@
             if (!PVI.downloadAllActive) return;
             const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
             PVI._updateDownloadAllStatus(finalMessage);
-            Port.send({ cmd: 'updateStatus', status: finalMessage, done: true });
+            // Same diagnostics as the no-groups path: where items died.
+            Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound + (processedCount || 0)} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true });
 
             PVI.downloadAllActive = false;
             PVI._stopKeepAwake(finalMessage);

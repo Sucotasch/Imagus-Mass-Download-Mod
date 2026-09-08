@@ -185,16 +185,29 @@ Background завершает processUrlGroupsWithValidation
 
 Обёртка `_mdGalleryInstall` (content.js:~171; секция **без** маркеров `>>>`, зеркало —
 `mass-download/content-block.js`) оборачивает `PVI.gallery`: рисует чекбоксы на сетке галереи и
-панель Select all / Save. Ноль изменений SW и upstream:
+панель Select all / Save Selected / Save All (2026-09-06). Upstream не трогается; из SW-правок —
+только диагностический кейс `reportSkippedItem`:
 
-- Save отправляет **готовые** URL элемента альбома (`albumRef[i][0]`) напрямую в `downloadMass` —
-  вся существующая валидация/дедуп/прогресс переиспользуются.
+- **WYSIWYS с доверием proven-URL**: лоадер сетки помечает ячейку `mdOk`, когда URL
+  network-proven (load-событие или page-fetch blob). Такой URL идёт в `downloadMass`
+  **без гейта расширений** (`_mdIsDirectMedia` обходится) — extension-less медиа-страницы
+  (XenForo `…/media/slug.NNN/full`, ArtUntamed) больше не выпадают. `blob:` остаётся
+  исключением (SW не может их фетчить). Вся валидация/дедуп/прогресс вниз по течению — штатные.
+- Save All = все ячейки сетки (`.md-gcheck`), выделение не требуется; обе Save-кнопки
+  лочатся на время сохранения.
 - Ссылки страниц без превью резолвятся движком: сериализованно через `_mdSerialized`
   (у движка ОДИН общий resolver-таймер) + `_mdResolveCandidates` с негативным кэшем
   (`_mdResolveCache`; перед повторным Save негативные записи сбрасываются).
+- Неразрешённые items больше не невидимы: `reportSkippedItem` (чанками 25/10 мс) создаёт
+  skipped-запись в прогресс-табе и Save Log с URL и причиной.
 - Отправки чанками 25 URL / 10 мс, чтобы 500-item Select All не залил порт сообщений.
 - Если скан не активен, открывается отдельная сессия прогресса и закрывается
-  `updateStatus{done:true}` ПОСЛЕ последнего чанка.
+  `updateStatus{done:true}` ПОСЛЕ последнего чанка (и последнего reportSkippedItem).
+
+**Имена файлов для extension-less URL** (service-core.js `processDownloadQueue`, оба дерева):
+если basename — мусор (`index.php`, `full`, …) или без расширения, имя строится из последнего
+значимого сегмента пути (или path-shaped query — XenForo-маршрут) + реального расширения из
+MIME (`MIME_TO_EXT`). Иначе поведение прежнее (basename). Обычные URL с расширением не затронуты.
 
 ## Дедупликация (stage-4a: file identity keys)
 
@@ -209,9 +222,14 @@ Background завершает processUrlGroupsWithValidation
 | Внутри цепочки кандидатов одной группы | dedup списка `_candidates` | `candidateKey` (service-core.js:~1206) |
 | Кросс-фазовая | Проверка `downloadProgress[bestUrl]` перед добавлением в очередь | raw URL |
 
-`fileKey` == `_normalizeUrlKey`: снимает HD `#`, разворачивает `//host` → `https://host`, отбрасывает
-query, схлопывает `//` в пути, `.jpeg` → `.jpg` — HD- и обычная вариации одного файла это одна запись.
-`candidateKey` сохраняет расширение и query, чтобы реальная альтернатива `.jpeg` не потерялась,
+`fileKey` == `_normalizeUrlKey`: снимает HD `#`, разворачивает `//host` → `https://host`, схлопывает
+`//` в пути, `.jpeg` → `.jpg`. Query отбрасывается **только когда путь оканчивается реальным media-
+расширением** (кэш-бастеры `?TS=` навешиваются на файлы: `.jpg?TS=…` ≡ `.jpg`). На front-controller
+URL (`index.php?media/slug.NNN/full`, `view.php?id=…`) query **сохраняется** — там это и есть
+идентичность файла (BG-4, ArtUntamed: 11 элементов, у всех путь `index.php`, различны только query).
+Цена правила — редкий дубликат, когда бастер сидит на front-controller пути; молчаливая потеря файла
+хуже. HD- и обычная вариации одного файла это одна запись.
+`candidateKey` всегда сохраняет расширение и query, чтобы реальная альтернатива `.jpeg` не потерялась,
 когда «родственный» ей `.jpg` уже провалился. Явные retry (`retryDownload`) от глобального дедупа
 освобождены.
 
