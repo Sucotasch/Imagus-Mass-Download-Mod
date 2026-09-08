@@ -1,7 +1,13 @@
 Perform a full engineering code review of this entire project and automatically write what you find to new Audit.md.
 
 This is NOT only a security scan.
-I want a broad, senior-level code review and cleanup across the whole repo.
+I want a broad, senior-level code review and cleanup across the whole repo. 
+Aggressively hunt for failure modes, edge cases, and broken assumptions
+Systematically test and identify:
+Violated invariants and unchecked assumptions.
+Resource limits, leaks, and OOM traps.
+Silent error suppression and exception handling gaps.
+Deadlocks, async race conditions, and ordering dependencies.
 
 Your goal is to improve:
 - correctness
