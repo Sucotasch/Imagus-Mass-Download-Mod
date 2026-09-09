@@ -149,6 +149,63 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
         assert.strictEqual(fileKey(u), normalizeKey(u), `${tree}: contract mismatch on ${u}`);
     }
 
+    // Fix D (2026-09-09 live test) lock: mdRemoveFileThenErase — the stub
+    // cleanup helper. The 2026-09-09 live test left 11 SERVER_FAILED stubs
+    // in Chrome's history because the old (removeFile).then(erase) chain
+    // SKIPPED the erase whenever removeFile rejected (a 5xx interruption
+    // usually leaves no partial file on disk, so removeFile fails "file not
+    // found"). The helper uses the callback form — the callback fires in
+    // EVERY outcome, so the erase runs exactly once either way, strictly
+    // after removeFile (order matters: erase drops the history record
+    // removeFile needs).
+    const runFixD = (behavior) => {
+        const calls = { removeFile: 0, erase: 0 };
+        const runtime = { lastError: null };
+        const mockChrome = {
+            runtime: runtime,
+            downloads: {
+                removeFile: (id, cb) => {
+                    calls.removeFile++;
+                    if (id !== 7) throw new Error(`${tree}: Fix D — helper must pass the download id`);
+                    behavior(runtime, cb);
+                    return undefined; // callback API shape: no promise returned
+                },
+                erase: (q) => {
+                    if (q.id !== 7) throw new Error(`${tree}: Fix D — erase must target the same id`);
+                    if (calls.removeFile !== 1) throw new Error(`${tree}: Fix D — erase must run strictly after removeFile`);
+                    calls.erase++;
+                    return Promise.resolve();
+                }
+            }
+        };
+        const prev = globalThis.chrome;
+        globalThis.chrome = mockChrome;
+        try {
+            const fn = new Function(
+                `${cutFnFor(swSrc)('mdSwallow')}\n${cutFnFor(swSrc)('mdRemoveFileThenErase')}\nreturn mdRemoveFileThenErase;`
+            )();
+            fn(7);
+        } finally {
+            if (prev === undefined) delete globalThis.chrome;
+            else globalThis.chrome = prev;
+        }
+        return calls;
+    };
+    // (a) removeFile succeeds — erase exactly once, after removeFile:
+    const fixDok = runFixD((runtime, cb) => cb());
+    assert.equal(fixDok.removeFile, 1, `${tree}: Fix D — removeFile invoked`);
+    assert.equal(fixDok.erase, 1, `${tree}: Fix D — erase runs when removeFile succeeds`);
+    // (b) removeFile FAILS (runtime.lastError inside the callback — the
+    // 2026-09-09 live shape: a 5xx interruption leaves no partial file, so
+    // there is nothing to delete). The old promise chain skipped the erase
+    // exactly here; the callback helper must still erase exactly once.
+    const fixDfail = runFixD((runtime, cb) => {
+        runtime.lastError = { message: 'No file to delete' };
+        cb();
+        runtime.lastError = null;
+    });
+    assert.equal(fixDfail.erase, 1, `${tree}: Fix D — erase STILL runs when removeFile fails (2026-09-09 live defect)`);
+
     // Fix C-2 (2026-09-09 live test) lock: mediaHashKey — the cross-host
     // content-hash key. The wimg/ahrimp4 twins (live rows [001]+[021]) must
     // collapse while fileKey keeps them apart (host is identity there);

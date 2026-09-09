@@ -1451,6 +1451,21 @@ function mdSwallow(promiseLike) {
     if (promiseLike && typeof promiseLike.catch === 'function') promiseLike.catch(function () {});
 }
 
+// Fix D (2026-09-09 live test, v2026.8.20.6): SERVER_FAILED stubs survived
+// Fix A in Chrome's history. Root cause: the promise chain
+// (removeFile).then(erase) SKIPS erase when removeFile rejects — on a 5xx
+// interruption Chrome usually has no partial file on disk, removeFile
+// rejects ("file not found"), and mdSwallow silently ate the skip. The
+// callback form below runs the erase exactly once in BOTH outcomes: errors
+// arrive as chrome.runtime.lastError INSIDE the callback, never as a
+// skipped callback. Erase still runs strictly AFTER removeFile (erase
+// drops the history record removeFile needs).
+function mdRemoveFileThenErase(id) {
+    chrome.downloads.removeFile(id, function () {
+        mdSwallow(chrome.downloads.erase({ id: id }));
+    });
+}
+
 chrome.downloads.onChanged.addListener(function (delta) {
     const existingTask = downloadIdToTask.get(delta.id);
     if (!existingTask) return;
@@ -1479,10 +1494,9 @@ chrome.downloads.onChanged.addListener(function (delta) {
                     // ran first, removeFile() could no longer find the file.
                     // NOTE: DownloadQuery.id is a single number — an array is
                     // an invalid argument and erase would silently reject.
-                    mdSwallow(
-                        (chrome.downloads.removeFile(delta.id) || Promise.resolve())
-                            .then(function () { return chrome.downloads.erase({ id: delta.id }); })
-                    );
+                    // Fix D: shared helper guarantees the erase even when no
+                    // file exists to remove (promise chains skip on reject).
+                    mdRemoveFileThenErase(delta.id);
                     if (!alreadyCanceled) {
                         if (!advanceToNextCandidate(existingTask, 'HTML page')) {
                             updateDownloadProgress(url, 'failed', 0, 'Server returned HTML page', delta.id, existingTask);
@@ -1516,10 +1530,11 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 // needs). The attempt chain lives in the progress tab / log.
                 const dlErr = results[0].error || '';
                 if (dlErr === 'SERVER_FAILED') {
-                    mdSwallow(
-                        (chrome.downloads.removeFile(delta.id) || Promise.resolve())
-                            .then(function () { return chrome.downloads.erase({ id: delta.id }); })
-                    );
+                    // Fix D: callback helper — the erase must run even when
+                    // removeFile rejects (no partial file on disk). The
+                    // 2026-09-09 live test left 11 SERVER_FAILED stubs exactly
+                    // because the old promise chain skipped the erase.
+                    mdRemoveFileThenErase(delta.id);
                 } else if (dlErr === 'SERVER_BAD_CONTENT' || dlErr === 'SERVER_FORBIDDEN'
                     || dlErr === 'SERVER_UNAUTHORIZED') {
                     mdSwallow(chrome.downloads.erase({ id: delta.id }));
