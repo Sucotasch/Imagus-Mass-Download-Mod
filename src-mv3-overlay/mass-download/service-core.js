@@ -575,8 +575,15 @@ function handleRefererDownloadFailed(msg) {
     // Stage 5b: the content-script fetch returned an explicit 4xx/5xx (the
     // URL is definitively dead) — skip straight to the next candidate.
     if (base && /^HTTP [45]\d\d$/.test(msg.error || '')) {
-        if (advanceToNextCandidate(base)) return;
+        // FIX-2: the dead attempt is recorded in the chain before advancing;
+        // the old row stays visible as a failed attempt (see advance).
+        if (advanceToNextCandidate(base, 'referer ' + (msg.error || 'HTTP error'))) return;
     }
+    // FIX-2: record the dead referer attempt BEFORE building the task (the
+    // base task may be missing — a synthetic stub keeps the chain going).
+    const attempts = recordCandidateAttempt(
+        base || { url: url, filterMethod: 'BROWSER', httpStatus: 0 },
+        'referer retry failed: ' + (msg.error || 'unknown'));
     const task = {
         url: url,
         referer: msg.referer || (base ? base.referer : ''),
@@ -588,7 +595,12 @@ function handleRefererDownloadFailed(msg) {
         fileSize: 0,
         filterMethod: 'BROWSER',
         httpStatus: msg.error === 'HTTP 403' ? 403 : 0,
-        _candidates: (base && Array.isArray(base._candidates)) ? base._candidates : []
+        _candidates: (base && Array.isArray(base._candidates)) ? base._candidates : [],
+        // FIX-2/FIX-3: the attempt chain and selection telemetry carry over
+        // from the base task into the browser-context download task.
+        _attempts: attempts,
+        _candidateCount: base && base._candidateCount != null ? base._candidateCount : null,
+        _pickReason: base ? (base._pickReason || null) : null
     };
     task._session = sessionId;
     downloadQueue.push(task);
@@ -673,7 +685,13 @@ function serializeProgressEntry(entry) {
         httpStatus: t ? t.httpStatus : null,
         filterMethod: t ? t.filterMethod : null,
         filename: t ? t.filename : null,
-        quality: t ? classifyUrlQuality(t.url) : null
+        quality: t ? classifyUrlQuality(t.url) : null,
+        // FIX-3 (2026-09-09): candidate-selection telemetry — how many
+        // alternatives the group had, why this one was picked, and the chain
+        // of already-failed attempts (each {url, method, http, reason}).
+        candidateCount: t && t._candidateCount != null ? t._candidateCount : null,
+        pickReason: t ? (t._pickReason || null) : null,
+        attempts: t && Array.isArray(t._attempts) ? t._attempts.slice() : null
     };
 }
 
@@ -704,7 +722,11 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
         error: error, downloadId: downloadId,
         referer: task ? task.referer : null,
         filename: task ? task.filename : null,
-        fileSize: task ? task.fileSize : null
+        fileSize: task ? task.fileSize : null,
+        // FIX-3: live rows carry the telemetry too (renderTable ignores it,
+        // formatLog shows it in the Save Log).
+        candidateCount: task && task._candidateCount != null ? task._candidateCount : null,
+        pickReason: task ? (task._pickReason || null) : null
     });
     downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
 
@@ -1152,14 +1174,31 @@ function pickNextCandidate(task) {
     return next;
 }
 
+// FIX-2 (rule34 .htm garbage, 2026-09-09): append the candidate's failed
+// attempt to the item's chain. Pure data, no side effects — used by
+// advanceToNextCandidate and requeueNextCandidateForFilter so every candidate
+// death (browser interrupt, HTML garbage, filter rejection) leaves a trace in
+// the progress row and the Save Log.
+function recordCandidateAttempt(task, reason) {
+    const attempts = Array.isArray(task._attempts) ? task._attempts.slice() : [];
+    attempts.push({
+        url: task.url,
+        method: task.filterMethod || '-',
+        http: task.httpStatus || 0,
+        reason: reason || 'failed'
+    });
+    return attempts;
+}
+
 // Stage 5b/5c: when the current URL fails the browser-context download (dead
 // 404 link), advance to the next candidate instead of failing the item. Returns
 // true if advanced (task re-queued as a BROWSER download), false otherwise.
-function advanceToNextCandidate(task) {
+function advanceToNextCandidate(task, reason) {
     const next = pickNextCandidate(task);
     if (!next) return false;
     const oldUrl = task.url;
     const prog = downloadProgress[oldUrl];
+    const attempts = recordCandidateAttempt(task, reason);
     // A NEW task object — the caller (onChanged interrupted) still releases
     // the failed download's slot on the OLD task; sharing the object would
     // set _slotReleased on the re-queued task and leak its slot forever.
@@ -1178,16 +1217,21 @@ function advanceToNextCandidate(task) {
         httpStatus: 0,
         filterMethod: 'BROWSER',
         _session: task._session,
-        _candidates: task._candidates
+        _candidates: task._candidates,
+        // FIX-2/FIX-3: the attempt chain and the selection telemetry follow
+        // the item across advances (serializeProgressEntry ships both).
+        _attempts: attempts,
+        _candidateCount: task._candidateCount != null ? task._candidateCount : null,
+        _pickReason: task._pickReason || null
     };
-    if (prog) {
-        delete downloadProgress[oldUrl];
-        prog.url = next.url;
-        prog.task = newTask;
-        downloadProgress[next.url] = prog;
-        // Page rows are keyed by URL: re-keying must remove the old row or it
-        // stays stuck at its last status ('downloading') until a full refresh.
-        sendToProgressTab({ cmd: 'removeProgressEntry', url: oldUrl });
+    // FIX-2 (2026-09-09): the old candidate's row is KEPT as a terminal
+    // 'failed' record with an "advanced" marker instead of being deleted and
+    // re-keyed — the full attempt chain stays visible in the progress tab and
+    // the Save Log (previously removeProgressEntry erased the trace of every
+    // dead candidate). The old row dies with its own key; the new candidate
+    // gets a fresh row via updateDownloadProgress below.
+    if (prog && prog.status !== 'canceled') {
+        updateDownloadProgress(oldUrl, 'failed', 0, (reason || 'failed') + ' - trying alternate URL', null, prog.task);
     }
     globalProcessedUrls.add(fileKey(next.url));
     updateDownloadProgress(next.url, 'pending', 0, 'Trying alternate URL...', null, newTask);
@@ -1210,7 +1254,12 @@ function requeueNextCandidateForFilter(task) {
         source: task.source || 'group',
         isHd: next.isHd,
         elementInfo: task.elementInfo || null,
-        _candidates: task._candidates
+        _candidates: task._candidates,
+        // FIX-2/FIX-3: the attempt chain and the selection telemetry follow
+        // the item across filter re-queues too.
+        _attempts: recordCandidateAttempt(task, 'filter-reject'),
+        _candidateCount: task._candidateCount != null ? task._candidateCount : null,
+        _pickReason: task._pickReason || null
     };
     filterQueue.push(newTask);
     return true;
@@ -1232,6 +1281,12 @@ function mapDownloadInterruptReason(reason) {
     return 'Download interrupted: ' + s;
 }
 
+// Tolerate promise-rejections and callback-style APIs across both trees
+// (Chrome returns a Promise, older callback forms return undefined).
+function mdSwallow(promiseLike) {
+    if (promiseLike && typeof promiseLike.catch === 'function') promiseLike.catch(function () {});
+}
+
 chrome.downloads.onChanged.addListener(function (delta) {
     const existingTask = downloadIdToTask.get(delta.id);
     if (!existingTask) return;
@@ -1242,6 +1297,40 @@ chrome.downloads.onChanged.addListener(function (delta) {
 
         if (delta.state) {
             if (delta.state.current === 'complete') {
+                const mime = results[0].mime || '';
+                const isHtml = mime.indexOf('text/html') === 0
+                    || mime.indexOf('application/xhtml+xml') === 0;
+                const alreadyCanceled = downloadProgress[url]
+                    && downloadProgress[url].status === 'canceled';
+                if (isHtml) {
+                    // FIX-1 (rule34 .htm garbage, 2026-09-09): the server
+                    // answered the download request with a 200 HTML page;
+                    // Chrome saved it renamed to .htm (anti-spoof). Delete the
+                    // garbage file from disk, erase it from the download
+                    // history, and only then advance to the next candidate —
+                    // a completed-but-HTML item is a failed candidate, never a
+                    // real download. Missing mime (Firefox) never trips this:
+                    // HTML detection requires an explicit HTML value.
+                    // Order matters: erase() removes the HISTORY entry; if it
+                    // ran first, removeFile() could no longer find the file.
+                    mdSwallow(
+                        (chrome.downloads.removeFile(delta.id) || Promise.resolve())
+                            .then(function () { return chrome.downloads.erase({ id: [delta.id] }); })
+                    );
+                    if (!alreadyCanceled) {
+                        if (!advanceToNextCandidate(existingTask, 'HTML page')) {
+                            updateDownloadProgress(url, 'failed', 0, 'Server returned HTML page', delta.id, existingTask);
+                        }
+                    }
+                    releaseDownloadSlot(existingTask);
+                    return;
+                }
+                // FIX-1 (record-on-success): capture the real MIME and size
+                // BEFORE the terminal progress update so BROWSER-path rows
+                // (filterMethod '-') carry type/size in the progress tab and
+                // the Save Log like HEAD/GET-validated ones do.
+                if (mime) existingTask.contentType = mime;
+                if (results[0].fileSize) existingTask.fileSize = results[0].fileSize;
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
@@ -1249,10 +1338,10 @@ chrome.downloads.onChanged.addListener(function (delta) {
             } else if (delta.state.current === 'interrupted') {
                 const alreadyCanceled = existingTask && downloadProgress[url]
                     && downloadProgress[url].status === 'canceled';
-                // Stage 5b: dead 404 link -> try the next fallback candidate
-                // (advanceToNextCandidate mutates task.url / re-keys the
-                // progress entry; only mark failed if no candidates remain).
-                if (!alreadyCanceled && !advanceToNextCandidate(existingTask)) {
+                // Stage 5b: dead link -> try the next fallback candidate. The
+                // old row is kept as a 'failed' attempt with an advance marker
+                // (FIX-2); only mark failed outright if no candidate remains.
+                if (!alreadyCanceled && !advanceToNextCandidate(existingTask, 'interrupted: ' + (results[0].error || 'unknown'))) {
                     updateDownloadProgress(url, 'failed', 0, mapDownloadInterruptReason(results[0].error), delta.id, existingTask);
                 }
                 releaseDownloadSlot(existingTask);
@@ -1437,7 +1526,7 @@ async function findBestUrlWithValidation(urlArray, referer) {
         isHdByKey.set(key, isHd);
         candidates.push({ url: clean, isHd });
     }
-    if (candidates.length === 0) return { best: null, ordered: [] };
+    if (candidates.length === 0) return { best: null, ordered: [], pickReason: 'no-candidates' };
     const hiRes = !!(cachedPrefs?.hz?.hiRes);
     const scored = candidates.map(c => ({ c, score: calculateUrlHeuristicScore(c.url) }))
         .sort((a, b) => {
@@ -1448,7 +1537,9 @@ async function findBestUrlWithValidation(urlArray, referer) {
     const recentFailureRate = urlValidationStats.recentFailures.length / 10;
     if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
         const ordered = scored.map(s => s.c);
-        return { best: ordered[0] || null, ordered };
+        // FIX-3: breaker short-circuit — the winner is heuristic-only and
+        // UNVALIDATED (this is how rule34 .htm garbage got picked).
+        return { best: ordered[0] || null, ordered, pickReason: 'breaker-open (unvalidated)' };
     }
     const candidatesToValidate = scored.slice(0, Math.min(5, scored.length));
     // Audit N-03: Promise.allSettled never rejects and validateSingleUrlContent
@@ -1468,7 +1559,7 @@ async function findBestUrlWithValidation(urlArray, referer) {
             ...scored.filter(s => !validKeys.has(candidateKey(s.c.url))).map(s => s.c)
         ];
         const best = ordered[0] || null;
-        return { best, ordered };
+        return { best, ordered, pickReason: 'validated ' + validUrls.length + ' of ' + candidatesToValidate.length };
     }
     urlValidationStats.recentFailures.push(Date.now());
     urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
@@ -1477,7 +1568,7 @@ async function findBestUrlWithValidation(urlArray, referer) {
         setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
     }
     const ordered = scored.map(s => s.c);
-    return { best: ordered[0] || null, ordered };
+    return { best: ordered[0] || null, ordered, pickReason: 'heuristic (validation failed)' };
 }
 
 async function processUrlGroupsWithValidation(groups, referer, sender) {
@@ -1516,7 +1607,10 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                     // until one succeeds.
                     _candidates: Array.isArray(pick.ordered)
                         ? pick.ordered.filter(c => c.url !== bestUrl)
-                        : []
+                        : [],
+                    // FIX-3: selection telemetry for the progress row / Save Log.
+                    _candidateCount: Array.isArray(pick.ordered) ? pick.ordered.length : 0,
+                    _pickReason: pick.pickReason || null
                 };
                 filterQueue.push(task);
                 processFilterQueue();

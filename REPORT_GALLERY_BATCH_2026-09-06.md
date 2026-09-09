@@ -772,3 +772,184 @@ links-путь и большие батчи). Подпись «Save Selected (N)
    решением пользователя (upstream issue пока не делаем).
 4. **Релизная гигиена** (после решения): схема версий `2026.8.20.N`, упаковка ZIP (обёртка
    `src-mv3-overlay/`, прямые слеши).
+
+## 22. Батч 2026-09-09: rule34 `.htm`-мусор — Fix-1/2/3 + версия 2026.8.20.3
+
+### 22.1. Реферат корневой причины (доказательства — оба живых лога 2026-09-08)
+- Цепочка: sieve-правило rule34 (`to: '#jpg jpeg png gif#'`) синтезирует ext-угадки;
+  `findBestUrlWithValidation` ставит `.jpg`-угадку выше реального og:image-URL (`?TS` стоит
+  10 очков); SW-валидация wimg получает 403 (`Referer` — запретный fetch-заголовок, SW
+  физически не может отправить referer) → ≥8 отказов открывают circuit breaker (30 с) →
+  короткое замыкание возвращает НЕвалидированный `ordered[0]` = `.jpg`-угадку → фильтр 403 →
+  `triggerRefererDownload` → CORS-блокировка → `refererDownloadFailed` → Stage 5b BROWSER-задача →
+  `chrome.downloads.download` → wimg отдаёт 200 text/html → Chrome переименовывает в `HASH.htm`
+  → `onChanged` complete-ветка помечает COMPLETED **без проверки содержимого** (`downloaded++`).
+- Вечерний лог (наш код): 64× `BROWSER/-`, ноль GET — волны 503 не было, мусор дошёл до Chrome;
+  утренний (релизный): 41× `GET/503` — угадки умирали заметно в фильтре. Дефект был в релизном
+  коде и раньше (кандидатная механика байт-в-байт релиз→HEAD, см. §22.1.1), маскировался
+  поведением сервера (503-тротлинг wimg утром), НЕ вызван коммитами `29fe0bf`/`ddf4b74`.
+- Дымящиеся факты: строки [037]/[038] `COMPLETED .jpg` для хешей `e885d88a…`/`b504a8e2…`,
+  которые на самом деле MP4 ([001]/[002] skipped «Too small» < 2 МБ) — варианта `.jpg` не
+  существует физически; [049]–[065] png COMPLETED — везение (правильная угадка).
+- Пользовательские гипотезы: (а) «выбор варианта больше не работает» — частично верно:
+  порядок кандидатов ухудшен угадками, SW-валидация на wimg структурно 403; (б) ArtUntamed/BG-4
+  изменил кандидатную систему — НЕ подтверждено: BG-4 менял только обработку query в `fileKey`,
+  ключи rule34 идентичны до/после, smoke-тест фиксирует оба случая.
+
+#### 22.1.1. Что уже было в релизе (старый дефект, не регрессия)
+- Релизная вечерняя цепочка умерла на первом отказе: кандидаты отбирались в групповой фазе
+  (`_candidates` = ordered без best), но НЕ деградировали после фильтр-смерти выбранного URL:
+  при HEAD/GET-403/404 `triggerRefererDownload` ничего не отдаёт в очередь после CORS-провала
+  — `refererDownloadFailed` НЕ вызывал advance. В этом отношении текущий HEAD (`ddf4b74`)
+  обогнал релиз: `advanceToNextCandidate` вызывается из handleRefererDownloadFailed (HTTP 4xx/5xx
+  branch) и из `onChanged` interrupted. Дефект `.htm`-мусора в BROWSER-пути тем не менее
+  существовал в релизе (как и в HEAD): complete-ветка `onChanged` не проверяла содержимое.
+- Важное следствие для FIX-2: requeue-путь фи→стадия 5f помечает старую строку `failed` «…; trying
+  alternate URL» и пересоздаёт её на новом ключе — цепочка попыток видна и сейчас; невидимыми
+  были смерти в браузерном скачке (onChanged interrupted → advance удалял строку) и в referer-4xx
+  (advance удалял строку) — FIX-2 закрывает обе.
+
+### 22.2. Утверждённый дизайн FIX-1/2/3 + версия (утверждено пользователем 2026-09-09)
+Дизайн разработан до правок по правилу «предварительная разработка конкретных решений и проверка
+последствий в комплексе» (запрос пользователя, 2026-09-09); все точки входа/выхода прочитаны,
+сторонние API верифицированы (chrome.downloads.removeFile/erase — Chrome MV2-справочник,
+Promise-форма ≥Chrome 96; DownloadItem.mime; MDN Firefox паритет removeFile).
+
+**FIX-1 (пост-хок MIME-проверка + самоочистка):**
+1. `onChanged` complete-ветка: если `results[0].mime` — HTML (`text/html` **или**
+   `application/xhtml+xml` — wimg-подобные отдают оба), и строка не отменена пользователем:
+   пометить `failed` («Server returned HTML page») вместо completed, НЕ инкрементировать
+   `downloaded`, вызвать `advanceToNextCandidate(existingTask, 'HTML')`, удалить файл с диска
+   `chrome.downloads.removeFile(delta.id)` (провал мягкий — history-entry остаётся «File
+   missing», это лучше .htm-мусора на диске), стереть историю `chrome.downloads.erase({id})`
+   ПОСЛЕ removeFile (erase удаляет из истории, не с диска; порядок обязан сохраняться).
+   `releaseDownloadSlot` в конце в обоих исходах.
+2. Record-on-success (бесплатная телеметрия): на полном успехе записать на task
+   `task.contentType = results[0].mime`, `task.fileSize = results[0].fileSize` ДО
+   `updateDownloadProgress('completed')` — Save Log получит MIME/размер для BROWSER-строк.
+2а. MIME записывается ДО апдейта прогресса, т.к. `updateDownloadProgress` шлёт `fileSize`
+   в live-push (`sendToProgressTab`) и сохраняет task в `downloadProgress` — иначе строка
+   останется без size/MIME. (fileSize также участвует в P2-deriveFilename в терминальных
+   статусах — completed-терминальный, там ext из MIME.)
+2б. `results[0].mime` на complete всегда присутствует у Chrome; у Firefox DownloadItem.mime
+   может отсутствовать (undefined) — Falsy-гвард: HTML-проверка срабатывает только если mime
+   есть и HTML; missing mime → считаем валидным (не блокируем честные загрузки Firefox).
+3. Гварды: HTML-обработка пропускается, если строка уже `canceled` (`downloadProgress[url].status
+   === 'canceled'`) — сценарий «пользователь нажал Cancel All, Chrome завершает параллельный
+   download» → release slot, но НЕ advance (advance сам по себе не двигает очередь при
+   userCanceled — pickNextCandidate возвращает null → неadvance, mark failed). Гвард
+   `scanInProgress` для HTML-ветки не нужен: pickNextCandidate проверяет `scanInProgress &&
+   userCanceled` сам и возвращает null при отмене сканирования.
+4. Сессия/keepalive: advance-пуш в downloadQueue удерживает сессию живой (sessionHasWork()
+   = true); complete-HTML не может «зависнуть» полем без … недостижимо.
+5. Cap-взаимодействие: помеченные failed строки живут дольше completed в порядке эвикции
+   (failed=2 > completed=0 в сортировке), новым failed-строкам гарантирован рост — рост
+   терминальных failed-строк ограничен cap'ом (100 по умолчанию, действует SW+UI).
+6. Оба дерева: Chrome-логика идентична; Firefox-ветка использует те же вызовы
+   (removeFile/erase поддерживаются MDN; erase поддерживается в Firefox — провал мягкий).
+
+**FIX-2 (сохранение цепочки попыток):**
+1. Новый чистый хелпер `recordCandidateAttempt(task, reason)`: возвращает копию
+   `task._attempts` с добавленной попыткой `{url, method, http, reason}` (метод — текущий
+   filterMethod, http — текущий httpStatus; поднятые `_attempts` из advance/requeue — то, что
+   мы накапливаем). Хелпер размещён рядом с advanceToNextCandidate (после pickNextCandidate).
+2. `advanceToNextCandidate(task, reason)`:
+   - накапливает `attempts = recordCandidateAttempt(task, reason)` и кладёт в newTask._attempts;
+   - старая строка прогресса больше НЕ удаляется: вместо delete+re-key+removeProgressEntry
+     → строка помечается failed «→ trying alternate URL» (движок не провалился, кандидат
+     провалился — пользователь обязан видеть попытку), новая строка создаётся апдейтом
+     `updateDownloadProgress(next.url, 'pending', 0, 'Trying alternate URL...', null, newTask)`.
+   - формальный нюанс: новая строка появляется с прогрессом 0/pending и только затем получает
+     downloading — параллельные строки старой и новой сосуществуют; при исчезновении старой
+     отмены нет — целостность гарантирует cap и эвикция completed-first.
+3. `requeueNextCandidateForFilter`: копирует `_attempts` в новый task (фильтр-путь смерти
+   старой строки уже помечает её failed «…; trying alternate URL» — предсуществующее
+   поведение, не трогаем).
+4. Page-side `removeProgressEntry` handler удаляется вместе с рассылкой (единственный
+   отправитель — advanceToNextCandidate; проверено grep'ом — никаких других senders нет).
+
+**FIX-3 (кандидатная телеметрия):**
+1. `findBestUrlWithValidation` возвращает pick-reason: `{best, ordered, pickReason}`; строка
+   формируется в каждом исходе:
+   - breaker-open: `'breaker-open'` (+`/validated N of M`) — circuit breaker открыт или
+     failure-rate>0.7, короткое замыkание без валидации;
+   - validated-first: `'validated'` — есть валидные, победитель из validUrls;
+   - fallback: `'heuristic'` — валидация прошла, валидных нет, порядок по эвристике.
+2. `processUrlGroupsWithValidation` пишет на task: `_candidateCount = pick.ordered.length`,
+   `_pickReason = pick.pickReason`.
+3. serializeProgressEntry: +2 поля `candidateCount`, `pickReason`, `attempts` (attemptChain
+   — массив `{url,method,http,reason}`).
+4. serializeProgressEntry добавляет `pickReason`/`candidateCount`/`attempts`  — см. п.3.
+5. page `formatLog`: под строкой [NNN] добавляются отступные строки
+   `      pick: <reason> (N candidates)` и `      attempts: .jpg(HTML) → .png(ok)` — компактно,
+   рядом с file/type/error-строками, не ломая существующий формат.
+6. renderTable не меняется (телеметрия только для Save Log — прогресс-таблица остаётся чистой;
+   пользователь не просил UI-отображения попыток).
+
+**Версия:** `2026.8.20.3` в оба манифеста (canonical delta #2). Теги заканчиваются на
+`v2026.8.2`, тегов `2026.8.20.*` нет; `v2026.8.20.2` в названии релиза — ручная правка
+пользователя. Схема upstream+мод: v2026.8.1→.20.1, v2026.8.2→.20.2, эта партия — .3.
+Настройки-страница и Save Log Version-строка обновятся автоматически
+(options.js L592 и service.js getDownloadLog читают манифест).
+
+**Применимость к referer-пути (handleRefererDownloadReady):** FIX-1 MIME-проверка применяется
+и там — blob/objectUrl-загрузки тоже могут быть HTML (тип задан content-скриптом из page-fetch
+Response.contentType — там HTML уже отсечён на этапе готовности: type HTML → не доходит до
+queue; но если content-скрипт отдал HTML из-за CORS-error-page?), нет — тот путь умер бы в
+`isExcludedType`/size-проверках с contentType '' — HTML-загрузка через REFERRER-путь
+невозможна по построению (msg.contentType приходит из page-fetch response.headers — HTML
+отсекается ещё до создания task). MIME-проверка там безопасна (no-op) и единообразна.
+
+**Верификаторы:** `node --check` ×5 (service-core ×2 деревьев, download-progress ×2, service.js
+не трогаем), smoke, marker-check 5/5×2, ff-delta=3, `_chk_defaults` (манифесты не в его
+юрисдикции, но пусть будет).
+### 22.3. Исполнение — 2026-09-09 (батч FIX-1/2/3 + 2026.8.20.3)
+Все правки по §22.2; порядок применения: Chrome-дерево → полное зеркалирование в FF
+(service-core с восстановлением единственной инкогнито-дельты L1104, download-progress
+byte-copy, оба манифеста `2026.8.20.3`).
+
+**Что реально изменено (Chrome-дерево, service-core.js):**
+1. `recordCandidateAttempt(task, reason)` — новый хелпер (после `pickNextCandidate`): копия
+   `_attempts` + попытка `{url, method, http, reason}`; вызывается из advance / requeue /
+   refererFailed-BROWSER-путь.
+2. `advanceToNextCandidate(task, reason)`: старая строка сохраняется как failed
+   «<reason> - trying alternate URL» (гвард `prog.status !== 'canceled'`), re-key и
+   `removeProgressEntry` удалены; newTask несёт `_attempts`/`_candidateCount`/`_pickReason`.
+3. `requeueNextCandidateForFilter`: `_attempts: recordCandidateAttempt(task, 'filter-reject')`
+   + перенос `_candidateCount`/`_pickReason`.
+4. `onChanged` complete-ветка (FIX-1): `results[0].mime` HTML (`text/html*` или
+   `application/xhtml+xml*`) → removeFile→erase цепочкой (erase ПОСЛЕ removeFile — erase
+   стирает history-entry, после него removeFile не нашёл бы файл; хелпер `mdSwallow`
+   гасит reject'ы), failed «Server returned HTML page» / advance('HTML page'), мусор
+   удаляется с диска, downloaded НЕ инкрементируется. Успех: `task.contentType`/`fileSize`
+   записываются ДО терминального апдейта → BROWSER-строки получают type/size в Save Log.
+   Falsy-гвард: пустой mime (Firefox) HTML-ветку не триггерит.
+5. `onChanged` interrupted: advance получает reason `'interrupted: <error>'`.
+6. `handleRefererDownloadFailed`: advance-вызов с reason `'referer <HTTP code>'`; BROWSER-
+   задача строится с `attempts`, вычисленным ДО литерала (исправлен TDZ-самобаг черновика),
+   + перенос `_candidateCount`/`_pickReason` из base.
+7. `serializeProgressEntry`: +`candidateCount`/`pickReason`/`attempts` (FIX-3 whitelist).
+8. `updateDownloadProgress` live-push: +`candidateCount`/`pickReason` (attempts — только через
+   serialize, объём push не растёт).
+9. `findBestUrlWithValidation`: pickReason во всех 4 исходах — `'no-candidates'`,
+   `'breaker-open (unvalidated)'`, `'validated N of M'`, `'heuristic (validation failed)'`.
+10. `processUrlGroupsWithValidation`: task несёт `_candidateCount`/`_pickReason`.
+
+**download-progress.js (оба дерева, byte-sync):** удалён обработчик `removeProgressEntry`
+(больше не отправляется); formatLog печатает `pick: <reason> (N candidates)` и
+`attempts: METHOD/HTTP reason url -> …` под каждой строкой [NNN].
+
+**Верификаторы (все зелёные):** `node --check` ×4 (service-core ×2, download-progress ×2),
+smoke (dedup-контракт оба дерева), marker-check 5/5×2, ff-delta=3 (инкогнито-дельта —
+единственное отличие service-core, проверено построчным diff), `_chk_defaults` ×2.
+
+**Самопроверка черновика:** исправлены при разработке — опечатка в комментарии (edit 1),
+TDZ-баг `base || task` в refererFailed (edit 6, attempts вынесен до литерала), порядок
+removeFile/erase приведён к дизайн-требованию (erase строго после removeFile).
+
+**Живой тест (пункт 1 очереди):** rule34 список → Ctrl+Q → ожидания: (а) угадочные строки
+FAILED «HTML page - trying alternate URL» / «Server returned HTML page», правильный
+вариант COMPLETED; (б) Chrome-downloads без `.htm`-мусора (файл удаляется с диска, history-
+entry стирается); (в) Save Log показывает `pick:` и `attempts:` цепочки; (г) версия на
+странице настроек и в Save Log — `2026.8.20.3`. До теста: перезагрузить расширение в
+Chrome (после file lock снятия прошлого раза).

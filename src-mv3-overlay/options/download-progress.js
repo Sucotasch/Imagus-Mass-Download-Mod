@@ -111,13 +111,6 @@
         } else if (request.cmd === 'updateDownloadStatus') {
             updateDownloadItem(request);
             updateDisplay();
-        } else if (request.cmd === 'removeProgressEntry') {
-            // SW re-keyed this URL (candidate advance) — drop the old-key row
-            // instead of leaving it stuck at its last status until refresh.
-            if (request.url && downloadItems[request.url]) {
-                delete downloadItems[request.url];
-                updateDisplay();
-            }
         } else if (request.cmd === 'resetForNewDownload') {
             // Clear UI for tab reuse
             downloadItems = {};
@@ -395,6 +388,18 @@
                 + ' q=' + (it.quality || '-');
             lines.push(head);
             lines.push('      URL: ' + (it.url || '-'));
+            // FIX-3 (2026-09-09): candidate-selection telemetry — why this URL
+            // was picked and which alternatives already died before it.
+            if (it.pickReason || it.candidateCount != null) {
+                lines.push('      pick: ' + (it.pickReason || '-')
+                    + ' (' + (it.candidateCount != null ? it.candidateCount : '-') + ' candidates)');
+            }
+            if (Array.isArray(it.attempts) && it.attempts.length > 0) {
+                const chain = it.attempts.map(a =>
+                    (a.method || '-') + '/' + (a.http || 0) + ' ' + (a.reason || 'failed')
+                    + ' ' + a.url).join(' -> ');
+                lines.push('      attempts: ' + chain);
+            }
             if (it.filename) lines.push('      file: ' + it.filename);
             if (it.contentType) lines.push('      type: ' + it.contentType);
             if (it.referer) lines.push('      referer: ' + it.referer);
