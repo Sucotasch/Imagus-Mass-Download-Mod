@@ -148,6 +148,28 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     for (const u of samples) {
         assert.strictEqual(fileKey(u), normalizeKey(u), `${tree}: contract mismatch on ${u}`);
     }
+
+    // Fix C-2 (2026-09-09 live test) lock: mediaHashKey — the cross-host
+    // content-hash key. The wimg/ahrimp4 twins (live rows [001]+[021]) must
+    // collapse while fileKey keeps them apart (host is identity there);
+    // names that are not pure >=16-hex (sample_/thumbnail_) never match
+    // their original; .jpeg aliases .jpg.
+    const mediaHash = new Function(`${cutFnFor(swSrc)('mediaHashKey')}\nreturn mediaHashKey;`)();
+    const wimgMp4 = 'https://wimg.rule34.xxx/images/1234/d4081168999e3cc659608c145f8768d7.mp4';
+    const ahrimpMp4 = 'https://ahrimp4.rule34.xxx/images/1234/d4081168999e3cc659608c145f8768d7.mp4';
+    assert.strictEqual(mediaHash(wimgMp4), mediaHash(ahrimpMp4), `${tree}: cross-host twins share the hash key`);
+    assert.equal(mediaHash(wimgMp4), 'd4081168999e3cc659608c145f8768d7.mp4', `${tree}: key = lowercase hex base + ext`);
+    assert.notStrictEqual(fileKey(wimgMp4), fileKey(ahrimpMp4), `${tree}: fileKey keeps hosts apart — the twins are why the hash key exists`);
+    assert.strictEqual(mediaHash(wimgMp4 + '?TS=1700000000'), mediaHash(wimgMp4), `${tree}: cache-buster query dropped`);
+    assert.equal(mediaHash('#' + wimgMp4), mediaHash(wimgMp4), `${tree}: HD '#' marker stripped`);
+    assert.equal(mediaHash('https://wimg.rule34.xxx/samples/1522/sample_d4081168999e3cc659608c145f8768d7.jpg'), '', `${tree}: sample_ names are not hash-shaped`);
+    assert.equal(mediaHash('https://wimg.rule34.xxx/thumbnails/99/thumb_d4081168999e3cc659608c145f8768d7.jpg'), '', `${tree}: thumbnail_ names are not hash-shaped`);
+    assert.equal(mediaHash('https://h.com/abcdef0123456789.jpeg'), 'abcdef0123456789.jpg', `${tree}: 16-hex + .jpeg aliases .jpg`);
+    assert.equal(mediaHash('https://h.com/ABCDEF0123456789.jpg'), 'abcdef0123456789.jpg', `${tree}: uppercase hex lowercased, same key as .jpeg twin`);
+    assert.equal(mediaHash('https://h.com/abcdef012345678.jpg'), '', `${tree}: 15 hex chars is NOT hash-shaped`);
+    assert.equal(mediaHash('https://h.com/d4081168999e3cc659608c145f8768d7.php'), '', `${tree}: non-media extension is not a dedup key`);
+    assert.equal(mediaHash('https://h.com/d4081168999e3cc659608c145f8768d7'), '', `${tree}: no extension is not hash-shaped`);
+
     // Spot-check the semantics themselves (once, on the Chrome tree):
     if (tree === 'src-mv3-overlay') {
         // BG-4: query dropped ONLY on real media-file paths (cache-busters)
@@ -175,6 +197,50 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
             'https://artuntamed.com/index.php?media/galleries/224305/artworks/1310/full',
         ];
         assert.equal(new Set(at.map(fileKey)).size, 11, 'BG-4: ArtUntamed 11 items must key distinctly');
+
+        // Fix C-1 (2026-09-09 live test) lock: mergeIntersectingGroups —
+        // groups whose fileKey sets intersect collapse into ONE basket.
+        // The live shape ([024]+[025]): one rule34 post = two DOM elements;
+        // both resolve the SAME candidate set (the post's original URL plus
+        // its sample), so the two groups share a fileKey and must merge —
+        // before the fix each group validated independently and downloaded
+        // BOTH files. Groups that share NO key stay separate.
+        const mergeGroups = new Function(`${cutFnFor(swSrc)('mergeIntersectingGroups')}\n${cutFnFor(swSrc)('fileKey')}\nreturn mergeIntersectingGroups;`)();
+        const g1 = { urls: ['https://wimg.rule34.xxx/images/123/0123456789abcdef0123456789abcdef.jpg',
+                           'https://wimg.rule34.xxx/samples/99/sample_0123456789abcdef0123456789abcdef.jpg'] };
+        const g2 = { urls: ['https://wimg.rule34.xxx/images/123/0123456789abcdef0123456789abcdef.jpg',
+                            'https://wimg.rule34.xxx/images/123/0123456789abcdef0123456789abcdef.webm'] };
+        const merged2 = mergeGroups([g1, g2]);
+        assert.equal(merged2.length, 1, 'C-1: groups sharing ONE candidate URL merge into one basket');
+        assert.equal(merged2[0].urls.length, 3, 'C-1: basket unions all distinct URLs');
+        // First-appearance order regardless of group order:
+        const merged3 = mergeGroups([g2, g1]);
+        assert.equal(merged3[0].urls[0], 'https://wimg.rule34.xxx/images/123/0123456789abcdef0123456789abcdef.jpg', 'C-1: first-appearance order kept');
+        // The live [024]+[025] shape: single-URL group + group containing
+        // that same URL → one basket, original and sample become candidates
+        // of ONE item (validation picks one, the other is fallback).
+        const post2 = [
+            { urls: ['https://wimg.rule34.xxx/images/123/0123456789abcdef0123456789abcdef.jpg'] },
+            { urls: ['https://wimg.rule34.xxx/images/123/0123456789abcdef0123456789abcdef.jpg',
+                     'https://wimg.rule34.xxx/samples/99/sample_0123456789abcdef0123456789abcdef.jpg'] },
+        ];
+        const merged4 = mergeGroups(post2);
+        assert.equal(merged4.length, 1, 'C-1: same original resolved from two elements merges');
+        assert.equal(merged4[0].urls.length, 2, 'C-1: original + sample live as candidates of ONE item');
+        // Disjoint groups stay separate (a sample_-only group shares no key
+        // with a different post's original — never merged):
+        const g3 = { urls: ['https://wimg.rule34.xxx/samples/99/sample_fedcba9876543210fedcba9876543210.jpg'] };
+        const g4 = { urls: ['https://wimg.rule34.xxx/images/456/fedcba9876543210fedcba9876543210.webm'] };
+        const merged5 = mergeGroups([g3, g4]);
+        assert.equal(merged5.length, 2, 'C-1: disjoint groups stay separate');
+        assert.equal(merged5[0].urls.length, 1, 'C-1: disjoint basket keeps its single URL');
+        // Pure function — input untouched:
+        assert.equal(g3.urls.length, 1, 'C-1: input groups array not mutated');
+        // Degenerate inputs:
+        assert.equal(mergeGroups([]).length, 0, 'C-1: empty input');
+        assert.equal(mergeGroups(null).length, 0, 'C-1: null input');
+        const solo = mergeGroups([{ urls: ['https://h.com/a.jpg'] }]);
+        assert.equal(solo.length, 1, 'C-1: single group passes through');
     }
 }
 

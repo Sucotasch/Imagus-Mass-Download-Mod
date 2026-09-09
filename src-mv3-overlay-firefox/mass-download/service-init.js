@@ -60,6 +60,12 @@ var downloadInitiatorTabId = null;
 
 // --- URL Selection and Validation ---
 var globalProcessedUrls = new Set();
+// Fix C-2 (2026-09-09 live test): cross-host content-hash dedup set —
+// mediaHashKey() keys (>=16-hex-char basename + real media extension, host
+// and query dropped). Parallel to globalProcessedUrls with the same session
+// lifecycle; its single add point lives in processFilterQueue right next to
+// the fileKey add (plus the advance claim in advanceToNextCandidate).
+var globalProcessedMediaHashes = new Set();
 var urlValidationStats = {
     totalValidations: 0,
     successfulValidations: 0,

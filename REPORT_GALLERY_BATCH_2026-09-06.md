@@ -1109,3 +1109,119 @@ trigger снова inc — счётчик корректен; `msg.session !== s
 
 **Отложено (осознанно):** filter-фаза (HEAD+GET 403) для pinned-хостов не скипается — GET
 различает живое/мёртвое до referer-стадии; потенциальный будущий скип — отдельный дизайн.
+
+## 23. Батч 2026-09-09 (вечер): живой тест P-1 2026.8.20.4 → Fix A/B/C — версия 2026.8.20.5
+
+### 23.1. Живой тест v2026.8.20.4 (лог `imagus-mass-download-log-2026-09-09T19-12-22.txt`) — дефекты
+
+**Данные:** 90 позиций (36 completed / 54 failed), found=330, prefiltered=244, сессия 51 с
+(быстрее прежних 60–93 с — P-1 даёт выигрыш). Отчёт пользователя: «42 превью на странице,
+загружено фактически 36 файлов. В логе Chrome 19 ошибок вида "sample_….htm Ошибка: Обнаружена
+неизвестная ошибка сервера…"» + «среди загрузившихся изображений фактические дубликаты».
+
+Три дефекта, вскрытых логом:
+
+1. **19 заглушек `.htm` в истории загрузок Chrome (SERVER_FAILED).** wimg на часть URL
+   отвечает **5xx** → Chrome прерывает загрузку `interrupted: SERVER_FAILED`, успевая
+   оставить запись-заглушку с `.htm`-именем (text/html-ошибка). FIX-1b стирал из истории
+   только `SERVER_BAD_CONTENT`; `SERVER_FAILED` не чистился. При SERVER_FAILED на диске
+   может оставаться частичный файл — чистить и его, и запись.
+2. **Обречённые browser-загрузки на pinned-хостах с фильтр-404.** Строки [007]/[017]/[020]:
+   фильтр-GET получил 404 (вердикт сервера, не CORS-догадку — SW-fetch дошёл до сервера),
+   но хост уже запинен 'browser' → задача ушла в `chrome.downloads`, где ей гарантированно
+   ждать 5xx-interrupt и заглушку. 404-вердикт терялся по пути: `probeTask` (include-смерть →
+   omit-проба) и browser-fallback-задача строились с `httpStatus: 0`; главный поток
+   (`processFilterQueue` GET-ветка) вердикт в задачу клал, но pinned-ветка его не проверяла.
+   403 — отдельный случай: cookie-гейт реален, browser-попытка легитимна (у Chrome есть
+   cookies) — не трогаем.
+3. **Дубликаты двух типов.** (а) **Оригинал+семпл одного поста** — строки [024]+[025]: один
+   пост = два DOM-элемента (анкор → оригинал, превью → семпл), оба прошли как отдельные
+   `ambiguousUrlGroups` с независимой валидацией → скачаны оба (179.3 KB jpeg + 73.4 KB
+   sample). (б) **Кросс-хостовые двойники** — [001] ahrimp4 mp4 + [021] wimg mp4, один и
+   тот же файл 4.45 MB ×2: rule34 раздаёт один файл с нескольких CDN-хостов, а `fileKey`
+   хост сохраняет → дедуп не схлопывает. Хеш-базы имен (32-hex = md5) совпадают.
+
+### 23.2. Утверждённый состав (ask_user_question, «A + B + C (полный)»)
+
+**Fix A — чистка истории при interrupted (обоих деревьев, `onChanged`):**
+- `SERVER_FAILED`: `removeFile` → `erase` (порядок как в FIX-1 complete-ветке: erase стирает
+  history-entry, после него removeFile не нашёл бы файл; на диске может быть частичный файл).
+- `SERVER_BAD_CONTENT` (было), `SERVER_FORBIDDEN`, `SERVER_UNAUTHORIZED`: `erase` без
+  removeFile (файла нет — сервер отказал до передачи).
+- `NETWORK_*` — сознательно НЕ трогаем (прерванная сеть не серверный вердикт; частичные
+  файлы могут быть полезны пользователю при докачке вручную).
+
+**Fix B — pinned-'browser' хост + фильтр-404 = никаких обреченных chrome.downloads:**
+- `triggerRefererDownload` pinned-ветка: `task.httpStatus === 404` → БЕЗ пуша в
+  downloadQueue — сразу `advanceToNextCandidate(task, 'dead link (404, pinned host)')`;
+  нет кандидатов → строка FAILED «Dead link (404, pinned host)» без вызова chrome.downloads.
+  403-вердикт сохраняет browser-попытку (cookie-гейт реален).
+- Проброс вердикта (обе точки потери): probeTask в `handleRefererDownloadFailed` строится с
+  `httpStatus: (base && base.httpStatus) || 0`; browser-fallback-задача —
+  `msg.error === 'HTTP 403' ? 403 : ((base && base.httpStatus) || 0)`. Главный поток
+  (GET-404 → `triggerRefererDownload(task)`) вердикт уже нёс — `pinnedTask` его сохранял,
+  теперь ещё и проверяет.
+- Симметричный скип в browser-fallback `handleRefererDownloadFailed`: omit-смерть сразу
+  после пина 'browser' + фильтр-404 из base → advance/failed без downloadQueue.
+
+**Fix C-1 — слияние пересекающихся групп (корзины постов):**
+- `mergeIntersectingGroups(groups)` — чистая функция (union-find по индексам групп,
+  пересечение по `fileKey` кандидатов): группы с общим кандидатом = один пост → одна
+  корзина `{urls}`. Порядок первого появления; вход не мутируется; `'https://…'` и
+  `'#https://…'` остаются обе (HD-маркер, candidateKey схлопнет их в валидации).
+- `processUrlGroupsWithValidation`: pre-pass до цикла; валидация выбирает ONE best,
+  остальные — fallback-кандидаты. Счётчик статуса — `${processedGroups}/${baskets.length}`
+  (знаменатель честно показывает корзины).
+
+**Fix C-2 — кросс-хостовой дедуп по хешу контента:**
+- `mediaHashKey(url)`: basename — чистый hex ≥16 симв. (rule34 md5-имена) + реальное
+  медиа-расширение (список = BG-4 из `fileKey`) → ключ `hex + .ext`, хост и query выброшены,
+  `.jpeg`→`.jpg`. Не-хеш-имена (`sample_…`/`thumbnail_…` — префикс не hex) и не-медиа
+  расширения → `''` (никогда не блокирует).
+- `globalProcessedMediaHashes` (service-init, оба дерева) — параллельно
+  `globalProcessedUrls`, тот же жизненный цикл: add-точка в `processFilterQueue` рядом с
+  fileKey-add (единственная), claim в `advanceToNextCandidate` (мимо add-точки), skip в
+  `pickNextCandidate`, clear в `resetMassDownloadSession`.
+- Строка skipped различает: «Duplicate (same file)» (fileKey) vs «Duplicate (same file on
+  another host)» (hashKey).
+
+### 23.3. Реализация и верификация (оба дерева, Chrome + FF зеркало)
+
+- `service-init.js` (+6 строки ×2): объявление `globalProcessedMediaHashes`.
+- `service-core.js` (+161/-12 Chrome; FF — то же + incognito-дельта): Fix A (interrupted
+  4-reason), Fix B (probeTask/browser-fallback вердикты + 2 скипа), C-2 (хелпер + 4 точки
+  контракта), C-1 (mergeIntersectingGroups + pre-pass + счётчик корзин).
+- `md-unit-smoke.mjs`: lock-тесты `mediaHashKey` (11 ассертов: кросс-хост twins равны при
+  неравных fileKey; sample_/thumbnail_ → ''; query/# выброшены; 15-hex → ''; .php → '';
+  .jpeg≡.jpg; upper-hex lowercased) в цикле ОБЕИХ деревьев (лочит FF-зеркало); lock-тесты
+  `mergeIntersectingGroups` (9 ассертов: слияние по общему кандидату; first-appearance;
+  дизъюнктные группы раздельны; вход не мутирован; null/[]/solo) в Chrome spot-check.
+- Манифесты: 2026.8.20.4 → **2026.8.20.5** (оба).
+- **Верификаторы (все зелёные):** `node --check` service-core ×2; md-unit-smoke (все
+  ассерты + dedup-контракт 2 дерева); md-marker-check 10/10; md-ff-delta (3 канонических
+  файла — дельта FF↔Chrome осталась ровно `incognito`-строкой); _chk_defaults ×2. CRLF/BOM
+  статус всех правленых файлов проверен (no BOM, CRLF консистентно).
+
+**Инструментальная заметка:** файл `service-core.js` был залочен устаревшим handle Chrome
+(расширение удалено, ReplaceFileW всё равно EIO — write-share open проходит, но delete-share
+нет). Рабочий рецепт: копия → правка копии edit-инструментом → побайтовая запись в оригинал
+`[IO.File]::Open(path,'Open','ReadWrite','ReadWrite')` + Write + SetLength (без
+ReplaceFileW). Дифф/синтаксис проверены до и после записи.
+
+### 23.4. Ожидания живого теста v2026.8.20.5 (rule34)
+
+1. **Ноль `.htm`-заглушек в истории Chrome:** SERVER_FAILED/403-вердикты стираются
+   (removeFile+erase для 5xx); wimg-обрывы оставляют чистую историю.
+2. **Ноль обречённых BROWSER-строк на 404:** вместо [007]/[017]/[020]-паттерна — строки
+   FAILED «dead link (404, pinned host) - trying alternate URL» (advance) либо терминальные
+   «Dead link (404, pinned host)» БЕЗ вызванной chrome.downloads. 403-пары GET→BROWSER
+   остаются осознанно (cookie-гейт: браузер может пройти).
+3. **Дубликаты обоих типов исчезают:** (а) оригинал+семпл — одна корзина: `pick:` показывает
+   один выбор, второй URL — в `attempts:`-цепочке как fallback (при живом оригинале семпл
+   даже не попробуется); (б) кросс-хостовые двойники — строки SKIPPED «Duplicate (same file
+   on another host)» (первый хост скачивает, второй отсекается hashKey).
+4. Счётчик «Analyzing complex items: N/M» показывает корзины (M ≤ прежних групп при
+   слияниях) — ожидаемо и честно.
+
+**Отложено (без изменений):** P-2 (§22.6a), filter-фазовый скип для pinned-хостов,
+P3 (pixiv-403 HAR), P4 (upstream-sieve), ZIP-упаковка 2026.8.20.5.

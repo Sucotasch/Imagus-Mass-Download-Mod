@@ -240,6 +240,9 @@ function handleDownloadAll(msg, sender, sendResponse) {
 
 function resetMassDownloadSession() {
     globalProcessedUrls.clear();
+    // Fix C-2 (2026-09-09 live test): the cross-host hash-key twin set clears
+    // with the file-key set — same session lifecycle.
+    globalProcessedMediaHashes.clear();
     activeRefererRetries = 0;
     refererRetryUrls.clear();
     // P-1: host modes and attempt seqs are session-scoped learning — drop
@@ -610,7 +613,10 @@ async function handleRefererDownloadFailed(msg) {
                 contentType: '',
                 fileSize: 0,
                 filterMethod: 'REFERER-PROBE',
-                httpStatus: 0,
+                // Fix B: carry the base's filter verdict through the probe —
+                // if the probe then dies transport-wise and the host gets
+                // pinned 'browser', the fallback below must still see the 404.
+                httpStatus: (base && base.httpStatus) || 0,
                 _candidates: (base && Array.isArray(base._candidates)) ? base._candidates : [],
                 _attempts: recordCandidateAttempt(
                     base || { url: url, filterMethod: 'REFERER-PROBE', httpStatus: 0 },
@@ -654,7 +660,10 @@ async function handleRefererDownloadFailed(msg) {
         contentType: '',
         fileSize: 0,
         filterMethod: 'BROWSER',
-        httpStatus: msg.error === 'HTTP 403' ? 403 : 0,
+        // Fix B: keep the 403 verdict (real cookie gate — the browser
+        // attempt is legitimate) and carry the base's filter 404 so the
+        // skip check below can act on it.
+        httpStatus: msg.error === 'HTTP 403' ? 403 : ((base && base.httpStatus) || 0),
         _candidates: (base && Array.isArray(base._candidates)) ? base._candidates : [],
         // FIX-2/FIX-3: the attempt chain and selection telemetry carry over
         // from the base task into the browser-context download task.
@@ -663,6 +672,18 @@ async function handleRefererDownloadFailed(msg) {
         _pickReason: base ? (base._pickReason || null) : null
     };
     task._session = sessionId;
+    // Fix B: same rule as triggerRefererDownload's pinned branch — a
+    // filter-verdict 404 on a host pinned 'browser' (this fallback is where
+    // an omit-death lands right after pinning) must not get a doomed
+    // chrome.downloads attempt. Advance to the next candidate, else fail.
+    let fbHost = '';
+    try { fbHost = new URL(url).host; } catch (e) { fbHost = ''; }
+    if (task.httpStatus === 404 && fbHost && refererHostModes[fbHost] === 'browser') {
+        if (!advanceToNextCandidate(task, 'dead link (404, pinned host)')) {
+            updateDownloadProgress(url, 'failed', 0, 'Dead link (404, pinned host)', null, task);
+        }
+        return;
+    }
     downloadQueue.push(task);
     processDownloadQueue();
 }
@@ -823,6 +844,21 @@ function triggerRefererDownload(task) {
     let host = '';
     try { host = new URL(task.url).host; } catch (e) { host = ''; }
     if (host && refererHostModes[host] === 'browser') {
+        // Fix B (2026-09-09 live test): a 404 that reached this branch is a
+        // filter-phase verdict — the cookieless SW fetch actually REACHED the
+        // server (404 is its answer, not a CORS guess), so the browser
+        // download is guaranteed garbage: it dies as SERVER_FAILED and
+        // leaves an .htm stub in Chrome's history (19 of them in the live
+        // test, rows [007]/[017]/[020]). Skip chrome.downloads entirely —
+        // advance to the next candidate, or fail the row. 403 still gets
+        // the browser attempt: the cookie gate is real and the browser
+        // carries the cookies.
+        if (task.httpStatus === 404) {
+            if (!advanceToNextCandidate(task, 'dead link (404, pinned host)')) {
+                updateDownloadProgress(task.url, 'failed', 0, 'Dead link (404, pinned host)', null, task);
+            }
+            return Promise.resolve();
+        }
         const pinnedTask = {
             url: task.url,
             referer: task.referer || '',
@@ -920,12 +956,22 @@ async function processFilterQueue() {
         // re-download a previously processed URL on purpose.
         if (task.source !== 'retry') {
             const dupKey = fileKey(task.url);
-            if (globalProcessedUrls.has(dupKey)) {
+            // Fix C-2 (2026-09-09 live test): cross-host dedup by content
+            // hash — rule34 mirrors the same md5-named file across CDN hosts
+            // (live rows [001]+[021] downloaded the same 4.45 MB mp4 twice).
+            // mediaHashKey '' (not hash-shaped) never blocks anything.
+            const hashKey = mediaHashKey(task.url);
+            if (globalProcessedUrls.has(dupKey)
+                || (hashKey && globalProcessedMediaHashes.has(hashKey))) {
                 downloadStats.skipped++;
-                updateDownloadProgress(task.url, 'skipped', 0, 'Duplicate (same file)', null, task);
+                updateDownloadProgress(task.url, 'skipped', 0,
+                    globalProcessedUrls.has(dupKey)
+                        ? 'Duplicate (same file)'
+                        : 'Duplicate (same file on another host)', null, task);
                 continue;
             }
             globalProcessedUrls.add(dupKey);
+            if (hashKey) globalProcessedMediaHashes.add(hashKey);
         }
         task._session = sessionId;
         activeFilters++;
@@ -1274,6 +1320,12 @@ function pickNextCandidate(task) {
         // so a '?TS' cache-bust variant never double-downloads across items.
         if (candidateKey(candUrl) === currentKey) continue;
         if (globalProcessedUrls.has(fileKey(candUrl))) continue;
+        // Fix C-2 (2026-09-09 live test): a cross-host twin of a hash-named
+        // file already attempted this session is not a real alternative —
+        // the hash key ignores the host by design. '' (not hash-shaped,
+        // e.g. sample_/thumbnail_ names) never blocks a candidate.
+        const candHash = mediaHashKey(candUrl);
+        if (candHash && globalProcessedMediaHashes.has(candHash)) continue;
         if (isExcludedType(candUrl, '', excludedExtensions)) continue;
         next = { url: ensureAbsoluteUrl(candUrl), isHd: candIsHd };
         break;
@@ -1341,6 +1393,11 @@ function advanceToNextCandidate(task, reason) {
         updateDownloadProgress(oldUrl, 'failed', 0, (reason || 'failed') + ' - trying alternate URL', null, prog.task);
     }
     globalProcessedUrls.add(fileKey(next.url));
+    // Fix C-2 (2026-09-09 live test): claim the hash key too — the advance
+    // path bypasses processFilterQueue's add point, so a mirror-host twin
+    // must be caught by later filter entries (same rule as fileKey above).
+    const advHash = mediaHashKey(next.url);
+    if (advHash) globalProcessedMediaHashes.add(advHash);
     updateDownloadProgress(next.url, 'pending', 0, 'Trying alternate URL...', null, newTask);
     downloadQueue.push(newTask);
     processDownloadQueue();
@@ -1447,12 +1504,24 @@ chrome.downloads.onChanged.addListener(function (delta) {
             } else if (delta.state.current === 'interrupted') {
                 const alreadyCanceled = existingTask && downloadProgress[url]
                     && downloadProgress[url].status === 'canceled';
-                // FIX-1b (2026-09-09 live test): SERVER_BAD_CONTENT = the
-                // server answered the file request with a hard 404 — Chrome
-                // shows the leftover entry as "No file" noise (an .htm-named
-                // stub). No file exists on disk, so just erase the history
-                // entry; the attempt chain lives in the progress tab / log.
-                if ((results[0].error || '') === 'SERVER_BAD_CONTENT') {
+                // Fix A + FIX-1b (2026-09-09 live test): interrupted
+                // server-verdict downloads leave dead entries in Chrome's
+                // download history — erase them so stub rows don't pile up
+                // (the live test left 19 SERVER_FAILED .htm stubs).
+                // SERVER_BAD_CONTENT is a hard 404 — no file on disk, erase
+                // only. SERVER_FORBIDDEN / SERVER_UNAUTHORIZED leave nothing
+                // worth keeping either. SERVER_FAILED (5xx) can leave a
+                // PARTIAL file — removeFile first, then erase (order
+                // matters: erase() drops the history record removeFile()
+                // needs). The attempt chain lives in the progress tab / log.
+                const dlErr = results[0].error || '';
+                if (dlErr === 'SERVER_FAILED') {
+                    mdSwallow(
+                        (chrome.downloads.removeFile(delta.id) || Promise.resolve())
+                            .then(function () { return chrome.downloads.erase({ id: delta.id }); })
+                    );
+                } else if (dlErr === 'SERVER_BAD_CONTENT' || dlErr === 'SERVER_FORBIDDEN'
+                    || dlErr === 'SERVER_UNAUTHORIZED') {
                     mdSwallow(chrome.downloads.erase({ id: delta.id }));
                 }
                 // Stage 5b: dead link -> try the next fallback candidate. The
@@ -1482,6 +1551,33 @@ function ensureAbsoluteUrl(url) {
     const t = url.trim();
     if (t.indexOf('//') === 0) return 'https:' + t;
     return t;
+}
+
+// Fix C-2 (2026-09-09 live test): cross-host content-hash key. rule34 spreads
+// the same file across several CDN hosts (wimg/ahrimp4/…): the SAME md5-hash
+// basename + extension is the same media file regardless of host, so fileKey
+// (which preserves the host) never collapses them — live log rows [001]
+// and [021] downloaded the same 4.45 MB mp4 twice. The key exists only for
+// basenames that are a pure hex string of >= 16 chars (rule34 md5 names);
+// 'sample_'/'thumbnail_' prefixes are NOT pure hex and must never match their
+// original (different files). Returns '' when the URL is not hash-shaped.
+function mediaHashKey(url) {
+    if (typeof url !== 'string') return '';
+    url = url.trim().replace(/^#/, '');
+    const noQuery = url.split(/[?#]/)[0];
+    if (!noQuery) return '';
+    const slash = noQuery.lastIndexOf('/');
+    const dot = noQuery.lastIndexOf('.');
+    if (dot <= slash) return ''; // no extension (or a dotfile — not hash-shaped)
+    const base = noQuery.slice(slash + 1, dot);
+    if (!/^[0-9a-f]{16,}$/i.test(base)) return '';
+    const ext = noQuery.slice(dot).toLowerCase();
+    // The extension must be a real media type — mirrors the BG-4 real-media
+    // list from fileKey so a hex-named non-media URL is never a dedup key.
+    if (!/^\.(?:a?png|avif|bmp|gif|ico|jpe?g|m4a|m4v|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|ogv|opus|svg|tiff?|wav|weba|webm|webp|wmv)$/i.test(ext)) return '';
+    // .jpeg aliases .jpg (fileKey precedent) so ext-fallback pairs don't
+    // re-open a closed item.
+    return base.toLowerCase() + ext.replace(/^\.jpe?g$/, '.jpg');
 }
 
 // File identity key: what IS the file, regardless of representation. Strips the
@@ -1688,14 +1784,77 @@ async function findBestUrlWithValidation(urlArray, referer) {
     return { best: ordered[0] || null, ordered, pickReason: 'heuristic (validation failed)' };
 }
 
+// Fix C-1 (2026-09-09 live test): one rule34 post often arrives as TWO
+// ambiguous groups — its anchor resolves the original, its thumbnail the
+// sample; validated independently both "best" URLs pass and BOTH files
+// download (live rows [024]+[025]: the same post as a 179.3 KB original
+// and a 73.4 KB sample). Groups whose candidate URL sets share a fileKey
+// belong to the same post: union them into one basket so validation picks
+// a single best and the rest become fallback candidates. Pure function —
+// returns a NEW array of { urls } baskets, input untouched; baskets keep
+// first-appearance order.
+function mergeIntersectingGroups(groups) {
+    if (!Array.isArray(groups) || groups.length < 2) {
+        return Array.isArray(groups) ? groups : [];
+    }
+    // Union-find over group indices; intersecting groups collapse to the
+    // smallest root index. O(total urls × α) — group counts are small.
+    const rootOf = new Array(groups.length);
+    for (let i = 0; i < rootOf.length; i++) rootOf[i] = i;
+    const resolve = function (i) {
+        while (rootOf[i] !== i) {
+            rootOf[i] = rootOf[rootOf[i]]; // path halving
+            i = rootOf[i];
+        }
+        return i;
+    };
+    const keyOwner = new Map(); // fileKey -> group index that first claimed it
+    for (let i = 0; i < groups.length; i++) {
+        const urls = (groups[i] && Array.isArray(groups[i].urls)) ? groups[i].urls : [];
+        for (const u of urls) {
+            if (typeof u !== 'string' || !u) continue;
+            const k = fileKey(u); // strips '#', normalizes .jpeg→.jpg etc.
+            if (!k) continue;
+            const owner = keyOwner.get(k);
+            if (owner === undefined) {
+                keyOwner.set(k, i);
+            } else {
+                const a = resolve(i), b = resolve(owner);
+                if (a !== b) rootOf[Math.max(a, b)] = Math.min(a, b);
+            }
+        }
+    }
+    // Materialize baskets in first-appearance order, exact-string deduped;
+    // '#url' vs 'url' variants stay (candidateKey collapses them later in
+    // findBestUrlWithValidation — keeping both preserves the HD marker).
+    const baskets = new Map();
+    const order = [];
+    for (let i = 0; i < groups.length; i++) {
+        const root = resolve(i);
+        if (!baskets.has(root)) {
+            baskets.set(root, []);
+            order.push(root);
+        }
+        const merged = baskets.get(root);
+        const urls = (groups[i] && Array.isArray(groups[i].urls)) ? groups[i].urls : [];
+        for (const u of urls) {
+            if (typeof u === 'string' && u && merged.indexOf(u) === -1) merged.push(u);
+        }
+    }
+    return order.map(function (root) { return { urls: baskets.get(root) }; });
+}
+
 async function processUrlGroupsWithValidation(groups, referer, sender) {
     if (!groups || groups.length === 0) {
         setTimeout(checkAllQueuesEmpty, 500);
         return;
     }
+    // Fix C-1 (2026-09-09 live test): merge intersecting groups into post
+    // baskets BEFORE validation — see mergeIntersectingGroups above.
+    const baskets = mergeIntersectingGroups(groups);
     let processedGroups = 0;
     let foundUrls = 0;
-    for (const group of groups) {
+    for (const group of baskets) {
         if (!scanInProgress) break;
         try {
             const pick = await findBestUrlWithValidation(group.urls, referer);
@@ -1738,7 +1897,7 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         processedGroups++;
         sendToProgressTab({
             cmd: 'updateStatus',
-            status: `Analyzing complex items: ${processedGroups}/${groups.length}...`,
+            status: `Analyzing complex items: ${processedGroups}/${baskets.length}...`,
             done: false
         });
     }
