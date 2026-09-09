@@ -242,6 +242,10 @@ function resetMassDownloadSession() {
     globalProcessedUrls.clear();
     activeRefererRetries = 0;
     refererRetryUrls.clear();
+    // P-1: host modes and attempt seqs are session-scoped learning — drop
+    // them with the rest of the retry state (a fresh scan re-probes hosts).
+    refererHostModes = {};
+    refererAttemptSeqMap = {};
     // Preserve completed/skipped entries from previous scans for history
     const preserved = {};
     for (const url in downloadProgress) {
@@ -547,7 +551,7 @@ function handleRefererDownloadReady(msg, sender) {
 // chrome.downloads.download sends the browser cookie jar (unlike SW fetch),
 // stays tracked in downloadIdToTask/onChanged, and can never navigate the
 // scanning tab (unlike an anchor click).
-function handleRefererDownloadFailed(msg) {
+async function handleRefererDownloadFailed(msg) {
     // See handleRefererDownloadReady: return the slot exactly once, and a
     // stale session's answer must not reach the new session's rows.
     if (msg && msg.url && refererRetryUrls.has(msg.url)) {
@@ -572,6 +576,62 @@ function handleRefererDownloadFailed(msg) {
     }
     const existing = downloadProgress[url];
     const base = existing ? existing.task : null;
+    // P-1: classify the failure. TRANSPORT deaths ('Failed to fetch' /
+    // 'NetworkError' — the CORS pre-reject or a dead network) are host-level
+    // signals, not URL-level: a cross-domain host whose credentialed fetch
+    // cannot even leave the page gets one cookieless probe, and if that dies
+    // too the whole host is pinned to browser-context downloads for the
+    // session. HTTP 4xx/5xx and 'Too large' are URL-level verdicts — handled
+    // below unchanged.
+    const pErr = String(msg.error || '');
+    const isTransport = pErr === 'Failed to fetch' || pErr === 'NetworkError when attempting to fetch resource.' ||
+        /^Load failed\b/.test(pErr);
+    const mode = String(msg.mode || 'include');
+    if (isTransport && mode === 'include' && scanInProgress && !userCanceled) {
+        let failHost = '';
+        try { failHost = new URL(url).host; } catch (e) { failHost = ''; }
+        if (failHost && refererHostModes[failHost] !== 'browser') {
+            // First transport death on the host pins 'omit'; PARALLEL deaths
+            // (their include fetches were already in flight) join the same
+            // cookieless probe instead of falling back to browser context —
+            // they get the REFERRER path too if the host allows it.
+            refererHostModes[failHost] = 'omit';
+            // Probe the SAME url cookieless. Re-trigger arms a second
+            // watchdog; the seq guard in triggerRefererDownload makes the
+            // first one a no-op for this url. The slot was already returned
+            // above (refererRetryUrls.delete), so this re-add is balanced.
+            const probeTask = {
+                url: url,
+                referer: msg.referer || (base ? base.referer : ''),
+                isPrivate: base ? base.isPrivate === true : false,
+                source: msg.source || (base ? base.source : 'referer'),
+                isHd: base ? !!base.isHd : !!msg.isHd,
+                elementInfo: base ? base.elementInfo : (msg.elementInfo || null),
+                contentType: '',
+                fileSize: 0,
+                filterMethod: 'REFERER-PROBE',
+                httpStatus: 0,
+                _candidates: (base && Array.isArray(base._candidates)) ? base._candidates : [],
+                _attempts: recordCandidateAttempt(
+                    base || { url: url, filterMethod: 'REFERER-PROBE', httpStatus: 0 },
+                    'referer transport fail: ' + pErr + ' → retry without cookies'),
+                _candidateCount: base && base._candidateCount != null ? base._candidateCount : null,
+                _pickReason: base ? (base._pickReason || null) : null
+            };
+            probeTask._session = sessionId;
+            updateDownloadProgress(url, 'pending', 0, 'Retrying page fetch without cookies', null, probeTask);
+            await triggerRefererDownload(probeTask);
+            return;
+        }
+    }
+    if (isTransport && mode === 'omit') {
+        // Both probe modes died transport-wise — pin the host for the
+        // session and let the browser download this url (the existing
+        // browser fallback below enqueues exactly that).
+        let failHost = '';
+        try { failHost = new URL(url).host; } catch (e) { failHost = ''; }
+        if (failHost && refererHostModes[failHost] !== 'browser') refererHostModes[failHost] = 'browser';
+    }
     // Stage 5b: the content-script fetch returned an explicit 4xx/5xx (the
     // URL is definitively dead) — skip straight to the next candidate.
     if (base && /^HTTP [45]\d\d$/.test(msg.error || '')) {
@@ -755,7 +815,41 @@ function triggerRefererDownload(task) {
         updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable (no initiator tab)', null, task);
         return Promise.resolve();
     }
-    updateDownloadProgress(task.url, 'pending', 0, 'Retrying via page context', null, task);
+    // P-1: a host pinned 'browser' this session (both probe modes died
+    // transport-wise) skips the doomed content fetch entirely and goes
+    // straight to chrome.downloads — no CORS applies there. Task shape
+    // mirrors the failed-handler's browser fallback (attempt chain and
+    // selection telemetry carry over).
+    let host = '';
+    try { host = new URL(task.url).host; } catch (e) { host = ''; }
+    if (host && refererHostModes[host] === 'browser') {
+        const pinnedTask = {
+            url: task.url,
+            referer: task.referer || '',
+            isPrivate: task.isPrivate === true,
+            source: task.source || 'element',
+            isHd: !!task.isHd,
+            elementInfo: task.elementInfo || null,
+            contentType: '',
+            fileSize: 0,
+            filterMethod: 'BROWSER',
+            httpStatus: task.httpStatus || 0,
+            _candidates: Array.isArray(task._candidates) ? task._candidates : [],
+            _attempts: recordCandidateAttempt(task, 'referer skipped: host pinned to browser download'),
+            _candidateCount: task._candidateCount != null ? task._candidateCount : null,
+            _pickReason: task._pickReason || null
+        };
+        pinnedTask._session = sessionId;
+        updateDownloadProgress(task.url, 'pending', 0, 'Host pinned to browser download', null, pinnedTask);
+        downloadQueue.push(pinnedTask);
+        processDownloadQueue();
+        return Promise.resolve();
+    }
+    // P-1: 'omit' learned this session → cookieless probe (ACAO:'*' hosts
+    // reject credentialed fetches before the request even leaves the page).
+    const mode = host && refererHostModes[host] === 'omit' ? 'omit' : 'include';
+    updateDownloadProgress(task.url, 'pending', 0,
+        mode === 'omit' ? 'Retrying via page context (no cookies)' : 'Retrying via page context', null, task);
     const retryUrl = task.url;
     const startedSession = sessionId;
     // Guard against two concurrent referer-retries of the same URL: the Set
@@ -766,13 +860,22 @@ function triggerRefererDownload(task) {
         activeRefererRetries++;
         refererRetryUrls.add(retryUrl);
     }
+    // P-1: sequence-stamp this attempt. A re-trigger (include → omit) re-adds
+    // the url to the Set and arms a SECOND watchdog; without the seq check
+    // the FIRST timeout would steal the newer attempt's slot (the Set still
+    // holds the url) and mark the live row 'timed out'. Settling handlers
+    // deliberately never touch this map — the next trigger overwrites the seq.
+    const seq = (refererAttemptSeqMap[retryUrl] || 0) + 1;
+    refererAttemptSeqMap[retryUrl] = seq;
     setTimeout(() => {
         // Review fix #1: decrement ONLY if this retry is still unsettled — a
         // landed ready/failed already returned its slot through
         // refererRetryUrls. The old blanket decrement ate a PARALLEL retry's
         // slot and made checkAllQueuesEmpty fire early.
         if (!refererRetryUrls.has(retryUrl)) return;
+        if (refererAttemptSeqMap[retryUrl] !== seq) return; // superseded by a re-trigger
         refererRetryUrls.delete(retryUrl);
+        delete refererAttemptSeqMap[retryUrl];
         if (startedSession !== sessionId) return; // reset already zeroed the counter
         activeRefererRetries = Math.max(0, activeRefererRetries - 1);
         const entry = downloadProgress[retryUrl];
@@ -787,7 +890,10 @@ function triggerRefererDownload(task) {
         isHd: !!task.isHd,
         source: task.source || 'element',
         elementInfo: task.elementInfo || null,
-        session: startedSession
+        session: startedSession,
+        // P-1: probe mode for the content fetch ('include' = cookies, the
+        // pre-P-1 behavior; 'omit' = cookieless — valid with ACAO:'*').
+        mode: mode
     }).catch(() => {
         if (!refererRetryUrls.has(retryUrl)) return;
         refererRetryUrls.delete(retryUrl);

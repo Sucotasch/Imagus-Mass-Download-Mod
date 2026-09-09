@@ -1353,7 +1353,11 @@
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 30000);
             try {
-                let resp = await fetch(url, { credentials: 'include', signal: controller.signal });
+                // P-1: the SW's adaptive referer probe may send mode:'omit' —
+                // a cookieless fetch is valid with Access-Control-Allow-Origin:
+                // '*' (a credentialed one is not), which is how cross-domain
+                // hosts with wildcard CORS become page-fetchable.
+                let resp = await fetch(url, { credentials: d.mode === 'omit' ? 'omit' : 'include', signal: controller.signal });
                 if (!resp.ok) {
                     throw new Error('HTTP ' + resp.status);
                 }
@@ -1396,6 +1400,10 @@
                     source: d.source || 'referer',
                     elementInfo: d.elementInfo || null,
                     session: d.session,
+                    // P-1: echo the probe mode so the SW can tell an
+                    // include-death (host gets one omit probe) from an
+                    // omit-death (host is pinned to browser downloads).
+                    mode: d.mode === 'omit' ? 'omit' : 'include',
                     error: (e && e.message) || String(e)
                 });
             }

@@ -19,6 +19,19 @@ var activeRefererRetries = 0;
 // returned exactly once — by the settling handler or by the timeout, never
 // both. Cleared on stop/reset together with the counter.
 const refererRetryUrls = new Set();
+// P-1 (2026-09-09): adaptive page-fetch mode per host, learned inside the
+// current session. A cross-domain host whose credentialed page-fetch dies
+// with a transport error (CORS pre-reject — ACAO:'*' is invalid for
+// credentialed requests) gets ONE cookieless probe ('omit'); if that dies
+// too, the host is pinned 'browser' and skips the content fetch entirely,
+// going straight to chrome.downloads (which needs no CORS at all).
+var refererHostModes = {};
+// P-1 watchdog race guard: url -> attempt sequence number. A re-triggered
+// retry (include -> omit) re-arms a SECOND 30s watchdog; without this map
+// the FIRST timeout would steal the new attempt's slot (set still holds the
+// url) and mark the live attempt 'timed out'. Only the watchdog whose seq is
+// still current may fire; every settling handler deletes its entry.
+var refererAttemptSeqMap = {};
 // scanInProgress = user session still accepting filter/download work.
 // contentScanDone = content finished DOM/sieve scan (NOT the same as cancel).
 var scanInProgress = false;

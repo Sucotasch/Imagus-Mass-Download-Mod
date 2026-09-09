@@ -1012,3 +1012,100 @@ Chrome больше нет.**
 - **Вывод: дефект rule34 (.htm-мусор в загрузках Chrome) закрыт полностью** — обе ветки
   (complete+HTML и interrupted+SERVER_BAD_CONTENT) чистят диск и историю. Коммиты:
   `9ba1f36` (FIX-1/2/3) + `3526b7c` (FIX-1b).
+### 22.6. P-1: адаптивный режим page-fetch по хосту — дизайн (утверждено 2026-09-09)
+**Проблема (лог 16-19-35):** каждая wimg-строка начинается с `GET/403 → referer retry
+failed: Failed to fetch` (~80 раз за сессию) — обречённый page-fetch с `credentials:'include'`.
+При credentials-режиме `Access-Control-Allow-Origin: *` неприменим (wimg, вероятно, отдаёт
+именно `*`) → fetch отклоняется ДО запроса, ~0.2–0.5 с чистых потерь на каждый файл. Same-host
+URL (`rule34.xxx//images/...`) проходят этот путь успешно ([005]–[007] REFERRER/200) —
+обречена именно credentialed-попытка на кросс-домен.
+
+**Машина состояний на хост (сессия, `refererHostModes[host]` в service-init):**
+- `undefined` — не зондировали: page-fetch идёт с `credentials:'include'` (текущее поведение);
+- `'omit'` — include умер транспортной ошибкой ('Failed to fetch'/'NetworkError', НЕ HTTP-код
+  и НЕ 'Too large'): перезапуск page-fetch с `credentials:'omit'` (Referer браузер приложит сам
+  по referrerPolicy; меняется только отсутствие cookies; `ACAO:*` для omit валиден);
+- `'browser'` — обе попытки транспортно мертвы: хост навсегда (до сброса сессии) минует
+  content-fetch — задача уходит прямо в `chrome.downloads` (build задачи = переиспользование
+  живого filter-task, `filterMethod='BROWSER'`, попытка пишется в цепочку).
+
+**Точки касания:** `triggerRefererDownload` (режим browser → прямой пуш в downloadQueue;
+payload +`mode`), `handleRefererDownloadFailed` (include-транспорт-фол → записать попытку,
+перевести хост в 'omit', re-trigger; omit-транспорт-фол → 'browser', существующий
+browser-fallback; HTTP-4xx/5xx и Too large → существующие пути без изменений),
+`handleRefererDownloadReady` — БЕЗ правок (успех include оставляет хост в undefined =
+следующие URL снова include; успех omit оставляет 'omit'). Content `_downloadWithReferer`:
+`credentials: d.mode === 'omit' ? 'omit' : 'include'` (content.js + content-block.js, оба
+дерева). Сброс: `resetMassDownloadSession` чистит режимы.
+
+**Watchdog-гонка (ключевой нюанс):** re-trigger при том же URL заново добавляет его в
+`refererRetryUrls` и вооружает ВТОРОЙ watchdog — первый (30 с от include-попытки) увидел бы
+URL в сете, украл бы слот omit-попытки и пометил бы её 'timed out' (утечка activeRefererRetries
+— session никогда не дренируется). Решение: `refererAttemptSeqMap` (url→номер попытки),
+watchdog срабатывает только если его номер актуален; готовность/фолл не трогают мапу
+(перезапись при следующем триггере), сброс в reset.
+
+**Балансировка слотов:** failed-обработчик возвращает слот (delete+dec) ДО re-trigger →
+trigger снова inc — счётчик корректен; `msg.session !== sessionId` гвард отсекает кросс-
+сессионные re-trigger'ы; `!scanInProgress || userCanceled` гвард стоит раньше.
+
+**Версия:** `2026.8.20.4` (батч N=4; Save Log печатает версию — логи атрибутируются к коду).
+
+### 22.6a. P-2: параллельный анализ групп — ТОЛЬКО ДИЗАЙН (внедрение отложено)
+`processUrlGroupsWithValidation` обрабатывает группы строго последовательно; при закрытом
+брейкере каждая группа стоит 1.5–2 с (параллель только внутри её 5 кандидатов) → ~80 групп
+= 2.5 мин (утренний паттерн 41× GET/503, лог 09-35-34: 60 с на 92 строки при живом брейкере).
+Дизайн для будущего батча:
+1. **Общий семафор валидаций = существующий `activeFilters` + cap `maxConcurrentFilters`.**
+   acquire перед каждым `validateSingleUrlContent` (в allSettled-пакете — per-candidate,
+   release в finally каждого элемента), фильтр-фаза уже инкрементит его per-task — контракт
+   «не более N параллельных SW-fetch» выполняется глобально, как сегодня.
+2. **Чанки групп:** `for (i; i+=CHUNK) await Promise.all(chunk.map(processOneGroup))`,
+   CHUNK = maxConcurrentFilters; семафор сам выровняет параллельность.
+3. **Дедуп не меняется:** единственный владелец `globalProcessedUrls` — processFilterQueue;
+   группы лишь пушат задачи в filterQueue.
+4. **Keepalive/дренаж:** group-fetch инкрементит activeFilters → sessionHasWork видит работу,
+   checkAllQueuesEmpty не сработает раньше времени (сегодня group-фаза держится вслепую).
+5. **Брейкер:** параллельный всплеск 403 набирает 8 отказов быстрее → брейкер открывается
+   раньше (выигрыш, не риск); 503-тротлинг сервера не хуже сегодняшнего фильтр-пика (≤5).
+6. Верификаторы: smoke/marker-check не затронуты (только SW).
+### 22.7. P-1 выполнено — v2026.8.20.4 (2026-09-09)
+Внедрён дизайн §22.6 (пользователь: «Внедрять»; P-2 — только дизайн, §22.6a).
+
+**service-init.js (+13):** `refererHostModes` (host → 'omit'|'browser', обучение на сессию) +
+`refererAttemptSeqMap` (url → номер попытки, гвард watchdog-гонки; сброс обоих в
+`resetMassDownloadSession`).
+
+**service-core.js (Chrome +109/-3, FF зеркало +109/-5 с incognito-дельтой):**
+- `triggerRefererDownload`: pinned-'browser' хост → задача сразу в downloadQueue (строка
+  «Host pinned to browser download», попытка «referer skipped: host pinned to browser
+  download» в цепочке); иначе mode='omit' для выученных хостов (строка «…(no cookies)»);
+  payload +`mode`; seq-stamp попытки, watchdog срабатывает только при актуальном seq.
+- `handleRefererDownloadFailed` (теперь async): транспорт-смерть ('Failed to fetch' /
+  'NetworkError…' / 'Load failed…') при mode='include' → хост пинится 'omit' + re-trigger
+  того же URL cookieless (probeTask, filterMethod='REFERER-PROBE'); при mode='omit' → хост
+  пинится 'browser' (каскад уходит в существующий BROWSER-fallback, попытки в цепочке);
+  параллельные include-смерти того же хоста присоединяются к omit-пробе (фикс гонки,
+  найден при само-ревьюи), пин 'browser' делается только после omit-смерти.
+- HTTP 4xx/5xx и 'Too large' — существующие URL-level пути без изменений.
+- Успех include оставляет хост в undefined (ре-проба на след. сессию — консервативно);
+  успех omit закрепляет 'omit' для остальных URL хоста (минуя обречённый include).
+
+**content (4 файла ×(+9/-1)):** `_downloadWithReferer` — `credentials: d.mode === 'omit'
+? 'omit' : 'include'`; failed-сообщение эхом возвращает `mode`. content.js + content-block.js
+в обоих деревьях (md-marker-check 10/10 OK).
+
+**Версия** 2026.8.20.4 в обоих манифестах. Верификаторы: node --check (service-core/init ×2
+дерева, content.js ×2), md-unit-smoke OK, md-marker-check 10/10 OK, md-ff-delta OK (3
+канонических файла), _chk_defaults OK ×2.
+
+**Ожидание живого теста (rule34):** первый wimg-элемент — include-фол → omit-проба: (а)
+успех → остальные wimg идут чистым REFERRER (строки REFERRER/200, ноль BROWSER-хлама,
+ноль записей в истории загрузок Chrome для wimg); (б) фол → пин browser, строки
+«Host pinned to browser download» и BROWSER-этап без «Retrying via page context» +
+«referer retry failed: Failed to fetch». Экономия: минус 1–2 обречённых page-fetch на
+хост-сессию (≈80 × 0.2–0.5 с ≈ 15–40 с по логу 16-19-35) + минус 79 обречённых include на
+ветке (а). Телеметрия: `attempts: GET/403 → REFERER-PROBE/0 → …` видна в Save Log.
+
+**Отложено (осознанно):** filter-фаза (HEAD+GET 403) для pinned-хостов не скипается — GET
+различает живое/мёртвое до referer-стадии; потенциальный будущий скип — отдельный дизайн.
