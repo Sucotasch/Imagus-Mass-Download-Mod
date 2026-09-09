@@ -1316,9 +1316,11 @@ chrome.downloads.onChanged.addListener(function (delta) {
                     // HTML detection requires an explicit HTML value.
                     // Order matters: erase() removes the HISTORY entry; if it
                     // ran first, removeFile() could no longer find the file.
+                    // NOTE: DownloadQuery.id is a single number — an array is
+                    // an invalid argument and erase would silently reject.
                     mdSwallow(
                         (chrome.downloads.removeFile(delta.id) || Promise.resolve())
-                            .then(function () { return chrome.downloads.erase({ id: [delta.id] }); })
+                            .then(function () { return chrome.downloads.erase({ id: delta.id }); })
                     );
                     if (!alreadyCanceled) {
                         if (!advanceToNextCandidate(existingTask, 'HTML page')) {
@@ -1341,6 +1343,14 @@ chrome.downloads.onChanged.addListener(function (delta) {
             } else if (delta.state.current === 'interrupted') {
                 const alreadyCanceled = existingTask && downloadProgress[url]
                     && downloadProgress[url].status === 'canceled';
+                // FIX-1b (2026-09-09 live test): SERVER_BAD_CONTENT = the
+                // server answered the file request with a hard 404 — Chrome
+                // shows the leftover entry as "No file" noise (an .htm-named
+                // stub). No file exists on disk, so just erase the history
+                // entry; the attempt chain lives in the progress tab / log.
+                if ((results[0].error || '') === 'SERVER_BAD_CONTENT') {
+                    mdSwallow(chrome.downloads.erase({ id: delta.id }));
+                }
                 // Stage 5b: dead link -> try the next fallback candidate. The
                 // old row is kept as a 'failed' attempt with an advance marker
                 // (FIX-2); only mark failed outright if no candidate remains.
