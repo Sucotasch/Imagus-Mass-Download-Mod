@@ -2,7 +2,7 @@
 	"manifest_version": 3,
 
 	"name": "Imagus Reborn MD",
-	"version": "2026.8.20.6",
+	"version": "2026.8.20.7",
 	"description": "__MSG_APP_DESCRIPTION__",
 	"default_locale": "en",
 	"homepage_url": "https://www.reddit.com/r/Imagus",
@@ -33,6 +33,7 @@
 	"permissions": [
 		"notifications",
 		"alarms",
+		"declarativeNetRequest",
 		"downloads",
 		"history",
 		"contextMenus",

@@ -35,6 +35,15 @@ function cutFn(name) {
     return src.slice(start, end + 2);
 }
 
+// Same slicing, but against an arbitrary source text (Fix E: md-dnr.js
+// helpers live in their own file, not in service-core.js).
+function cutFnFrom(source, name) {
+    const start = source.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `function ${name} not found in given source`);
+    const end = source.indexOf('\n}', start);
+    return source.slice(start, end + 2);
+}
+
 const code = [
     cutConst('MIME_TO_EXT'),
     cutConst('EXT_ALIASES'),
@@ -298,6 +307,44 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
         assert.equal(mergeGroups(null).length, 0, 'C-1: null input');
         const solo = mergeGroups([{ urls: ['https://h.com/a.jpg'] }]);
         assert.equal(solo.length, 1, 'C-1: single group passes through');
+
+        // Fix E (2026-09-10 pixiv live test) lock: md-dnr registry
+        // contract. mdDnrRequestFor decides whether a URL gets a DNR
+        // session rule: registry host -> { host, referer } with the
+        // task referer preferred over the registry fallback; every
+        // other host -> null (no rule, unchanged behavior).
+        const dnrSrc = readFileSync(join(repoRoot, 'src-mv3-overlay/mass-download/md-dnr.js'), 'utf8');
+        const registrySrc = /var MD_DNR_MEDIA_HOSTS = (\{[\s\S]*?\});/.exec(dnrSrc)[1];
+        const dnrFns = new Function(`
+${cutFnFrom(dnrSrc, 'mdDnrHostConfig')}
+${cutFnFrom(dnrSrc, 'mdDnrRequestFor')}
+${cutFnFrom(dnrSrc, 'mdRuleIdForHost')}
+var MD_DNR_MEDIA_HOSTS = ${registrySrc};
+return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hosts: MD_DNR_MEDIA_HOSTS };`)();
+        const dnrReq = dnrFns.mdDnrRequestFor;
+        // Registry coverage + referer preference:
+        const r1 = dnrReq('https://i.pximg.net/img-original/img/2026/09/05/01/07/25/149281512_p0.jpg', 'https://www.pixiv.net/en/users/3597480');
+        assert.ok(r1 && r1.host === 'i.pximg.net', 'Fix E: registry host covered');
+        assert.equal(r1.referer, 'https://www.pixiv.net/en/users/3597480', 'Fix E: task referer preferred');
+        // No referer (popup save) -> registry fallback (site root):
+        const r2 = dnrReq('https://i.pximg.net/img-master/img/2023/02/17/17/51/48/105462891_p0_master1200.jpg', '');
+        assert.equal(r2.referer, 'https://www.pixiv.net/', 'Fix E: empty referer falls back to registry site root');
+        // A non-http(s) referer is replaced by the fallback, never garbage:
+        const r3 = dnrReq('https://i-f.pximg.net/a.png', 'javascript:1');
+        assert.equal(r3.referer, 'https://www.pixiv.net/', 'Fix E: non-http referer replaced by fallback');
+        // Non-registry hosts never get a rule — behavior unchanged:
+        assert.equal(dnrReq('https://wimg.rule34.xxx/images/123/a.jpg', 'https://rule34.xxx/'), null, 'Fix E: non-registry host -> null');
+        assert.equal(dnrReq('ftp://i.pximg.net/a.jpg', ''), null, 'Fix E: non-http(s) scheme -> null');
+        assert.equal(dnrReq('not a url', ''), null, 'Fix E: garbage input -> null');
+        // Every registry host has a UNIQUE stable rule id (1..N):
+        const hosts = Object.keys(dnrFns.hosts);
+        const idSet = new Set(hosts.map(dnrFns.mdRuleIdForHost));
+        assert.equal(idSet.size, hosts.length, 'Fix E: rule ids unique per host');
+        assert.equal(Math.min(...idSet), 1, 'Fix E: rule ids start at 1');
+        assert.equal(dnrFns.mdRuleIdForHost('unknown.host.example'), hosts.length + 1, 'Fix E: unknown host gets a spare id');
+        // Hostname hygiene: trailing dot / case are normalized:
+        const r4 = dnrReq('https://I.PXIMG.NET./a.jpg', '');
+        assert.ok(r4 && r4.host === 'i.pximg.net', 'Fix E: case + trailing dot normalized');
     }
 }
 

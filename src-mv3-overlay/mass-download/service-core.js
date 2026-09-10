@@ -993,6 +993,13 @@ async function processFilterQueue() {
             ? crypto.randomUUID()
             : String(Date.now()) + ':' + Math.random());
 
+        // Fix E (pixiv 403, 2026-09-10): hotlink CDNs (i.pximg.net) gate on
+        // Referer; SW fetch cannot set it (forbidden header). Ensure the
+        // DNR session rule BEFORE the first validation request so the HEAD
+        // below passes the gate on the first try instead of burning a 403
+        // round-trip. Registry-scoped; a no-op for every other host.
+        await mdDnrEnsureForTask(task);
+
         const { headMs, getMs } = getFilterTimeouts();
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), headMs);
@@ -1064,6 +1071,9 @@ async function processFilterQueue() {
                 activeControllers.set(task._id, innerController);
                 let response;
                 try {
+                    // Fix E: rule ensured at task pickup (HEAD path above);
+                    // re-ensure cheaply in case it was swept mid-session.
+                    await mdDnrEnsureForTask(task);
                     response = await fetch(task.url, {
                         headers: { 'Referer': task.referer || '' },
                         signal: innerController.signal
@@ -1268,6 +1278,14 @@ function processDownloadQueue() {
         } else {
             dlUrl = task._objectUrl || ensureAbsoluteUrl(task.url);
         }
+
+        // Fix E (pixiv 403): the rule was ensured at filter time, but tasks
+        // can also arrive here via advanceToNextCandidate/requeue paths
+        // without passing the HEAD ensure above (BROWSER-marked tasks skip
+        // the filter phase) — and chrome.downloads.download needs the rule
+        // even more than fetch: its 403 leaves no file, only a history
+        // stub. Cheap idempotent re-ensure right before the call.
+        if (!(task._blob || task._objectUrl)) mdSwallow(mdDnrEnsureForTask(task));
 
         chrome.downloads.download({
             url: dlUrl,

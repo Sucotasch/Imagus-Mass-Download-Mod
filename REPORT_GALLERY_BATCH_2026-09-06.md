@@ -1316,3 +1316,124 @@ callback-хелпер, BAD_CONTENT/FORBIDDEN/UNAUTHORIZED прямым erase). �
   подтверждение Fix D — следующая сессия с 5xx-обрывами браузерных загрузок.
 - **503-шторм:** 8 строк GET/503 (рейт-лимит wimg) — все обработаны фоллбеком или
   честным FAILED без мусора в истории.
+
+## 24. Батч 2026-09-10: P3 pixiv 403 — Fix E (declarativeNetRequest) — версия 2026.8.20.7
+
+### 24.1. Свежая живая улика (v2026.8.20.6): полный отказ на pixiv — 44/44
+
+**Лог:** `log/imagus-mass-download-log-2026-09-10T16-46-13.txt` (Version: 2026.8.20.6,
+сессия на `pixiv.net/en/users/3597480`, 210 found / 134 prefiltered; 45 строк: 44 failed,
+1 skipped, **0 скачано**). Впервые вся попыточная цепочка видна в маркерах attempts —
+старый pixiv-лог (v2026.8.2) такого не давал.
+
+**Что показывает цепочка** (все строки FAILED):
+- `GET/403` — SW-fetch с `Referer: task.referer` уже стоит (L1067 service-core), но
+  Chrome игнорирует его: «Referer» — forbidden header по спецификации fetch, SW-запрос
+  уходит с `Origin: chrome-extension://…`, CDN-гейт i.pximg.net его режет.
+- `referer transport fail: Failed to fetch` — page-context fetch (P-1 referer-retry)
+  падает по CORS: i.pximg.net не отдаёт ACAO для pixiv.net, запрос не выходит вовсе
+  (это не HTTP-вердикт — потому referer-фаза не классифицируется как URL-level 403).
+- `REFERER-PROBE/403` → хост запинен `'browser'` (refererHostModes) → последующие
+  задачи того же хоста идут `referer skipped: host pinned to browser download`.
+- `BROWSER/403 SERVER_FORBIDDEN` — chrome.downloads.download от SW-инициатора шлёт
+  браузерный Referer страницы, но гейт его режет (клип 403 на всплывающем сохранении —
+  ниже). Все 44 строки — один и тот же вердикт.
+
+**Вторая жалоба (функционал Imagus, не мода):** сохранение полноразмерного изображения
+из всплывающего окна под курсором. Попап показывает картинку — но сейв выдаёт
+«failed to fetch». Трассировка пути: content `download()` → SW `case "download"` →
+`chrome.downloads.download` (SW-инициированная) → 403 interrupt → upstream-`onChanged`
+(`\.html?$`/error-ветка) → `alterDownload` → content `fetch(src)` **из контекста
+страницы** → CORS-запрет → `Failed to fetch` в alert. Т.е. попап и сейв живут в разных
+мирах: `<img>` в попапе грузится браузерным Referer (гейт проходит), а сейв идёт
+привилегированными путями, которые гейт режет. Одна корневая причина для обеих жалоб.
+
+**Решающая ссылка (указана пользователем):** userscript
+[greasyfork 39387 «Pixiv Arts Preview»](https://greasyfork.org/ru/scripts/39387)
+на той же странице показывает всплывающее окно с полноразмерным изображением и без
+проблем сохраняет его по Ctrl+LMB. Код (прочитан полностью): скачивание идёт через
+`GM_xmlhttpRequest` (привилегированный контекст Tampermonkey) с явным заголовком
+`Referer: https://www.pixiv.net/en/artworks/<id>` + `@connect i.pximg.net` в шапке.
+Гейт — **Referer-гейт по домену**: проходили и artwork-URL (скрипт), и URL профиля
+(наш попап `<img>`), значит проверяется домен реферера, не путь. Механизм найден:
+привилегированная подстановка Referer.
+
+### 24.2. Почему Referer нельзя поставить в существующих путях
+
+- `fetch()` в SW: «Referer» — forbidden header name (Fetch spec); Chrome молча
+  игнорирует его — что и наблюдаем в `GET/403`.
+- `chrome.downloads.download`: API не принимает заголовки вовсе.
+- Page-context fetch (P-1): CORS — i.pximg.net не даёт ACAO, запрос не выходит.
+- Единственный привилегированный механизм расширения — **declarativeNetRequest**
+  session rules: modifyHeaders, Referer подставляется сетевым движком Chrome
+  (не из JS), гейт такой запрос пропускает. Прямой аналог GM_xmlhttpRequest.
+
+### 24.3. Дизайн Fix E (утверждён пользователем)
+
+- **Реестр, не blanket-правило:** `MD_DNR_MEDIA_HOSTS` в новом модуле
+  `mass-download/md-dnr.js` — только хосты с доказанным Referer-гейтом
+  (`i.pximg.net`, `i-f/i-cf/i-og.pximg.net` → fallback `https://www.pixiv.net/`).
+  Хост вне реестра → поведение не меняется вовсе.
+- **Значение Referer:** `task.referer` (страница, где найден URL — доказанно проходит
+  гейт: попап `<img>` шлёт Referer именно этой страницы); fallback — корень сайта из
+  реестра (когда referer нет — попап-сейв). Non-http(s) referer заменяется fallback.
+- **Скоуп правила:** condition `urlFilter: '||host^'` + `initiatorDomains:
+  [chrome.runtime.id]` — правило действует ТОЛЬКО на запросы, инициированные нашим
+  расширением. resourceTypes намеренно опущены (запросы chrome.downloads не
+  типизированы как xmlhttprequest). Один session rule на хост, стабильные id 1..N.
+- **Время жизни:** session rules переживают засыпание SW, стираются браузером при
+  завершении сессии; повторный add того же id перезаписывает (идемпотентно).
+  `mdDnrRearm()` на старте SW подмечает уже-установленные правила (чистая оптимизация).
+- **Best-effort:** недоступность DNR (старый Chrome/FF, нет permission) →
+  деградация к поведению до Fix E, ничего не ломается.
+- **Куда встроено (5 хуков, оба дерева):**
+  1. `processFilterQueue` — await ensure перед HEAD-валидацией (главная точка:
+     правило стоит до первого запроса);
+  2. GET-фоллбек — повторный ensure (дёшево, идемпотентно);
+  3. `processDownloadQueue` — ensure перед `chrome.downloads.download` для задач,
+     не прошедших фильтр (BROWSER-путь advanceToNextCandidate);
+  4. upstream `case "download"` (попап-сейв) — fire-and-forget ensure;
+  5. upstream `onChanged` alterDownload-ветка — ensure при SERVER_FORBIDDEN-обрыве
+     (сейв попапа до всякого скана: правило не стояло при старте загрузки).
+- **Манифест:** `permissions += "declarativeNetRequest"` (host_permissions
+  `<all_urls>` уже есть — покрытие хоста для modifyHeaders достаточно).
+
+### 24.4. Реализация
+
+Новый файл `mass-download/md-dnr.js` (~200 строк, оба дерева, байт-идентичен) —
+реестр, `mdDnrRequestFor` (URL→{host,referer}|null), `mdDnrBuildRule`,
+`mdDnrEnsureRule` (идемпотентная установка, все фейлы глотаются с логом),
+`mdDnrEnsureForTask`, `mdDnrRearm`. Загрузка: importScripts третьим файлом после
+service-init/service-core (зависимостей нет, mdSwallow не используется).
+
+`service-core.js` (оба дерева): 3 хука (HEAD-ensure await, GET-фоллбек re-ensure,
+pre-download ensure). `service.js` (оба дерева): case "download" ensure,
+alterDownload ensure, `mdDnrRearm()` на старте, importScripts. Манифесты: версия
+2026.8.20.7 + permission. ~+330 строк кода.
+
+**Верификаторы (все зелёные):** `node --check` ×5 (md-dnr ×2, service-core ×2,
+service.js ×2); md-unit-smoke — новый Fix E-лок (реестр-контракт: покрытие хоста,
+предпочтение task.referer, fallback на корень сайта, null для чужих хостов,
+уникальные стабильные id, нормализация case/trailing dot); md-marker-check 10/10;
+md-ff-delta (3 канонических файла — md-dnr.js байт-идентичен, в дельту не вошёл);
+_chk_defaults ×2.
+
+### 24.5. Ожидания живого теста v2026.8.20.7
+
+1. **Масс-загрузка pixiv:** в логе вместо `GET/403 … BROWSER/403 SERVER_FORBIDDEN` —
+   `HEAD/200` (гейт пропускает валидацию) → строки COMPLETED. В консоли SW одна
+   строка `DNR referer rule active for i.pximg.net`.
+2. **Попап-сейв:** сохранение полноразмерного изображения из всплывающего окна — без
+   «failed to fetch» и без 403-обрывов.
+3. **Реестр-гигиена:** на любом сайте вне реестра поведение байт-идентично прежнему
+   (правило не ставится, mdDnrRequestFor → null).
+4. Если 403 остаётся при активном правиле (Referer-значение не то) — dnr-модуль
+   логирует установку; надо смотреть фактический Referer в DevTools Network.
+   Возможные причины: гейт требует artwork-путь (маловероятно — обе известные
+   формы проходили), или DNR-правило не матчится (тогда смотреть matchedRules в
+   chrome://extensions → DNR-диагностике).
+
+**Риск-лимит:** DNR permission в манифесте — новая permission; при обновлении
+расширения Chrome может показать новый permission-промпт. Для локальной разработки
+(load unpacked) это перезагрузка расширения без промпта. Для CWS-публикации —
+учесть в release notes.

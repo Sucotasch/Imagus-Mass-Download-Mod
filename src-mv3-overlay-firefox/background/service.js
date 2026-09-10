@@ -5,7 +5,7 @@ var cachedSieveRes = [],
     cachedPrefs = {};
 
 // === MASS DOWNLOAD ===
-importScripts('../mass-download/service-init.js', '../mass-download/service-core.js');
+importScripts('../mass-download/service-init.js', '../mass-download/service-core.js', '../mass-download/md-dnr.js');
 
 const platform = navigator.userAgent.includes('Firefox') ? "firefox" : "chrome";
 
@@ -435,6 +435,12 @@ function handleMessage(message, sender, sendResponse) {
             registerContentScripts();
             break;
         case "download":
+            // Fix E: hotlink CDNs (i.pximg.net) 403 extension-initiated
+            // downloads — declarativeNetRequest session rules substitute
+            // the Referer the gate wants. Best-effort, registry-scoped
+            // (md-dnr.js). Fire-and-forget: the authoritative gate is the
+            // alterDownload interrupt hook (onChanged below).
+            mdDnrEnsureForTask(msg);
             download(msg, sender.tab?.incognito, sendResponse);
             return true;
         case "history":
@@ -821,6 +827,12 @@ chrome.downloads.onChanged.addListener(function (delta) {
 
         // request alternative download method
         msg.alterDownload = true;
+        // Fix E (pixiv 403, 2026-09-10): a SERVER_FORBIDDEN interrupt on a
+        // registry host means the rule was not yet installed when the
+        // download started (popup-save before any scan) — ensure it now so
+        // the alterDownload fetch below passes the gate. Registry-scoped,
+        // idempotent; non-registry hosts are untouched.
+        mdDnrEnsureForTask(msg);
         if (typeof msg.sendResponse === "function") msg.sendResponse(msg);
         cleanup();
         // chrome.tabs.sendMessage(msg.tabId, msg);
@@ -1071,6 +1083,10 @@ chrome.tabs.onActivated.addListener(async function(info) {
 chrome.action.setTitle({ title: `${manifest.name} v${manifest.version}\nClick to toggle on this site` });
 updatePrefs(null, registerContentScripts);
 chrome.runtime.onStartup.addListener(updatePrefs);
+// Fix E (pixiv 403): DNR session rules live across event-page restarts —
+// re-mark the in-memory registry state from the live session rules so a
+// resumed page does not re-install them blindly (idempotent either way).
+mdDnrRearm();
 chrome.runtime.onInstalled.addListener(function (e) {
     if (e.reason === "update") {
         registerContentScripts();
