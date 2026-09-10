@@ -345,6 +345,42 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         // Hostname hygiene: trailing dot / case are normalized:
         const r4 = dnrReq('https://I.PXIMG.NET./a.jpg', '');
         assert.ok(r4 && r4.host === 'i.pximg.net', 'Fix E: case + trailing dot normalized');
+
+        // Fix E-2 (2026-09-10 second pixiv live test) lock: the widened
+        // rule contract. The v2026.8.20.7 rule (no resourceTypes +
+        // initiatorDomains) matched the SW fetch but NOT the
+        // chrome.downloads.download request (42 SERVER_FORBIDDEN live).
+        // Per the RuleCondition docs a rule WITHOUT resourceTypes matches
+        // everything EXCEPT main_frame, and the downloads request carries
+        // no extension initiator. The v2026.8.20.8 rule must therefore
+        // list every resource type explicitly (main_frame included) and
+        // NOT scope by initiatorDomains. There is deliberately NO
+        // byte-buffering tier (SW transfer → object URL): a SW Blob
+        // cannot cross the JSON messaging boundary, the MV3 SW has no
+        // createObjectURL, and pixiv PNGs run 30-40 MB — the
+        // browser-context download streams any size instead.
+        const buildMatch = /var MD_DNR_RESOURCE_TYPES = (\[[\s\S]*?\]);/.exec(dnrSrc);
+        assert.ok(buildMatch, 'Fix E-2: MD_DNR_RESOURCE_TYPES declared');
+        const resourceTypes = new Function('return ' + buildMatch[1])();
+        assert.ok(Array.isArray(resourceTypes) && resourceTypes.length >= 13,
+            'Fix E-2: explicit resourceTypes list (13+ documented types)');
+        assert.ok(resourceTypes.includes('main_frame'),
+            'Fix E-2: main_frame matched (downloads-API hypothesis)');
+        assert.ok(resourceTypes.includes('xmlhttprequest'),
+            'Fix E-2: xmlhttprequest still matched (SW fetch path stays covered)');
+        const ruleBody = cutFnFrom(dnrSrc, 'mdDnrBuildRule');
+        assert.ok(ruleBody.includes("resourceTypes: MD_DNR_RESOURCE_TYPES"),
+            'Fix E-2: buildRule wires the explicit resourceTypes list');
+        assert.ok(!ruleBody.includes('initiatorDomains'),
+            'Fix E-2: initiatorDomains scope dropped (downloads requests carry no extension initiator)');
+        assert.ok(ruleBody.includes("'Referer'"),
+            'Fix E-2: rule still substitutes the Referer header');
+        // No transfer machinery may reappear (reverted 2026-09-10 after
+        // review — the SW-heap buffering architecture is wrong for
+        // 30-40 MB pixiv PNGs and blocked by the JSON messaging
+        // boundary on Chrome):
+        assert.ok(!/mdTransferToBlob/.test(dnrSrc), 'Fix E-2: no SW byte-transfer tier');
+        assert.ok(!/mdMakeObjectUrl/.test(dnrSrc), 'Fix E-2: no page object-URL round-trip');
     }
 }
 
