@@ -2,7 +2,7 @@
 	"manifest_version": 3,
 
 	"name": "Imagus Reborn MD",
-	"version": "2026.8.20.8",
+	"version": "2026.8.20.9",
 	"description": "__MSG_APP_DESCRIPTION__",
 	"default_locale": "en",
 	"homepage_url": "https://www.reddit.com/r/Imagus",
@@ -50,7 +50,12 @@
 	"incognito": "spanning",
 
 	"background": {
-		"scripts": [ "background/service.js" ]
+		"scripts": [
+			"mass-download/service-init.js",
+			"mass-download/service-core.js",
+			"mass-download/md-dnr.js",
+			"background/service.js"
+		]
 	},
 
 	"options_ui": {

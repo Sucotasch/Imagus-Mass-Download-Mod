@@ -2,8 +2,8 @@
 
 | Field | Value |
 |-------|--------|
-| **Дата** | 2026-08-17 |
-| **Ветка** | `feature/overlay-firefox` (создана с `mv3-version` @ `d6605eb`) |
+| **Дата** | 2026-09-10 (обновлено: FF Fix 1/2) |
+| **Ветка** | `feature/overlay-firefox` (создана с `mv3-version` @ `d6605eb`, живёт в `mv3-version` с 2026-09-10) |
 | **Дерево** | `src-mv3-overlay-firefox/` — **точная копия** `src-mv3-overlay/` + Firefox-дельты |
 | **Предшественник** | `feature/mv3-firefox-port` (`src-mv3-firefox/`, монолит на базе старого `src-mv3`, заброшен) |
 | **Upstream-модель** | Imagus Reborn сам шипит Firefox-сборку: `manifest_firefox.json` + `content/relay.js` (см. `Imagus-Reborn-base/build.sh`) |
@@ -45,9 +45,9 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 
 | Файл | Изменение |
 |------|-----------|
-| `manifest.json` | Firefox-манифест на базе upstream `manifest_firefox.json`: `browser_specific_settings.gecko` (`imagus-reborn-md@sucotasch`, min 136, `data_collection_permissions: none`), `content_scripts: [relay.js]`, `background.scripts` (event page), `optional_permissions: ["userScripts"]`, `incognito: "spanning"`, `action.default_popup`, name/version как у Chrome-дерева. Удалён устаревший `manifest_firefox.json` (по конвенции upstream-сборки FF-билд использует `manifest.json` напрямую) |
-| `background/service.js` | `mdAck()` — синхронный `sendResponse({})` во всех fire-and-forget MD-кейсах. В Gecko неотвеченный `sendMessage` **реджектится** ("message port closed"); синхронный ack чинит это без blanket `return true` (I4) |
-| `mass-download/service-core.js` | `processDownloadQueue`: для Firefox передаёт `incognito: task.isPrivate === true` в `chrome.downloads.download` — иначе массовая загрузка в приватном окне падает (зеркалит platform-ветку upstream `download()`) |
+| `manifest.json` | Firefox-манифест на базе upstream `manifest_firefox.json`: `browser_specific_settings.gecko` (`imagus-reborn-md@sucotasch`, min 136, `data_collection_permissions: none`), `content_scripts: [relay.js]`, `background.scripts` (event page), `optional_permissions: ["userScripts"]`, `incognito: "spanning"`, `action.default_popup`, name/version как у Chrome-дерева. Удалён устаревший `manifest_firefox.json` (по конвенции upstream-сборки FF-билд использует `manifest.json` напрямую). **FF Fix 1 (v2026.8.20.9):** `background.scripts` — массив из 4 файлов: три модуля mass-download (`service-init.js` → `service-core.js` → `md-dnr.js`) **до** `background/service.js`. Event page не имеет `importScripts` (WorkerGlobalScope-only) — прежний вызов убивал весь фон (v2026.8.20.7/8: ни промпта userScripts, ни настроек). Порядок критичен: top-level код service.js (`mdDnrRearm()` и др.) требует определённых модулей; сами модули содержат только декларации |
+| `background/service.js` | `mdAck()` — синхронный `sendResponse({})` во всех fire-and-forget MD-кейсах. В Gecko неотвеченный `sendMessage` **реджектится** ("message port closed"); синхронный ack чинит это без blanket `return true` (I4). **FF Fix 2 (v2026.8.20.9):** popup-save `download()` добавляет `headers: [{name:"Referer", value:…}]` (registry-хосты через `mdDnrRequestFor`) — Firefox 70+ разрешает Referer в downloads headers, нативный проход pixiv Referer-гейта |
+| `mass-download/service-core.js` | `processDownloadQueue`: для Firefox передаёт `incognito: task.isPrivate === true` в `chrome.downloads.download` — иначе массовая загрузка в приватном окне падает (зеркалит platform-ветку upstream `download()`). **FF Fix 2 (v2026.8.20.9):** тот же `headers: [{name:"Referer", value:…}]` для registry-хостов (гвард `platform === "firefox"`, blob/object-URL не тронуты) — на Chrome этот путь невозможен (downloads API запрещает Referer), там механизм остаётся DNR-правило Fix E-2 |
 
 Всё остальное (content.js + маркеры, mass-download, options, локали, sieve) — **семантически байт-в-байт как в Chrome-дереве** (Audit N-20).
 
@@ -80,7 +80,7 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 1. Сделать re-base Chrome-дерева (`Docs/MASS_DOWNLOAD_STRATEGY.md`).
 2. `cp -r src-mv3-overlay/* src-mv3-overlay-firefox/` (кроме `manifest.json` FF-дерева — сохранить).
 3. Восстановить FF-манифест: обновить `version`, сверить разрешения с новым upstream `manifest_firefox.json`.
-4. Заново применить 2 кодовые дельты (`mdAck` в service.js, `incognito` в processDownloadQueue) — grep `Firefox note` / `platform === "firefox"` в `mass-download/`.
+4. Заново применить кодовые дельты: `mdAck` + Referer-headers в `download()` (service.js), `incognito` + Referer-headers в `processDownloadQueue` (service-core.js), массив `background.scripts` (манифест) — grep `Firefox note` / `platform === "firefox"` / `FF Fix` в `mass-download/` и `background/`. Строку importScripts в service.js НЕ возвращать (FF event page её не имеет).
 5. Сверка дельты: `git diff --no-index --ignore-cr-at-eol src-mv3-overlay src-mv3-overlay-firefox` (или `diff -rq` после нормализации CRLF) — должно быть ровно 3 файла + отсутствие `manifest_firefox.json`. Плоский `diff -rq` показывает 13 лишних файлов из-за CRLF-шума (N-20) — не считать это расхождением.
 6. Smoke §3.
 
@@ -94,4 +94,4 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 
 ---
 
-*Документ создан при порте на overlay-философию (2026-08-17). При изменении FF-дельты — обнови §2.*
+*Документ создан при порте на overlay-философию (2026-08-17). При изменении FF-дельты — обнови §2. Обновлено 2026-09-10: FF Fix 1 (мёртвый event page из-за importScripts → background.scripts-массив) и FF Fix 2 (нативный Referer-заголовок в downloads.download). Подробности и вердикт живого теста Chrome v2026.8.20.8 — REPORT_GALLERY_BATCH_2026-09-06.md §26.*

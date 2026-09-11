@@ -1287,11 +1287,24 @@ function processDownloadQueue() {
         // stub. Cheap idempotent re-ensure right before the call.
         if (!(task._blob || task._objectUrl)) mdSwallow(mdDnrEnsureForTask(task));
 
+        // FF Fix 2 (2026-09-10, Firefox port bug): unlike Chrome, Firefox
+        // allows the Referer header in chrome.downloads.download({headers})
+        // (MDN downloads.download, FF 70+) — the native way through pixiv's
+        // Referer gate, no DNR involvement at all. Chrome's downloads API
+        // restricts headers to the XMLHttpRequest-allowed set, where Referer
+        // is forbidden — there the session rule stays the mechanism, and the
+        // registry hosts are exactly where this applies. Blob/object-URL
+        // payloads never need a Referer (they are already materialized).
+        const mdDnrReq = (platform === "firefox" && !(task._blob || task._objectUrl))
+            ? mdDnrRequestFor(task.url, task.referer)
+            : null;
+
         chrome.downloads.download({
             url: dlUrl,
             filename: filename,
             conflictAction: "uniquify",
-            ...(platform === "firefox" ? { incognito: task.isPrivate === true } : {})
+            ...(platform === "firefox" ? { incognito: task.isPrivate === true } : {}),
+            ...(mdDnrReq ? { headers: [{ name: "Referer", value: mdDnrReq.referer }] } : {})
         }, function (downloadId) {
             if (chrome.runtime.lastError) {
                 updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);

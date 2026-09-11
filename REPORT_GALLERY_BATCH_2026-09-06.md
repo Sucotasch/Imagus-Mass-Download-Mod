@@ -1530,3 +1530,125 @@ md-dnr.js байт-идентичен между деревьями (git diff --
 4. Тест «до скана»: сейв одиночного изображения с закрытой вкладкой
    прогресс-таба — правило ставится в case "download" на лету, download
    стартует уже под ним.
+
+## 26. Батч 2026-09-10 (поздний вечер): вердикт живого теста v2026.8.20.8 + два Firefox-фикса — версия 2026.8.20.9
+
+### 26.1. Вердикт живого теста v2026.8.20.8 (лог 2026-09-10T21-23-25)
+
+Фильтровая фаза вылечена полностью и воспроизводимо: 44/44 строк
+`HEAD/200` с реальными contentType/fileSize (правило DNR матчит SW-fetch).
+Фаза загрузки — прежний провал: 42 из 42 img-original PNG падают
+`interrupted: SERVER_FORBIDDEN` из chrome.downloads; каскад уходит на
+master1200.jpg-кандидаты и там же умирает. Счёт: found=210 prefiltered=134
+skipped=2 downloaded=0 failed=42.
+
+**Вывод: это платформенная стена, а не условие правила.** Расширенное
+E-2-правило (все resourceTypes, без initiatorDomains) доказуемо живо для
+fetch — и доказуемо мимо для downloads. Два независимых внешних
+свидетельства:
+
+- Chromium issue [339385537](https://issues.chromium.org/issues/339385537)
+  «declarativeNetRequest sessionRule not be matched by download event» —
+  ровно наш симптом;
+- [SO 77932227](https://stackoverflow.com/questions/77932227/chrome-downloads-api-http-requests-are-not-getting-modified-by-declarative-net-r)
+  (февраль 2024): fetch модифицируется DNR-правилом, downloads-API-запрос —
+  нет.
+
+Собственный живой лог v2026.8.20.8 — сильнейшее воспроизводимое
+доказательство: правило установлено (HEAD проходит), download 403-ит.
+
+Нативный путь «headers в chrome.downloads.download» на Chrome мёртв:
+параметр существует, но ограничен Headers-набором XMLHttpRequest, где
+Referer запрещён (запрещённое имя по Fetch-спеке).
+
+### 26.2. Побочный факт: alterDownload-путь для pixiv тоже мёртв
+
+Лог 2026-09-07T08-28-01 (до Fix E): SW-403 → referer-retry → страничный
+fetch умер по CORS (pximg не отдаёт ACAO) → host запинен в BROWSER →
+downloads → 403. Итого на Chrome для pixiv заедены ВСЕ существующие пути:
+
+| Путь | Почему мёртв |
+|------|--------------|
+| SW fetch без Referer | 403 (Referer forbidden в fetch из SW) |
+| SW fetch под DNR-правилом | работает — единственный живой путь (HEAD/валидация) |
+| downloads API без заголовка | 403 — нет Referer |
+| downloads API под DNR-правилом | 403 — платформенная стена (issue 339385537) |
+| downloads API headers: [Referer] | запрещён на Chrome (XMLHttpRequest-набор) |
+| alterDownload (страничный fetch) | CORS: pximg не отдаёт ACAO |
+| Оставшиеся варианты | offscreen-document bridge (усложнение, решение за пользователем); declarativeNetRequestFeedback как чистая диагностика |
+
+### 26.3. Firefox-баги: корневая причина — мёртвый event page
+
+Пользователь: «ещё с прошлого релиза версия расширения для Firefox не
+работает, не запрашивает разрешения на пользовательские скрипты, не
+открывает настройки». Оба симптома — вторичны от одной причины: строка 8
+`background/service.js` вызывала `importScripts(...)`, а FF MV3
+`background: {scripts}` — это **event page** (window-контекст), где
+`importScripts` отсутствует (WorkerGlobalScope-only API). ReferenceError
+на загрузке → весь фон мёртв: нет промпта userScripts (options.js L793
+требует живого фона для round-trip `checkUserScripts`), нет
+`openOptionsPage`, нет обработчиков сообщений, нет контекстных меню.
+
+Примечательно: строка жила с самого создания FF-дерева — а убила расширение
+именно в v2026.8.20.7, потому что Fix E добавил туда третий импорт (и до
+этого FF-дерево просто ни разу не тестировали живьём).
+
+### 26.4. FF Fix 1 (загрузчик): manifest background.scripts
+
+Модули грузятся манифестом, в порядке прежнего importScripts, ДО service.js
+(его top-level код — `mdDnrRearm()` и др. — требует определённых
+функций):
+
+```json
+"background": { "scripts": [
+  "mass-download/service-init.js",
+  "mass-download/service-core.js",
+  "mass-download/md-dnr.js",
+  "background/service.js"
+] }
+```
+
+Порядок безопасен: все top-level statements трёх модулей — декларации,
+исполняемого кода при загрузке нет (проверено). Сама строка importScripts
+заменена комментарием с объяснением. Upstream-совместимо
+(hababr-манифест FF использует тот же механизм, но с самодостаточным
+service.js).
+
+### 26.5. FF Fix 2 (Referer): нативные headers в downloads.download
+
+Firefox (70+) — единственный браузер, где downloads API **разрешает
+Referer** в `headers` ([MDN](https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/downloads/download)).
+Ровно та же семантика, что у userscript-референса: правильный Referer едет
+с запросом, ни один байт не буферизуется в фоне. DNR-правило остаётся
+(безвредно, всё ещё прикрывает HEAD-валидацию в SW-фети).
+
+Два места (оба — canonical delta-файлы):
+
+1. `mass-download/service-core.js` → processDownloadQueue: для
+   registry-хостов (через `mdDnrRequestFor`) добавлен
+   `headers: [{ name: "Referer", value: mdDnrReq.referer }]`, гвард
+   `platform === "firefox"`, blob/object-URL не тронуты.
+2. `background/service.js` → download (popup-save): тот же
+   registry-lookup и заголовок в `params.headers`.
+
+### 26.6. Smoke-локи (tools/md-unit-smoke.mjs)
+
+Новый блок после E-2-локов: 4 файла в FF `background.scripts` в верном
+порядке; отсутствие ВЫЗОВА importScripts в FF service.js (упоминания в
+комментариях разрешены); Referer-header в обоих FF-путях скачивания;
+гвард `platform === "firefox"`; и — негативный лок — Chrome-дерево НЕ
+выращивает downloads-headers-путь (его механизм остаётся DNR-правилом).
+
+### 26.7. Статус E-3 на Chrome (без изменений кода)
+
+Простого пути нет, и следующий шаг НЕ должен быть очередным твиком
+условий правила — стена платформенная. Честные варианты: offscreen
+document bridge (минимальный — shim createObjectURL; решение за
+пользователем, ранее отклонялось как усложнение), или
+`declarativeNetRequestFeedback` (+ `onRuleMatchedDebug`) как чистая
+диагностика стены (требует новую permission, только dev-ценность), или
+принять: на Chrome pixiv-загрузки идут через тот путь, который останется
+после всех живых проверок (HEAD/валидация через DNR-правило — работает).
+DNR-правило Fix E-2 сохраняется на обеих платформах: на FF оно больше не
+единственный механизм для downloads, но продолжает прикрывать
+SW-валидацию.

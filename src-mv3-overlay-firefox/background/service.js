@@ -5,7 +5,13 @@ var cachedSieveRes = [],
     cachedPrefs = {};
 
 // === MASS DOWNLOAD ===
-importScripts('../mass-download/service-init.js', '../mass-download/service-core.js', '../mass-download/md-dnr.js');
+// FF event pages have no importScripts (WorkerGlobalScope-only API; the
+// v2026.8.20.7/8 background died with a ReferenceError here — no userScripts
+// prompt, no options page, no message handling). The modules now load via
+// the manifest background.scripts array, in the SAME order the importScripts
+// call used: service-init.js -> service-core.js -> md-dnr.js -> this file
+// (this file runs mdDnrRearm() and other top-level calls, so the modules must
+// be defined before it executes).
 
 const platform = navigator.userAgent.includes('Firefox') ? "firefox" : "chrome";
 
@@ -776,6 +782,16 @@ async function download(msg, tab, sendResponse) {
 
     if (platform === "firefox") {
         params.incognito = tab.incognito;
+    }
+
+    // FF Fix 2 (2026-09-10): Firefox allows Referer in downloads.download
+    // headers (FF 70+, MDN) — the popup-save path needs it just like the
+    // mass-download queue: pixiv's Referer gate 403s any headerless request.
+    // Registry-scoped via mdDnrRequestFor (md-dnr.js); blob payloads are
+    // already materialized and never carry a Referer.
+    if (platform === "firefox" && !objectUrl) {
+        const mdDnrReq = mdDnrRequestFor(msg.url, msg.referer);
+        if (mdDnrReq) params.headers = [{ name: "Referer", value: mdDnrReq.referer }];
     }
 
     let id;

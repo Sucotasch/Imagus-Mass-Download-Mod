@@ -381,6 +381,49 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         // boundary on Chrome):
         assert.ok(!/mdTransferToBlob/.test(dnrSrc), 'Fix E-2: no SW byte-transfer tier');
         assert.ok(!/mdMakeObjectUrl/.test(dnrSrc), 'Fix E-2: no page object-URL round-trip');
+
+        // FF Fix 1 + Fix 2 (2026-09-10, v2026.8.20.9) lock: the Firefox
+        // event page died at load (importScripts is WorkerGlobalScope-only)
+        // and pixiv downloads 403'd there too. Contract:
+        //  - FF manifest loads the mass-download modules via the
+        //    background.scripts array (in importScripts order) BEFORE
+        //    service.js, which calls mdDnrRearm() at top level;
+        //  - FF service.js contains NO importScripts call;
+        //  - FF service-core.js passes a Referer header into
+        //    chrome.downloads.download for registry hosts only (Firefox
+        //    70+ allows Referer in downloads headers; Chrome's
+        //    downloads API forbids it — the DNR rule stays the Chrome
+        //    mechanism);
+        //  - the FF popup-save path in background/service.js does the same.
+        const ffManifest = JSON.parse(readFileSync(
+            join(repoRoot, 'src-mv3-overlay-firefox/manifest.json'), 'utf8'));
+        const ffBg = ffManifest.background?.scripts || [];
+        assert.ok(ffBg.length === 4, 'FF Fix 1: background.scripts lists 4 files');
+        assert.equal(ffBg[0], 'mass-download/service-init.js', 'FF Fix 1: init module first');
+        assert.equal(ffBg[1], 'mass-download/service-core.js', 'FF Fix 1: core module second');
+        assert.equal(ffBg[2], 'mass-download/md-dnr.js', 'FF Fix 1: dnr module third');
+        assert.equal(ffBg[3], 'background/service.js', 'FF Fix 1: service.js runs after the modules');
+        const ffServiceSrc = readFileSync(
+            join(repoRoot, 'src-mv3-overlay-firefox/background/service.js'), 'utf8');
+        assert.ok(!/^\s*importScripts\s*\(/m.test(ffServiceSrc),
+            'FF Fix 1: no importScripts call in the FF event page (comment mentions are fine)');
+        const ffCoreSrc = readFileSync(
+            join(repoRoot, 'src-mv3-overlay-firefox/mass-download/service-core.js'), 'utf8');
+        const ffDl = cutFnFrom(ffCoreSrc, 'processDownloadQueue');
+        assert.ok(ffDl.includes('mdDnrRequestFor(task.url, task.referer)'),
+            'FF Fix 2: download options derived from the registry lookup');
+        assert.ok(/headers:\s*\[\{\s*name:\s*"Referer"/.test(ffDl),
+            'FF Fix 2: Referer header passed to downloads.download');
+        assert.ok(ffDl.includes('platform === "firefox"'),
+            'FF Fix 2: header path guarded to Firefox only');
+        // The Chrome tree must NOT grow the downloads-header path (its
+        // downloads API forbids Referer):
+        const chromeDl = cutFnFrom(src, 'processDownloadQueue');
+        assert.ok(!/headers:\s*\[\{\s*name:\s*["\']Referer/.test(chromeDl),
+            'FF Fix 2: Chrome tree keeps the DNR rule as its mechanism');
+        // The popup-save path in FF service.js carries the same header:
+        assert.ok(/params\.headers\s*=\s*\[\{\s*name:\s*"Referer"/.test(ffServiceSrc),
+            'FF Fix 2: popup-save path also passes Referer');
     }
 }
 
