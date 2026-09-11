@@ -247,10 +247,15 @@ function resetMassDownloadSession() {
     refererRetryUrls.clear();
     // P-1: host modes and attempt seqs are session-scoped learning — drop
     // them with the rest of the retry state (a fresh scan re-probes hosts).
-    refererHostModes = {};
-    refererAttemptSeqMap = {};
-    // Preserve completed/skipped entries from previous scans for history
-    const preserved = {};
+    // BT-08: null-prototype (see service-init.js) so a page-controlled key
+    // such as '__proto__' can never silently no-op a write or leak a read.
+    refererHostModes = Object.create(null);
+    refererAttemptSeqMap = Object.create(null);
+    // Preserve completed/skipped entries from previous scans for history.
+    // BT-08: null-prototype — downloadProgress is keyed by absolute URLs, and
+    // a plain {} here would silently restore the prototype defect on the very
+    // first session reset (the declaration in service-init.js would be moot).
+    const preserved = Object.create(null);
     for (const url in downloadProgress) {
         const s = downloadProgress[url].status;
         if (s === 'completed' || s === 'skipped') {
@@ -443,7 +448,7 @@ function handleClearCompleted() {
 
 function handleClearAll() {
     handleStopScanning();
-    downloadProgress = {};
+    downloadProgress = Object.create(null); // BT-08: keep the null prototype
     downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
     globalProcessedUrls.clear();
     downloadIdToTask.clear();
@@ -474,19 +479,25 @@ function handleRetryDownload(msg, sender) {
 }
 
 function handleRefererDownloadReady(msg, sender) {
+    // BT-07: normalize ONCE and use that everywhere. The retry Set is keyed by
+    // the absolute task.url (triggerRefererDownload stores task.url), and every
+    // progress row must land under the same key the download phase / onChanged
+    // will look up — a raw msg.url key would leave a phantom 'pending' row and
+    // (when protocol-relative) a retry slot that never returns.
+    const url = ensureAbsoluteUrl(msg && msg.url ? msg.url : '');
     // Review fix #1/#4: the in-flight slot is returned exactly once — either
     // here or by the 30s watchdog (refererRetryUrls), never both; a blanket
     // decrement ate a PARALLEL retry's slot and made the session look drained.
     // A stale session's answer must not touch the new session's counter or
     // rows — reset already cleared both.
-    if (msg && msg.url && refererRetryUrls.has(msg.url)) {
-        refererRetryUrls.delete(msg.url);
+    if (url && refererRetryUrls.has(url)) {
+        refererRetryUrls.delete(url);
         activeRefererRetries = Math.max(0, activeRefererRetries - 1);
     }
-    if (!msg || !msg.url) return;
+    if (!msg || !url) return;
     if (msg.session !== sessionId) return;
     if (!scanInProgress || userCanceled) {
-        updateDownloadProgress(msg.url, 'canceled', 0, 'Canceled by user', null, null);
+        updateDownloadProgress(url, 'canceled', 0, 'Canceled by user', null, null);
         return;
     }
     const da = cachedPrefs.da || {};
@@ -498,8 +509,8 @@ function handleRefererDownloadReady(msg, sender) {
     const size = Number(msg.size) || 0;
     const type = msg.contentType || '';
 
-    if (isExcludedType(msg.url, type, excludedExtensions)) {
-        updateDownloadProgress(msg.url, 'skipped', 0, 'Excluded type', null, null);
+    if (isExcludedType(url, type, excludedExtensions)) {
+        updateDownloadProgress(url, 'skipped', 0, 'Excluded type', null, null);
         downloadStats.skipped++;
         return;
     }
@@ -512,13 +523,13 @@ function handleRefererDownloadReady(msg, sender) {
         passed = false;
     }
     if (!passed) {
-        updateDownloadProgress(msg.url, 'skipped', 0, 'Too small', null, null);
+        updateDownloadProgress(url, 'skipped', 0, 'Too small', null, null);
         downloadStats.skipped++;
         return;
     }
 
     const task = {
-        url: ensureAbsoluteUrl(msg.url),
+        url: url,
         referer: msg.referer || '',
         isPrivate: sender?.tab?.incognito === true,
         source: msg.source || 'referer',
@@ -555,15 +566,17 @@ function handleRefererDownloadReady(msg, sender) {
 // stays tracked in downloadIdToTask/onChanged, and can never navigate the
 // scanning tab (unlike an anchor click).
 async function handleRefererDownloadFailed(msg) {
+    // BT-07: normalize once, up front — see handleRefererDownloadReady. The
+    // retry Set and the progress rows must use the same absolute key.
+    const url = ensureAbsoluteUrl(msg && msg.url ? msg.url : '');
     // See handleRefererDownloadReady: return the slot exactly once, and a
     // stale session's answer must not reach the new session's rows.
-    if (msg && msg.url && refererRetryUrls.has(msg.url)) {
-        refererRetryUrls.delete(msg.url);
+    if (url && refererRetryUrls.has(url)) {
+        refererRetryUrls.delete(url);
         activeRefererRetries = Math.max(0, activeRefererRetries - 1);
     }
-    if (!msg || !msg.url) return;
+    if (!msg || !url) return;
     if (msg.session !== sessionId) return;
-    const url = ensureAbsoluteUrl(msg.url);
     if (!scanInProgress || userCanceled) {
         const existing = downloadProgress[url];
         updateDownloadProgress(url, 'canceled', 0, 'Canceled by user', null, existing ? existing.task : null);
@@ -998,7 +1011,13 @@ async function processFilterQueue() {
         // DNR session rule BEFORE the first validation request so the HEAD
         // below passes the gate on the first try instead of burning a 403
         // round-trip. Registry-scoped; a no-op for every other host.
-        await mdDnrEnsureForTask(task);
+        //
+        // BT-04: nothing may throw between the activeFilters++ above and the
+        // try/finally below, or the slot leaks forever and the session never
+        // drains. DNR is best-effort (md-dnr.js) — but keep `await` on the raw
+        // promise: mdSwallow() returns undefined, so `await mdSwallow(x)`
+        // would NOT wait and the first HEAD would race the rule install.
+        try { await mdDnrEnsureForTask(task); } catch (_) { /* best-effort */ }
 
         const { headMs, getMs } = getFilterTimeouts();
         const controller = new AbortController();
@@ -1006,10 +1025,13 @@ async function processFilterQueue() {
         activeControllers.set(task._id, controller);
 
         try {
+            // BT-03: Referer is NOT set here — it is a forbidden header name
+            // (Fetch spec) and the browser silently drops it. The hotlink gate
+            // is lifted by the DNR session rule in md-dnr.js (mdDnrEnsureForTask
+            // above); do not remove md-dnr.js as "redundant".
             let response = await fetch(task.url, {
                 method: 'HEAD',
-                signal: controller.signal,
-                headers: { 'Referer': task.referer || '' }
+                signal: controller.signal
             });
             clearTimeout(timeoutId);
             activeControllers.delete(task._id);
@@ -1073,9 +1095,15 @@ async function processFilterQueue() {
                 try {
                     // Fix E: rule ensured at task pickup (HEAD path above);
                     // re-ensure cheaply in case it was swept mid-session.
-                    await mdDnrEnsureForTask(task);
+                    // Fix E-3: wrapped for the same reason as the HEAD call —
+                    // mdDnrEnsureRule swallows its own failures, but DNR is
+                    // best-effort and must never turn into a task-killing
+                    // "Filter error" for the item (the 2026-09-11 FF pixiv
+                    // log: 42 items died exactly here).
+                    try { await mdDnrEnsureForTask(task); } catch (_) { /* best-effort */ }
+                    // BT-03: see the HEAD fetch above — no Referer header here
+                    // (silently dropped); the DNR rule does the work.
                     response = await fetch(task.url, {
-                        headers: { 'Referer': task.referer || '' },
                         signal: innerController.signal
                     });
                 } finally {
@@ -1728,9 +1756,11 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     activeControllers.set(id, controller);
     try {
+        // BT-03: no Referer header (forbidden name, silently dropped) — the
+        // DNR session rule in md-dnr.js is the mechanism. `referer` stays in
+        // this function's signature for its callers, but is not sent.
         const response = await fetch(absUrl, {
-            signal: controller.signal,
-            headers: { 'Referer': referer || '' }
+            signal: controller.signal
         });
         if (!response.ok) return { url: absUrl, isValid: false, reason: `HTTP ${response.status}` };
         const contentType = response.headers.get('Content-Type') || '';

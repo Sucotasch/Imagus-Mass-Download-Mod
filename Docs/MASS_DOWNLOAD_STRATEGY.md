@@ -4,7 +4,7 @@
 |-------|--------|
 | **Дата** | 2026-07-20 (актуализация) |
 | **Статус** | **Подход применён и работоспособен** |
-| **Результат** | Дерево **`src-mv3-overlay/`** (ветка `mv3-version`; Firefox-зеркало — `src-mv3-overlay-firefox`, ветка `feature/overlay-firefox`) |
+| **Результат** | Дерево **`src-mv3-overlay/`** (ветка `mv3-version`; Firefox-зеркало — `src-mv3-overlay-firefox`, живёт в `mv3-version` с 2026-09-10; см. `FIREFOX_OVERLAY.md`) |
 | **Назначение документа** | Playbook для агента-исполнителя: **как накатить мод на новую версию Imagus Reborn**, не перечитывая оба проекта целиком |
 | **Не для** | Повторного исследования «как устроен mass-download» (→ Algorithm) и bugfix (→ Audit / Dev Guide) |
 
@@ -27,7 +27,7 @@
 2. **Не** пытаться вынести content mass-download в отдельный runtime-файл: **`PVI` — IIFE-local**.  
 3. **Делай:** свежий upstream → `src-mv3-overlay/` + скопируй `mass-download/` + **~15 точечных вставок** (ниже) + UI-файлы мода + `DA_*` + `da` в defaults/hello.  
 4. **Источник правды для вставок content:** `mass-download/content-block.js` (не «из головы»).  
-5. **Источник правды для SW logic:** `mass-download/service-init.js` + `service-core.js` (не размазывать обратно в `service.js`).  
+5. **Источник правды для SW logic:** `mass-download/service-init.js` + `service-core.js` + `md-dnr.js` (не размазывать обратно в `service.js`).  
 6. После вставок — **чеклист API contract** (§5) и **smoke** (§8).  
 7. Residual bugs (pathname ext, foreign onChanged, …) — **после** re-base, см. STATUS/Dev Guide; не блокируют саму процедуру наката.
 
@@ -60,7 +60,7 @@ Upstream развивается (Shadow DOM, VideoJS, toolbar, gallery). Ста�
 
 | Слой | Как | Почему |
 |------|-----|--------|
-| Service Worker | `importScripts('mass-download/service-init.js', 'service-core.js')` + switch cases | Зависимость **односторонняя** (MD → upstream globals) |
+| Service Worker | Chrome: `importScripts('mass-download/service-init.js', 'service-core.js', 'md-dnr.js')`; Firefox: массив `background.scripts` в манифесте + switch cases | Зависимость **односторонняя** (MD → upstream globals) |
 | Content | **Inline** блоки с маркерами `>>> MASS-DOWNLOAD-…` / `<<< …` | `PVI` **локален** в IIFE; upstream **вызывает** MD (hotkey, messages) |
 | Options / popup / progress | Отдельные файлы мода + секции `da_*` | Чистые добавления |
 | Defaults / locales | `da` + `keys.downloadAll` + `DA_*` | Настройки и i18n |
@@ -205,7 +205,7 @@ prefs: {
 
 ```javascript
 // === MASS DOWNLOAD ===
-importScripts('../mass-download/service-init.js', '../mass-download/service-core.js');
+importScripts('../mass-download/service-init.js', '../mass-download/service-core.js', '../mass-download/md-dnr.js'); // FF: тот же порядок в manifest background.scripts (event page не имеет importScripts)
 ```
 
 **Порядок важен:** init → core.  
@@ -660,7 +660,7 @@ grep MASS-DOWNLOAD content/content.js
 | Было | Сейчас |
 |------|--------|
 | «Статус: код не изменён» | Код overlay **есть и работает** |
-| `mass-download/` с ADAPTERS.md, options-patch… | Только **3 файла**: service-init, service-core, content-block |
+| `mass-download/` с ADAPTERS.md, options-patch… | **4 файла**: service-init, service-core, md-dnr, content-block |
 | `_isElementVisible` dead | **Вызывается** в filter |
 | `_removeDownloadAllStatus` | **`_stopKeepAwake` + `_cleanupMonkeyPatch`** |
 | База = `src-mv3` | База re-base = **upstream** + донор **overlay** |

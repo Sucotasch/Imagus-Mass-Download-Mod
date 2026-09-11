@@ -61,7 +61,7 @@
         }
         if (cancelAllBtn) {
             cancelAllBtn.addEventListener('click', () => {
-                chrome.runtime.sendMessage({ cmd: 'stopScanning' });
+                chrome.runtime.sendMessage({ cmd: 'stopScanning' }).catch(() => {});
             });
         }
 
@@ -306,7 +306,7 @@
     }
 
     function clearCompleted() {
-        chrome.runtime.sendMessage({ cmd: 'clearCompletedDownloads' });
+        chrome.runtime.sendMessage({ cmd: 'clearCompletedDownloads' }).catch(() => {});
         Object.keys(downloadItems).forEach(id => {
             if (downloadItems[id].status === 'completed') delete downloadItems[id];
         });
@@ -314,7 +314,7 @@
     }
 
     function clearAll() {
-        chrome.runtime.sendMessage({ cmd: 'clearAllDownloads' });
+        chrome.runtime.sendMessage({ cmd: 'clearAllDownloads' }).catch(() => {});
         downloadItems = {};
         updateDisplay();
     }
@@ -332,7 +332,7 @@
                 cmd: 'retryDownload',
                 url: item.url,
                 referer: item.referer || ''
-            });
+            }).catch(() => {});
             updateDisplay();
         }
     }

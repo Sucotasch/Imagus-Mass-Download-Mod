@@ -25,13 +25,16 @@ const refererRetryUrls = new Set();
 // credentialed requests) gets ONE cookieless probe ('omit'); if that dies
 // too, the host is pinned 'browser' and skips the content fetch entirely,
 // going straight to chrome.downloads (which needs no CORS at all).
-var refererHostModes = {};
+// BT-08: null-prototype — keys are page-derived hosts, and '__proto__' is a
+// syntactically valid host that a plain {} cannot store (writes to
+// __proto__ are silently ignored, reads return Object.prototype).
+var refererHostModes = Object.create(null);
 // P-1 watchdog race guard: url -> attempt sequence number. A re-triggered
 // retry (include -> omit) re-arms a SECOND 30s watchdog; without this map
 // the FIRST timeout would steal the new attempt's slot (set still holds the
 // url) and mark the live attempt 'timed out'. Only the watchdog whose seq is
 // still current may fire; every settling handler deletes its entry.
-var refererAttemptSeqMap = {};
+var refererAttemptSeqMap = Object.create(null); // BT-08: null-prototype (keys are URLs)
 // scanInProgress = user session still accepting filter/download work.
 // contentScanDone = content finished DOM/sieve scan (NOT the same as cancel).
 var scanInProgress = false;
@@ -50,7 +53,7 @@ var sessionId = 0;
 var sessionStartTime = null;
 
 // --- Mass Download Progress and Stats ---
-var downloadProgress = {};
+var downloadProgress = Object.create(null); // BT-08: null-prototype (keys are URLs)
 // Audit BUG-08: `prefiltered` = DOM pre-filter rejects (content side),
 // `skipped` = size/type rejects (SW side). They were previously conflated
 // in one `filtered` counter.

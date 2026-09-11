@@ -19,16 +19,36 @@
 // initiatorDomains: [extension] and no resourceTypes; the 2026-09-10
 // log proved it matches the SW fetch (44/44 HEAD/200 — the filter
 // phase is cured) but NOT the chrome.downloads.download request
-// (42 SERVER_FORBIDDEN). Per the official RuleCondition docs a rule
-// WITHOUT resourceTypes matches every type EXCEPT main_frame, and a
-// downloads-API request is not typed xmlhttprequest and/or carries no
-// extension initiator. Fix E-2 widens the condition: every documented
-// resource type (main_frame included), no initiatorDomains. The rule
-// stays registry-scoped and session-scoped and only substitutes a
-// Referer — but the browser-context download now matches too, which is
-// the whole fix: the same mechanism as the userscript (the right
-// Referer travels with the request), without buffering a single byte
-// in the SW.
+// (42 SERVER_FORBIDDEN). Fix E-2 (v2026.8.20.8) widened the condition to
+// every documented resource type, main_frame included, dropping
+// initiatorDomains — on the hypothesis that the downloads request was
+// merely an unmatched resource type.
+//
+// STATUS 2026-09-11 (v2026.8.20.9 live test, log/
+// Pixiv imagus-mass-download-log-2026-09-11T18-28-25.txt): the E-2
+// hypothesis is FALSIFIED. Same 42 items, same shape — every filter fetch
+// HEAD/200 (rule matched, gate lifted) and every download
+// `interrupted: SERVER_FORBIDDEN`. The two earlier E/E-2 logs from
+// 2026-09-10 (18:54 v2026.8.20.7, 21:23 v2026.8.20.8) show the identical
+// count, so widening resourceTypes changes nothing for the download.
+// CONCLUSION: a chrome.downloads.download request is NOT routed through
+// this extension's DNR rules; the Referer substitution reaches the SW
+// fetch only. Do NOT spend a fourth test on resourceTypes/initiatorDomains
+// tuning — a Chrome-side fix needs a different carrier for the bytes
+// (open design item: extension-origin document fetch, e.g. offscreen).
+// Firefox is unaffected by that limitation because its downloads API
+// accepts a Referer header (see the FF tree's processDownloadQueue).
+//
+// Fix E-3 (2026-09-11): `webbundle` removed from the resource-type list.
+// Firefox's schema does not know the value and REJECTS THE WHOLE CALL
+// (live log/
+// `Firefox pixiv imagus-mass-download-log-2026-09-11T18-35-24.txt`:
+// "Type error for parameter options (Error processing
+// addRules.0.condition.resourceTypes.12: Invalid enumeration value
+// \"webbundle\")"), so in the FF tree NO rule was ever installed and
+// every registry-host task died in the filter phase. The list below is
+// the 13-type common denominator accepted by both engines (Chrome's
+// enum minus its engine-specific values).
 //
 // Design (2026-09-10, user-approved — A only, re-scoped after review):
 //   - Referer value: task.referer — the page the URL was found on and
@@ -71,7 +91,10 @@ var MD_DNR_MEDIA_HOSTS = {
 // correctness gate — mdDnrEnsureRule overwrites the same rule id
 // idempotently, so a stale-miss here costs one redundant (harmless)
 // updateSessionRules call, nothing else.
-var mdDnrActive = {};
+// BT-08: null-prototype — keyed by host, and '__proto__' is a valid host
+// that a plain {} silently fails to store (mdDnrActive['__proto__'] reads
+// Object.prototype => "rule already active" for a rule that was never added).
+var mdDnrActive = Object.create(null);
 
 function mdDnrHostConfig(host) {
     if (typeof host !== 'string') return null;
@@ -109,18 +132,18 @@ function mdRuleIdForHost(host) {
     return (idx > -1 ? idx : keys.length) + 1;
 }
 
-// Fix E-2: every documented resource type, main_frame included. The
-// no-resourceTypes shorthand deliberately excludes main_frame (Chrome
-// RuleCondition docs), and a chrome.downloads request is not typed
-// xmlhttprequest — the v2026.8.20.7 rule never matched it (42
-// SERVER_FORBIDDEN in the live log). An explicit full list is also the
-// common denominator with Firefox's engine. initiatorDomains
-// deliberately dropped: the downloads request carries no extension
-// initiator.
+// Fix E-2/Fix E-3: explicit list, main_frame included, `webbundle` EXCLUDED.
+// The explicit form is kept (rather than the no-resourceTypes shorthand,
+// which excludes main_frame) because the rule must also cover requests made
+// from contexts with no tab/initiator, and because an explicit list is the
+// only form that can be kept valid across both engines. `webbundle` is
+// Chrome-only and invalid in Firefox's schema, where it makes the entire
+// updateSessionRules call fail (Fix E-3) — never re-add an engine-specific
+// value here without a matching support check.
 var MD_DNR_RESOURCE_TYPES = [
     'main_frame', 'sub_frame', 'stylesheet', 'script', 'image', 'font',
     'object', 'xmlhttprequest', 'ping', 'csp_report', 'media',
-    'websocket', 'webbundle', 'other'
+    'websocket', 'other'
 ];
 
 function mdDnrBuildRule(host, referer) {
@@ -140,11 +163,35 @@ function mdDnrBuildRule(host, referer) {
     };
 }
 
+// Warn at most once per host per SW lifetime: a permanent engine/schema
+// rejection would otherwise log one warning per scanned item (42 identical
+// "DNR rule install failed" lines in the 2026-09-11 FF pixiv live test) and
+// bury the real message. mdDnrActive stays false, so later items still
+// re-attempt the install — a transient failure recovers by itself.
+var mdDnrWarned = Object.create(null);
+
+function mdDnrInstallFailed(host, e) {
+    mdDnrActive[host] = false;
+    if (!mdDnrWarned[host]) {
+        mdDnrWarned[host] = true;
+        console.warn(chrome.runtime.getManifest().name + ': DNR referer rule install failed for '
+            + host + ' (hotlink gate stays in place, downloads may 403): '
+            + (e && e.message ? e.message : e));
+    }
+    return Promise.resolve(false);
+}
+
 // Idempotent ensure: install the session rule for the host behind `url`
 // (a no-op resolve(false) for every non-registry host). Returns a promise
 // resolving true once a rule is in place. All failures are swallowed
 // and logged — DNR is a best-effort optimization, never a hard
 // dependency: on failure the flow degrades to the pre-Fix-E behavior.
+//
+// Fix E-3: NO failure mode may reach the caller as a throw. Firefox
+// rejects an invalid argument SYNCHRONOUSLY (schema validation in the
+// caller), which used to escape mdDnrEnsureForTask → the filter task's
+// catch → a terminal "Filter error" row for every pixiv item (the whole
+// album lost in the filter phase).
 function mdDnrEnsureRule(url, referer) {
     var req = mdDnrRequestFor(url, referer);
     if (!req) return Promise.resolve(false);
@@ -153,7 +200,14 @@ function mdDnrEnsureRule(url, referer) {
         return Promise.resolve(false);
     }
     var rule = mdDnrBuildRule(req.host, req.referer);
-    return chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [rule.id], addRules: [rule] })
+    var pending;
+    try {
+        pending = chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [rule.id], addRules: [rule] });
+    } catch (e) {
+        return mdDnrInstallFailed(req.host, e);
+    }
+    if (!pending || typeof pending.then !== 'function') return Promise.resolve(false);
+    return pending
         .then(function () {
             mdDnrActive[req.host] = true;
             console.info(chrome.runtime.getManifest().name + ': DNR referer rule active for ' + req.host
@@ -161,10 +215,7 @@ function mdDnrEnsureRule(url, referer) {
             return true;
         })
         .catch(function (e) {
-            mdDnrActive[req.host] = false;
-            console.warn(chrome.runtime.getManifest().name + ': DNR rule install failed for ' + req.host
-                + ': ' + (e && e.message ? e.message : e));
-            return false;
+            return mdDnrInstallFailed(req.host, e);
         });
 }
 

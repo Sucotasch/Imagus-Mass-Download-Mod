@@ -27,7 +27,7 @@ Mod:
 - **Hotlink Protection (Referer-Retry):** When a CDN rejects the download with 403/404 (rule34/e-hentai class of sites), the URL is retried through a page-context fetch that sends the site's cookies + Referer.
 - **Operation Control:** The download process can be fully canceled at any time. Failed or canceled downloads can be retried individually from the progress page.
 - **Download Diagnostics:** The progress tab can export a text log of every item (content type, file size, HTTP status, filter method, HD flag, source) along with session statistics and active settings — useful for debugging blocked or skipped downloads.
-- **Firefox build:** a mirrored `src-mv3-overlay-firefox` tree ships the same feature set for Firefox 136+ (see installation below).
+- **Firefox build:** a mirrored `src-mv3-overlay-firefox` tree ships the same feature set for Firefox 136+ (see installation below). Firefox support is real only from **v2026.8.20.9** — earlier overlay releases shipped a background that died on load, so the extension did nothing there.
 
 ## 🛠 Installation (Developer Mode)
 
@@ -1018,4 +1018,4 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
 ---
 
-*Last Updated: 2026-08-23 | Version: 2026.7.25.8 (Chrome + Firefox 136+)*
+*Last Updated: 2026-09-11 | Version: 2026.8.20.9 (Chrome + Firefox 136+)*

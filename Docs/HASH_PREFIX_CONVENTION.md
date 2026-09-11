@@ -72,6 +72,9 @@ This single check:
 
 ## Key code locations
 
+> Номера строк — снимок 2026-08-23; после gallery/Fix A–F коммитов они сместились. Ориентируйтесь
+> на имена функций и скрипты верификации (`tools/md-unit-smoke.mjs`), а не на числа.
+
 | Location | Line | Purpose |
 |----------|------|---------|
 | `content.js:~4072` (`PVI.set`) | hover flow | HD URL detection (`isHDUrl`) |

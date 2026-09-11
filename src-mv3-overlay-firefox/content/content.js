@@ -4426,6 +4426,21 @@
                         PVI.node = trg;
                         d.m = rule.res.call(PVI, d.params);
                     } catch (ex) {
+                        // BT-01: an exception ends THIS rule's chain, so the
+                        // chain-scoped accumulator must not outlive it —
+                        // otherwise the next resolve of ANY `this.res` rule
+                        // (e-hentai /g/) starts from the dead chain's leftovers
+                        // (the "poisoned album": stale items mixed into the next
+                        // album). Guarded by owner identity, because clearing
+                        // unconditionally would wipe a PARALLEL pagination.
+                        // NOTE: never clear PVI.res BEFORE the call above — the
+                        // {loop} contract reads it back on the next page, and
+                        // clearing per call truncates every paginated album to
+                        // its last page.
+                        if (PVI.res_owner === d.params.rule) {
+                            PVI.res = undefined;
+                            PVI.res_owner = undefined;
+                        }
                         console.error(cfg.app?.name + ": [rule " + d.params.rule.id + "] " + ex.message);
                         if (!d.return_url && trg === PVI.TRG) PVI.show("R_js");
                         return 1;
@@ -4453,6 +4468,13 @@
                     } else if (typeof d.m.loop === "string") {
                         d.loop = true;
                         d.m = d.m.loop;
+                        // BT-01: a {loop} rule is re-entered for the next page
+                        // and reads `this.res` (= PVI.res) to keep accumulating,
+                        // so the accumulator MUST survive until the chain ends.
+                        // Record which rule owns it — only that rule may drop it
+                        // (an unrelated rule's exception must not wipe an
+                        // in-flight pagination).
+                        PVI.res_owner = d.params.rule;
                     }
                 if (Array.isArray(d.m))
                     if (d.m.length) {
@@ -5152,7 +5174,32 @@
                 if (Number.isFinite(declared) && declared > MAX_PAGE_FETCH) {
                     throw new Error('Too large for page fetch');
                 }
-                const blob = await resp.blob();
+                // BT-05: read with a running cap instead of buffering the whole
+                // body first. resp.blob() pulls the entire response into tab
+                // memory before the size check below, so a chunked/gzip
+                // response (no Content-Length) or a lying header could defeat
+                // the cap entirely — the exact thing the cap exists to prevent.
+                // The SW already does this in readBodyCapped. Body-less
+                // responses (and anything without a stream) fall back to blob():
+                // those are small, and the size check below still guards them.
+                const readCapped = async function (response, limit) {
+                    if (!response.body || typeof response.body.getReader !== 'function') return response.blob();
+                    const reader = response.body.getReader();
+                    const chunks = [];
+                    let received = 0;
+                    for (;;) {
+                        const step = await reader.read();
+                        if (step.done) break;
+                        received += step.value.byteLength;
+                        if (received > limit) {
+                            try { await reader.cancel(); } catch (e) { /* best-effort */ }
+                            throw new Error('Too large for page fetch');
+                        }
+                        chunks.push(step.value);
+                    }
+                    return new Blob(chunks, { type: response.headers.get('Content-Type') || '' });
+                };
+                const blob = await readCapped(resp, MAX_PAGE_FETCH);
                 if (blob.size > MAX_PAGE_FETCH) {
                     throw new Error('Too large for page fetch');
                 }

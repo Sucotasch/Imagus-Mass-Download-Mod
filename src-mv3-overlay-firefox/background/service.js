@@ -660,9 +660,15 @@ function handleMessage(message, sender, sendResponse) {
             break;
         case 'refererDownloadReady':
             handleRefererDownloadReady(msg, sender);
+            // BT-06: the content script sends this fire-and-forget (Port.send
+            // in _downloadWithReferer, no .catch) — in Gecko an unanswered
+            // sendMessage rejects, so every settled retry raised an unhandled
+            // rejection. These two cases were the only MD ones missing mdAck().
+            mdAck();
             break;
         case 'refererDownloadFailed':
             handleRefererDownloadFailed(msg);
+            mdAck();
             break;
     }
 }

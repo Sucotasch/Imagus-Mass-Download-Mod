@@ -347,27 +347,51 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         assert.ok(r4 && r4.host === 'i.pximg.net', 'Fix E: case + trailing dot normalized');
 
         // Fix E-2 (2026-09-10 second pixiv live test) lock: the widened
-        // rule contract. The v2026.8.20.7 rule (no resourceTypes +
-        // initiatorDomains) matched the SW fetch but NOT the
-        // chrome.downloads.download request (42 SERVER_FORBIDDEN live).
-        // Per the RuleCondition docs a rule WITHOUT resourceTypes matches
-        // everything EXCEPT main_frame, and the downloads request carries
-        // no extension initiator. The v2026.8.20.8 rule must therefore
-        // list every resource type explicitly (main_frame included) and
-        // NOT scope by initiatorDomains. There is deliberately NO
-        // byte-buffering tier (SW transfer → object URL): a SW Blob
-        // cannot cross the JSON messaging boundary, the MV3 SW has no
-        // createObjectURL, and pixiv PNGs run 30-40 MB — the
-        // browser-context download streams any size instead.
+        // rule contract. Established by live logs (2026-09-10 v2026.8.20.7
+        // and v2026.8.20.8, then 2026-09-11 v2026.8.20.9): the session rule
+        // matches the SW fetch (HEAD/200 — the filter phase is cured) and
+        // NOT the chrome.downloads.download request (identical 42
+        // SERVER_FORBIDDEN across all three runs). Resource-type widening
+        // is therefore NOT the lever for the download path — do not add a
+        // fourth variant of that hypothesis. Locks kept here: explicit
+        // resourceTypes (main_frame included, no initiatorDomains) for the
+        // fetch path, and NOTHING engine-specific in the list, because
+        // Firefox rejects the entire updateSessionRules call on an unknown
+        // enum value (Fix E-3: `webbundle` killed every FF pixiv item).
+        // There is deliberately NO byte-buffering tier (SW transfer →
+        // object URL): a SW Blob cannot cross the JSON messaging boundary,
+        // the MV3 SW has no createObjectURL, and pixiv PNGs run 30-40 MB —
+        // the browser-context download streams any size instead.
         const buildMatch = /var MD_DNR_RESOURCE_TYPES = (\[[\s\S]*?\]);/.exec(dnrSrc);
         assert.ok(buildMatch, 'Fix E-2: MD_DNR_RESOURCE_TYPES declared');
         const resourceTypes = new Function('return ' + buildMatch[1])();
         assert.ok(Array.isArray(resourceTypes) && resourceTypes.length >= 13,
             'Fix E-2: explicit resourceTypes list (13+ documented types)');
         assert.ok(resourceTypes.includes('main_frame'),
-            'Fix E-2: main_frame matched (downloads-API hypothesis)');
+            'Fix E-2: main_frame matched (covers initiator-less requests)');
         assert.ok(resourceTypes.includes('xmlhttprequest'),
             'Fix E-2: xmlhttprequest still matched (SW fetch path stays covered)');
+        // Fix E-3 (2026-09-11): the list must stay inside the enum both
+        // engines accept. Firefox throws "Invalid enumeration value
+        // \"webbundle\"" for the whole call, which left the FF tree with no
+        // rule at all (42/42 pixiv items died in the filter phase).
+        const COMMON_RESOURCE_TYPES = new Set([
+            'main_frame', 'sub_frame', 'stylesheet', 'script', 'image', 'font',
+            'object', 'xmlhttprequest', 'ping', 'csp_report', 'media',
+            'websocket', 'other',
+        ]);
+        assert.ok(!resourceTypes.includes('webbundle'),
+            'Fix E-3: webbundle must not be requested (Firefox rejects the whole rule)');
+        const unknown = resourceTypes.filter(t => !COMMON_RESOURCE_TYPES.has(t));
+        assert.equal(unknown.length, 0,
+            'Fix E-3: resourceTypes must be the cross-engine subset (offending: ' + unknown.join(', ') + ')');
+        const ensureBody = cutFnFrom(dnrSrc, 'mdDnrEnsureRule');
+        assert.ok(/try\s*\{[\s\S]*updateSessionRules\(/.test(ensureBody),
+            'Fix E-3: updateSessionRules call wrapped in try (Firefox throws synchronously on a bad enum)');
+        assert.ok(/catch\s*\(/.test(ensureBody),
+            'Fix E-3: synchronous DNR failure is caught, never thrown at the caller');
+        assert.ok(/function mdDnrInstallFailed\(/.test(dnrSrc),
+            'Fix E-3: install failures funnel through mdDnrInstallFailed (warn once per host)');
         const ruleBody = cutFnFrom(dnrSrc, 'mdDnrBuildRule');
         assert.ok(ruleBody.includes("resourceTypes: MD_DNR_RESOURCE_TYPES"),
             'Fix E-2: buildRule wires the explicit resourceTypes list');
@@ -392,8 +416,9 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         //  - FF service-core.js passes a Referer header into
         //    chrome.downloads.download for registry hosts only (Firefox
         //    70+ allows Referer in downloads headers; Chrome's
-        //    downloads API forbids it — the DNR rule stays the Chrome
-        //    mechanism);
+        //    downloads API forbids it — there the DNR rule remains the
+        //    only carrier for the fetch path; see the Fix E-3 status note
+        //    in md-dnr.js for what that does and does not cover);
         //  - the FF popup-save path in background/service.js does the same.
         const ffManifest = JSON.parse(readFileSync(
             join(repoRoot, 'src-mv3-overlay-firefox/manifest.json'), 'utf8'));
@@ -424,6 +449,40 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         // The popup-save path in FF service.js carries the same header:
         assert.ok(/params\.headers\s*=\s*\[\{\s*name:\s*"Referer"/.test(ffServiceSrc),
             'FF Fix 2: popup-save path also passes Referer');
+
+        // BT-06 (2026-09-11): every mass-download case that answers nothing is
+        // fire-and-forget out of the content/userScript world, and in Gecko an
+        // unanswered sendMessage REJECTS (Port.send in _downloadWithReferer has
+        // no .catch) — so each such case must call mdAck(). The three
+        // self-answering cases own sendResponse and must NOT call it. This lock
+        // closes the gap that let refererDownloadReady/Failed ship without
+        // mdAck(): before it, grep -c mdAck tools/md-unit-smoke.mjs was 0.
+        const caseBody = (srcText, cmd) => {
+            const i = srcText.indexOf(`case '${cmd}':`);
+            if (i < 0) return null;
+            const j = srcText.indexOf("case '", i + 10);
+            return srcText.slice(i, j < 0 ? i + 400 : j);
+        };
+        const ACKED = ['openDownloadProgress', 'registerProgressTab', 'downloadMass',
+            'resolveAndDownloadGroups', 'updateStatus', 'updateFilterStats',
+            'reportSkippedItem', 'stopScanning', 'clearCompletedDownloads',
+            'clearAllDownloads', 'retryDownload', 'refererDownloadReady',
+            'refererDownloadFailed'];
+        for (const cmd of ACKED) {
+            const body = caseBody(ffServiceSrc, cmd);
+            assert.ok(body !== null, `BT-06: FF service.js lost case '${cmd}'`);
+            assert.ok(/mdAck\(\)/.test(body), `BT-06: FF case '${cmd}' must call mdAck()`);
+        }
+        for (const cmd of ['downloadAll', 'getDownloadStatus', 'getDownloadLog']) {
+            const body = caseBody(ffServiceSrc, cmd);
+            assert.ok(body !== null, `BT-06: FF service.js lost case '${cmd}'`);
+            assert.ok(!/mdAck\(\)/.test(body),
+                `BT-06: FF case '${cmd}' answers itself and must NOT call mdAck()`);
+        }
+        const chromeServiceSrc = readFileSync(
+            join(repoRoot, 'src-mv3-overlay/background/service.js'), 'utf8');
+        assert.ok(!/mdAck\(\)/.test(chromeServiceSrc),
+            'BT-06: mdAck() is a Firefox-only shim — the Chrome service worker must not grow it');
     }
 }
 

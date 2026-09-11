@@ -1366,7 +1366,32 @@
                 if (Number.isFinite(declared) && declared > MAX_PAGE_FETCH) {
                     throw new Error('Too large for page fetch');
                 }
-                const blob = await resp.blob();
+                // BT-05: read with a running cap instead of buffering the whole
+                // body first. resp.blob() pulls the entire response into tab
+                // memory before the size check below, so a chunked/gzip
+                // response (no Content-Length) or a lying header could defeat
+                // the cap entirely — the exact thing the cap exists to prevent.
+                // The SW already does this in readBodyCapped. Body-less
+                // responses (and anything without a stream) fall back to blob():
+                // those are small, and the size check below still guards them.
+                const readCapped = async function (response, limit) {
+                    if (!response.body || typeof response.body.getReader !== 'function') return response.blob();
+                    const reader = response.body.getReader();
+                    const chunks = [];
+                    let received = 0;
+                    for (;;) {
+                        const step = await reader.read();
+                        if (step.done) break;
+                        received += step.value.byteLength;
+                        if (received > limit) {
+                            try { await reader.cancel(); } catch (e) { /* best-effort */ }
+                            throw new Error('Too large for page fetch');
+                        }
+                        chunks.push(step.value);
+                    }
+                    return new Blob(chunks, { type: response.headers.get('Content-Type') || '' });
+                };
+                const blob = await readCapped(resp, MAX_PAGE_FETCH);
                 if (blob.size > MAX_PAGE_FETCH) {
                     throw new Error('Too large for page fetch');
                 }

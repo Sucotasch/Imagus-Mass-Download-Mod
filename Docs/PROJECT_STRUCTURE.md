@@ -1,6 +1,8 @@
 # Архитектура проекта Imagus Reborn MD (Manifest V3)
 
-> Актуальная версия: `src-mv3-overlay/` (ветка `mv3-version`; Firefox-зеркало `src-mv3-overlay-firefox/`)
+> Актуальная версия: `src-mv3-overlay/` (ветка `mv3-version`; Firefox-зеркало `src-mv3-overlay-firefox/` — те же 3 канонические дельты, см. `FIREFOX_OVERLAY.md`)
+>
+> Загрузка mass-download модулей: Chrome — `importScripts()` (worker), **Firefox — массив `background.scripts` в манифесте** (event page, `importScripts` там не существует).
 
 ## 1. Обзор компонентов
 
@@ -8,6 +10,7 @@
 - **`background/service.js`** — Upstream SW + `importScripts()` для mass-download модулей + switch cases в `handleMessage`
 - **`mass-download/service-init.js`** — Глобальные переменные: очереди, stats, `activeControllers`, `downloadIdToTask`
 - **`mass-download/service-core.js`** — Вся логика mass-download: фильтрация, загрузка, прогресс, групповая обработка
+- **`mass-download/md-dnr.js`** — session-правила `declarativeNetRequest`, подставляющие Referer для registry-хостов (Chrome); понятие «registry hosts» живёт в `MD_DNR_MEDIA_HOSTS` / `mdDnrRequestFor()`
 
 ### Content Script
 - **`content/content.js`** — Upstream PVI + **inline** mass-download блоки (PVI IIFE-local, внешние файлы не могут видеть PVI)
@@ -39,6 +42,7 @@
 | `stopScanning` | progress→SW→content | Полная остановка |
 | `getDownloadStatus` | progress→SW | Текущее состояние (sync sendResponse) |
 | `getDownloadLog` | progress→SW | Диагностический лог: items + stats + настройки (async sendResponse) |
+| `reportSkippedItem` | content(SW-путь Gallery Save)→SW | Пропущенный при Save элемент: skipped-строка в прогрессе + Save Log (диагностика) |
 | `clearCompletedDownloads` / `clearAllDownloads` / `retryDownload` | progress→SW | Управление прогрессом |
 | `groupAnalysisComplete` | SW→content | Завершение анализа групп |
 | `downloadWithReferer` | SW→content | Повтор 403/404 через fetch со страницы (куки + Referer) |

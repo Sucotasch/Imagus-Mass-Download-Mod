@@ -2,12 +2,16 @@
 
 | Field | Value |
 |-------|--------|
-| **Date** | 2026-07-20 |
-| **Track** | Надёжность mass-download в `src-mv3-overlay` (concurrency, cancel, filters, settings) |
+| **Date** | 2026-07-20 · **актуализировано 2026-09-11** |
+| **Track** | Надёжность mass-download в обоих overlay-деревьях (concurrency, cancel, filters, settings, Firefox) |
 | **Product concept** | Не менять: hover-to-enlarge Imagus + bulk download overlay |
 | **Code changes in this doc** | Нет — только guide |
 | **Source of truth for bugs** | [`Audit/AUDIT_STATUS_CURRENT.md`](../Audit/AUDIT_STATUS_CURRENT.md) (сводный статус всех аудитов) |
 | **Historical evidence** | [`Audit/FULL_AUDIT_2026-07-20.md`](../Audit/FULL_AUDIT_2026-07-20.md) |
+| **Actualized** | 2026-09-11 — WP-1…WP-6 (R-01…R-06, R-08) закрыты в коде; добавлен §15 (Firefox); исправлен §14.5 (BG-4) |
+
+> ⚠ **Статус на 2026-09-11.** Разделы §2–§13 описывают workstream 2026-07-20 и **сохранены как история**: все WP выполнены, «Gaps» закрыт (кроме R-07 — осознанно открыт). **Не переделывать WP-1…WP-6.**
+> Актуальная открытая работа — §15 (Firefox, включая активное расследование из `REPORT_GALLERY_BATCH_2026-09-06.md` §27) и `Audit/AUDIT_STATUS_CURRENT.md` §6–§7.
 
 ---
 
@@ -15,8 +19,8 @@
 
 - **Core:** Imagus Reborn MV3 — hover enlarge, sieve rules, gallery, toolbar.  
 - **Mod:** Mass download (scan page → filter → validate → `chrome.downloads`).  
-- **Architecture:** Hybrid overlay — SW logic in `mass-download/*` via `importScripts`; content logic **inline** in `content.js` (PVI is IIFE-local).  
-- **Active tree:** `src-mv3-overlay/`. `src-mv3/` = old stable monolith — не трогать без явной просьбы.  
+- **Architecture:** Hybrid overlay — SW logic in `mass-download/*` (Chrome: `importScripts`; Firefox: manifest `background.scripts` — §15); content logic **inline** in `content.js` (PVI is IIFE-local).  
+- **Active trees:** `src-mv3-overlay/` (Chrome) + `src-mv3-overlay-firefox/` (Firefox — ровно 3 файла дельты, §15). `src-mv3/` = old stable monolith — не трогать без явной просьбы.  
 - **No build** for MV3; load unpacked + Developer Mode (`userScripts`).
 
 If a change would require rewriting PVI as a global module or merging mass-download into upstream permanently — **out of scope** for this track (see Strategy doc).
@@ -33,24 +37,28 @@ If a change would require rewriting PVI as a global module or merging mass-downl
 4. SW logs: extension card → “service worker”.  
 5. Content logs: page DevTools console.
 
+**Firefox:** `about:debugging#/runtime/this-firefox` → Load Temporary Add-on → `src-mv3-overlay-firefox/manifest.json`; на странице настроек выдать опциональное разрешение **userScripts** (без него расширение молча не работает). FF 136+ — см. §15.
+
 ### Read first (in order)
 
 1. `AGENTS.md`  
 2. `Audit/AUDIT_STATUS_CURRENT.md` (сводная таблица статусов)  
-3. This guide WP-0…WP-N  
-4. Optional deep: `Docs/MASS_DOWNLOAD_STRATEGY.md`, `Docs/MASS_DOWNLOAD_ALGORITHM.md`
+3. This guide — §15 (Firefox) и фактический статус в §2  
+4. Optional deep: `Docs/MASS_DOWNLOAD_STRATEGY.md`, `Docs/MASS_DOWNLOAD_ALGORITHM.md`, `Docs/FIREFOX_OVERLAY.md`
 
 ### Hard invariants
 
 | ID | Rule |
 |----|------|
 | I1 | PVI stays IIFE-local — no external content runtime file for mass-download |
-| I2 | SW mass-download only via `importScripts` + switch cases |
+| I2 | SW mass-download modules load via `importScripts` (Chrome) / manifest `background.scripts` (FF) + switch cases |
 | I3 | Queues in-memory; Clean Stop = abort + clear |
 | I6/I9 | Download slots only via `releaseDownloadSlot` + `downloadIdToTask` |
 | I11 | New scan → `resetMassDownloadSession` (keep completed/skipped) |
 | I12 | `initTab` must pass `da` |
 | Sync | Edit `content.js` markers **and** `content-block.js` together |
+| I-FF1 | FF `background.scripts` = массив из 4 файлов в порядке init → core → md-dnr → service.js; **никогда** не возвращать `importScripts` в FF `service.js` (§15) |
+| I-FF2 | FF-дельта — ровно 3 файла (`manifest.json`, `background/service.js`, `mass-download/service-core.js`); всё остальное байт-идентично Chrome-дереву (`tools/md-ff-delta.mjs`) |
 
 ### Files you will touch for this track
 
@@ -58,6 +66,8 @@ If a change would require rewriting PVI as a global module or merging mass-downl
 |------|------|
 | `src-mv3-overlay/mass-download/service-core.js` | Almost all residual SW bugs |
 | `src-mv3-overlay/mass-download/service-init.js` | New globals only if needed |
+| `src-mv3-overlay/mass-download/md-dnr.js` | DNR Referer rules (pixiv-класс); FF-зеркало использует `mdDnrRequestFor` |
+| `src-mv3-overlay-firefox/*` | Только 3 канонических файла дельты (§15) |
 | `src-mv3-overlay/mass-download/content-block.js` | Mirror content patches |
 | `src-mv3-overlay/content/content.js` | Content residuals / re-base |
 | `src-mv3-overlay/background/service.js` | Only hello/switch/upstream glue |
@@ -71,7 +81,8 @@ If a change would require rewriting PVI as a global module or merging mass-downl
 
 | Capability | Implementation |
 |------------|----------------|
-| Modular SW mass-download | `service-init.js` + `service-core.js` |
+| Modular SW mass-download | `service-init.js` + `service-core.js` + `md-dnr.js` (DNR Referer rules) |
+| Firefox build functional | FF `background.scripts` (4 файла) + `mdAck` + native Referer headers — v2026.8.20.9, §15 |
 | Idempotent download slots | `releaseDownloadSlot` + `_slotReleased` |
 | Track our downloads | `downloadIdToTask` Map |
 | Content settings | `da` in hello prefs |
@@ -86,17 +97,20 @@ If a change would require rewriting PVI as a global module or merging mass-downl
 | Clear All stops work | `handleClearAll` → `handleStopScanning` |
 | MIME-based exclude | `MIME_TO_EXT` in `isExcludedType` |
 
-### Gaps (do next)
+### Gaps — closed 2026-09-11 (was R-01…R-08)
 
-| Gap | Residual ID | Severity |
-|-----|-------------|----------|
-| URL pathname extension parse still wrong | R-01 | P1 |
-| Foreign `onChanged` pollutes stats/UI; redirect key risk | R-02 | P1 |
-| GET success enqueue without `scanInProgress` | R-03 | P1 |
-| UI maxRecords hardcoded 100 | R-04 | P2 |
-| Mixed filtered counter | R-05 | P2 |
-| Concurrent 0 → Infinity | R-06 | P3 |
-| Optional top-frame content guard | R-07 | P3 |
+Перепроверено **по коду** 2026-09-11 (evidence — по именам функций; номера строк дрейфуют):
+
+| Residual | Статус | Evidence в коде |
+|----------|--------|-----------------|
+| R-01 URL extension from pathname | ✅ FIXED | `getUrlExtension` (service-core.js:100) + `isExcludedType` (:112) + `MIME_TO_EXT`; лок `tools/md-unit-smoke.mjs` |
+| R-02 Foreign `onChanged` pollutes stats/UI | ✅ FIXED | `downloadIdToTask.get(delta.id)` (:1487) → `if (!existingTask) return;`; URL берётся из `existingTask.url` |
+| R-03 GET enqueue without `scanInProgress` | ✅ FIXED | guard'ы на GET-пути (:1048, :1066, :1085, :1159, :1177) |
+| R-04 UI maxRecords hardcoded | ✅ FIXED | `maxRecords` из `cachedPrefs.da` (:402) в payload `handleGetDownloadStatus`; UI читает `response.maxRecords` (download-progress.js:45–46) |
+| R-05 Mixed filtered counter | ✅ FIXED | `downloadStats = { found, prefiltered, skipped, downloaded }` (:454) |
+| R-06 Concurrent 0 → Infinity | ✅ FIXED | clamp обеих очередей (:944–945, :1208–1209) |
+| R-07 Top-frame content guard | ⏸ OPEN (by decision) | Опциональный defense-in-depth; popup-путь покрыт `{ frameId: 0 }` (service-core.js:230). Возвращать к обсуждению только при багрепорте |
+| R-08 Floor для `activeDownloads--` | ✅ FIXED | Идемпотентность `releaseDownloadSlot` (`_slotReleased`, :408–410); `Math.max` признан избыточным |
 
 ---
 
@@ -113,7 +127,10 @@ If a change would require rewriting PVI as a global module or merging mass-downl
 
 ---
 
-## 4. Work packages (ROI order)
+## 4. Work packages (ROI order) — ✅ HISTORICAL: ALL DONE
+
+> Все WP ниже реализованы и перепроверены по коду 2026-09-11. Код-скетчи оставлены как историческая запись, **не** как to-do.
+> Отправная точка для новой работы — §15 (Firefox) и `Audit/AUDIT_STATUS_CURRENT.md` §6–§7, не этот раздел.
 
 ### WP-0 — Prerequisites (already largely done)
 
@@ -359,16 +376,30 @@ WP-0 smoke baseline
 
 One PR per WP when possible. Do **not** mix upstream re-base with residual fixes.
 
+**Статус 2026-09-11: весь порядок выполнен** (WP-0…WP-6, 2026-07-20 → 2026-08).
+
 ---
 
 ## 6. Testing strategy
 
-### Automated
+### Automated — актуализировано 2026-09-11
 
-Репозиторий **без** unit-test runner. Допустимо:
+Тяжёлого test-framework по-прежнему нет (сознательно), но **smoke-скрипты существуют** и зелёные. Запускать из корня репо:
+
+```
+node tools/md-unit-smoke.mjs     # dedup-контракт fileKey==_normalizeUrlKey (ОБА дерева) + MIME/ext хелперы + FF-локи
+node tools/md-marker-check.mjs   # байт-синхронность 5 маркерных секций content.js ↔ content-block.js (оба дерева)
+node tools/md-ff-delta.mjs      # FF-дерево отличается ровно 3 каноническими файлами (--ignore-cr-at-eol)
+node tools/_chk_defaults.mjs    # da / keys.downloadAll / hz.saveDir / hz.scaleUp в обоих деревьях
+node scripts/verify-syntax.mjs  # node --check по всем runtime-JS Chrome-дерева
+```
+
+Допустимо также (старая форма):
 
 - Локальный `node -e` для `getUrlExtension` / `isExcludedType` (как в аудите).  
 - Не добавлять тяжёлый test framework unless user asks.
+
+После любого контентного MD-изменения — прогнать `md-unit-smoke` + `md-marker-check`; после изменения FF-дельты — также `md-ff-delta`.
 
 ### Manual smoke (full)
 
@@ -401,7 +432,9 @@ One PR per WP when possible. Do **not** mix upstream re-base with residual fixes
 | Download queue | `processDownloadQueue` |
 | Slot release | `releaseDownloadSlot` |
 | Download map | `service-init.js` `downloadIdToTask` |
-| Exclude helper | `isExcludedType` / add `getUrlExtension` |
+| Exclude helper | `isExcludedType` + `getUrlExtension` (+ `MIME_TO_EXT`) |
+| DNR Referer rules | `mass-download/md-dnr.js` (`mdDnrRearm`, `mdDnrRequestFor`) |
+| FF loader | FF `manifest.json` → `background.scripts` (4 файла) — **не** `importScripts` (§15) |
 | Content start | `PVI.downloadAll` |
 | Monkey-patch | `processNextInQueue` + `_cleanupMonkeyPatch` |
 | Stop content | `onMessage` `stopScanning` |
@@ -411,7 +444,9 @@ One PR per WP when possible. Do **not** mix upstream re-base with residual fixes
 
 ---
 
-## 8. Ready-to-paste micro-patches (highest ROI)
+## 8. Ready-to-paste micro-patches — ✅ ALL APPLIED (historical)
+
+> Все три патча влиты в код и покрыты smoke-локами. Оставлены как запись — **не применять повторно**.
 
 ### 8.1 Early-return foreign downloads (WP-1 core)
 
@@ -453,7 +488,9 @@ After `const blob = await response.blob();` insert `if (!scanInProgress) { ...; 
 
 ---
 
-## 10. Success metrics (definition of done)
+## 10. Success metrics — ✅ MET (2026-09-11)
+
+Все пункты 1–8 выполнены и закреплены smoke-скриптами (§6). Единственное осознанное исключение — R-07 (см. §2).
 
 Track complete when:
 
@@ -494,6 +531,9 @@ Track complete when:
 | Content MD | markers in `content/content.js` |
 | Paste reference | `mass-download/content-block.js` |
 | Settings | `data/defaults.json` → `da` |
+| Firefox tree | `src-mv3-overlay-firefox/` — только 3 файла дельты (§15) |
+| DNR Referer rules | `mass-download/md-dnr.js` |
+| Smoke locks | `tools/md-unit-smoke.mjs`, `tools/md-marker-check.mjs`, `tools/md-ff-delta.mjs` |
 | Bug status | `Audit/AUDIT_STATUS_CURRENT.md` |
 | Original audit | `Audit/FULL_AUDIT_2026-07-20.md` |
 | Re-base strategy | `Docs/MASS_DOWNLOAD_STRATEGY.md` |
@@ -502,11 +542,19 @@ Track complete when:
 
 ## 13. Summary for incoming agent
 
-Большая часть P0/P1 из full audit **уже влита** (`6c018c8` и follow-ups). Не начинай с «переписать mass-download». Сделай **WP-1 → WP-2 → WP-3** (короткие патчи в `service-core.js`), прогони smoke, обнови STATUS. Content почти не нужен для residuals, кроме optional R-07. Концепцию overlay и preserve completed/skipped **не ломай**.
+**Обновлено 2026-09-11.** P0/P1 из full audit влиты давно, и весь остаточный workstream из этого документа (WP-1…WP-6, R-01…R-06/R-08) **тоже закрыт** — перепроверено по коду. Не начинай с «переписать mass-download» и не переделывай WP: смотри §2, где каждая позиция закрыта со ссылкой на функцию.
+
+Что реально открыто на 2026-09-11:
+
+1. **§15 / Firefox** — два FF-фикса вышли в v2026.8.20.9 (до него FF-расширение было **полностью неработоспособно** с самого порта overlay). Открыто: расследование FF e-hentai из `REPORT_GALLERY_BATCH_2026-09-06.md` §27 (окно галереи качает только proven 2–3 ячейки, Ctrl+Q работает), FF pixiv — нулевой лог.
+2. **Chrome pixiv** — платформенная стена: DNR-правило матчится fetch'ем, но не downloads API (Chromium 339385537). Варианты в отчёте §26.7; решает владелец.
+3. **Персистентность очередей при смерти SW** — крупнейший reliability-gap (`Audit/AUDIT_STATUS_CURRENT.md` §6.1); `chrome.storage.session` пока не используется (проверено).
+
+Концепцию overlay и preserve completed/skipped **не ломай**. Перед PR прогони smoke из §6.
 
 ```
 Next command for implementer:
-  «implement WP-1 only» or «исправь R-01..R-03 из STATUS»
+  «разбери §27 отчёта: FF e-hentai Gallery Save» or «реализуй персистентность очередей в storage.session»
 ```
 
 ---
@@ -559,7 +607,7 @@ The mod never hovers; for every collected element it **simulates a hover** and c
 | Behavior | What we learned | Fix in the mod |
 |----------|-----------------|----------------|
 | **Hotlink protection (Referer/cookies)** | `chrome.downloads.download` in MV3 cannot send custom headers → rule34 `wimg.*`/`ahrimp4.*`, e-hentai `fullimg` return 403 to the SW. | Hierarchy: SW fetch (no cookies) → **content fetch with `credentials:'include'`** (page cookies + Referer) → if CORS blocks it (`wimg` sends no `Access-Control-Allow-Origin`) → **browser-context `chrome.downloads.download` of the raw URL** (browser sends cookies at the network layer). Commits `.3→.4→stage5`. |
-| **MV3 SW has no `URL.createObjectURL`** | Referer-retried blobs can't be materialized as object URLs in the SW. | Chrome: content creates the object URL and ships it; FF: blob shipped to SW, `_revokeUrl` created there; `releaseDownloadSlot` revokes. (Earlier attempt used `data:` URLs — `b0c77c6`.) **Regression 2026-08-22 and lesson:** a "unify both platforms on SW-side materialization" change re-broke this — Chrome SW threw at `URL.createObjectURL` INSIDE `processDownloadQueue` **after** `activeDownloads++`, leaking the slot; three leaked slots (the default cap) froze every later download in eternal queue-pending. Current shape: capability-checked split (`typeof URL.createObjectURL === 'function'` → blob/`_revokeUrl`, else content `objectUrl` + `revokeObjectUrl` message on release) + try/catch around materialization so NO throw can occur between slot-take and `chrome.downloads.download`. |
+| **MV3 SW has no `URL.createObjectURL`** | Referer-retried blobs can't be materialized as object URLs in the SW. | Chrome: content creates the object URL and ships it; FF: blob shipped to SW, `_revokeUrl` created there; `releaseDownloadSlot` revokes. (Earlier attempt used `data:` URLs — `b0c77c6`.) **Regression 2026-08-22 and lesson:** a "unify both platforms on SW-side materialization" change re-broke this — Chrome SW threw at `URL.createObjectURL` INSIDE `processDownloadQueue` **after** `activeDownloads++`, leaking the slot; three leaked slots (the default cap) froze every later download in eternal queue-pending. Current shape: capability-checked split (`typeof URL.createObjectURL === 'function'` → blob/`_revokeUrl`, else content `objectUrl` + `revokeObjectUrl` message on release) + try/catch around materialization so NO throw can occur between slot-take and `chrome.downloads.download`. Актуальная форма перепроверена 2026-09-11: `service-core.js` ~534–546 и ~1265–1288. |
 | **`#`-prefix = HD marker** | A `#url` in a sieve result means full-size; `fetch`/`download` reject a bare `#` URL; with `hz.hiRes` on the `#` variant is preferred, but with it off the non-`#` sample may 404 (rule34) — do **not** skip `#` URLs. | `isHd` recorded per task; content strips `#` before `downloadMass`; SW strips it from every candidate (`findBestUrlWithValidation`); `fileKey`/`candidateKey` strip it too. See `Docs/HASH_PREFIX_CONVENTION.md`. |
 | **Sieve double-fire on `<a><img>`** | Collecting both the `<a>` and the nested `<img>` fires the sieve twice on the same gallery link; the second run races and consumes `res`/loop state → 7 of 8 images lost on e-hentai. | `_collectMediaElements` collects `<a>` **first**; standalone `<img>`/`<video>` only if not inside an already-collected `<a>` (`el.closest('a[href]')`). `ce33e7f` (v2026.7.25.5). |
 | **Nested sieve results** | e-hentai returns `[[[url,url], title]]`; `onResolved` parsed only flat shapes → items silently dropped. | `_flattenSieveUrls()` recursive unwinder. `b0c77c6`. |
@@ -584,10 +632,12 @@ The v2026.7.25.6 attempt to normalize URLs (collapse `//`, strip/keep query) pro
 
 | Key | Use | Preserves | Collapses |
 |-----|-----|-----------|-----------|
-| `fileKey(url)` | **Global dedup** (`globalProcessedUrls` in SW + `downloadAllUniqueUrls` in content share this contract) | host + path | `#` HD marker, query string (cache-busters), protocol-relative vs https, `//` in path, `.jpeg` → `.jpg` |
+| `fileKey(url)` | **Global dedup** (`globalProcessedUrls` in SW + `downloadAllUniqueUrls` in content share this contract) | host + path; **query — только когда path НЕ оканчивается медиа-расширением** (front-controller URL) | `#` HD marker, query string (только при медиа-расширении в path — кэшбастеры), protocol-relative vs https, `//` in path, `.jpeg` → `.jpg` |
 | `candidateKey(url)` | Dedup **inside one candidate chain** | host + path + extension + query | `#`, whitespace, `&amp;`, protocol-relative, `//` in path |
 
-Consequence: a real `.jpeg` alternative to a failed `.jpg` is distinct per `candidateKey` (so it is tried), but the global `fileKey` dedup collapses them once the same file is processed — verified in `test_candidates.js`.
+**BG-4 (2026-09-07) — query сбрасывается условно.** `?TS=`-кэшбастеры висят на файлах, а front-controller URL (`index.php?media/slug.123/full`, `view.php?id=…`) несут идентичность файла в query. Безусловный сброс схлопнул 11-элементную галерею ArtUntamed в **1** загрузку; цена обратного (редкий дубль, если кэшбастер едет на front-controller) признана меньшим злом. Собственники: `PVI.downloadAllUniqueUrls` (content), `globalProcessedUrls` (SW — единственная точка добавления в `processFilterQueue`; явные retry исключены). Локи: `tools/md-unit-smoke.mjs` — rule34-collapse / ArtUntamed-distinct / e-hentai.
+
+Consequence: a real `.jpeg` alternative to a failed `.jpg` is distinct per `candidateKey` (so it is tried), but the global `fileKey` dedup collapses them once the same file is processed — asserted by `tools/md-unit-smoke.mjs`.
 
 ### 14.6 Candidate fallback chain (Stages 5b–5f)
 
@@ -608,7 +658,7 @@ A task carries `_candidates = [{ url, isHd }, ...]` (sieve ext-fallback chains; 
 
 - **rule34 sample duplicates:** with `hz.hiRes`, originals download correctly, but `samples/…/sample_<hash>.jpg` of the same posts also download (separate elements/groups; `fileKey` treats them as distinct files — log `2026-08-20T10-49-27.txt`). Proposed rule “skip sample when the post has an original” was offered but not yet accepted.
 - Queue state still not persisted across SW death.
-- Temp harnesses (not in repo): `C:\Users\sucot\AppData\Local\Temp\opencode\test_keys.js` (25), `test_findbest.js` (8), `test_candidates.js` (15) — extract real functions from `service-core.js` (extraction regex must capture optional `async `; `EXT_ALIASES` must be extracted too) and assert dedup/scoring/fallback invariants.
+- **Temp harnesses — устарело (2026-09-11).** Упомянутые `…\Temp\opencode\test_*.js` в репозитории отсутствуют и больше не нужны: их роль занял `tools/md-unit-smoke.mjs` (вырезает реальные функции из `service-core.js`/`content.js` и ассертит dedup/scoring/fallback + FF-локи). Ограничение экстрактора сохраняется: он режет функции из текста, предполагая top-level декларации в колонке 0 — реформат исходников ломает извлечение.
 
 ### 14.9 Engine audit 2026-08-22 — result shapes, node caches, albums (A/B/D fixes)
 
@@ -654,8 +704,58 @@ Correctness depends on **B**: `resetNode(el)` before `find` guarantees `el.IMGS_
 
 ### 14.11 Corrections 2026-08-23
 
-Три правки фактов в этом аддендуме после появления Gallery Save и stage-5f+ (правки внесены по месту):
+Правки фактов в этом аддендуме после появления Gallery Save и stage-5f+ (внесены по месту):
 
 1. §14.2: селектор коллекции фиксированный — настройки `da.downloadAllMode` нет; пре-фильтр включает `_hasResolveCandidate` (Fix D).
 2. §14.10: `PVI.gallery` больше не «display-only» — используется Gallery Save.
 3. Номера строк по всему аддендуму могли сместиться после gallery-коммитов; при несовпадении ищите по именам функций/якорям, а не по числам.
+4. **2026-09-11:** §14.5 исправлен — `fileKey` сбрасывает query **условно** (BG-4), а не безусловно; §14.3 дополнен актуальной формой objectURL-развилки; §14.8 — temp-harness'ы заменены на `tools/md-unit-smoke.mjs`. Добавлен §15 (Firefox).
+
+---
+
+## 15. Firefox overlay — реальное состояние (добавлено 2026-09-11)
+
+Этого раздела в исходном гайде **не было** — главный пробел. Ниже — проверено по коду и git-истории.
+
+### 15.1 Корневая причина: мёртвый event page — с самого порта overlay
+
+- FF-дерево создано коммитом **`b8044c4`** («Firefox overlay tree …»). Уже в нём `manifest.json` объявлял `"background": { "scripts": [ "background/service.js" ] }` — то есть **event page**, — а `background/service.js:8` вызывал `importScripts('../mass-download/service-init.js', '../mass-download/service-core.js')`.
+- `importScripts` — API **WorkerGlobalScope**; в FF event page (window-контекст) его нет → `ReferenceError` на загрузке, фон умирает целиком.
+- Следствие: **с момента перехода на overlay FF-расширение было полностью неработоспособным** — ни промпта `userScripts`, ни `openOptionsPage`, ни обработчиков сообщений, ни hover, ни масс-загрузки.
+- `v2026.8.20.7` (Fix E) добавил в тот же сломанный вызов третий модуль (`md-dnr.js`) — принципиально ничего не изменилось: строка жила с `b8044c4`. До v9 FF-дерево ни разу не тестировали живьём.
+
+Воспроизводимая проверка:
+```
+git show b8044c4:src-mv3-overlay-firefox/background/service.js | grep importScripts
+git show 1ee1a8d:src-mv3-overlay-firefox/background/service.js | grep importScripts
+```
+
+### 15.2 FF Fix 1 + 2 — v2026.8.20.9 (`2830252`)
+
+| Фикс | Файл(ы) | Что сделано |
+|------|---------|-------------|
+| FF Fix 1 — загрузчик | FF `manifest.json` | `importScripts` заменён массивом `background.scripts`: `service-init.js` → `service-core.js` → `md-dnr.js` → `background/service.js`. Порядок критичен: top-level код `service.js` (`mdDnrRearm()` и др.) требует модулей; сами модули — только декларации |
+| FF Fix 2 — Referer | FF `background/service.js` + FF `mass-download/service-core.js` | Нативные `headers: [{ name: "Referer", value: … }]` для registry-хостов (`mdDnrRequestFor`), гвард `platform === "firefox"`, blob/object-URL не тронуты. Firefox 70+ — единственный браузер, где downloads API **разрешает** Referer (Chrome-путь остаётся DNR-правилом Fix E-2) |
+| FF `mdAck` | FF `background/service.js` | Синхронный `sendResponse({})` во всех fire-and-forget MD-кейсах: в Gecko неотвеченный `sendMessage` реджектится («message port closed») |
+
+Статус: **Firefox починен полностью.** Живой тест v2026.8.20.9 (2026-09-11, `REPORT_GALLERY_BATCH_2026-09-06.md` §26.8): установка, настройки, hover, Ctrl+Q — `downloaded=117`.
+
+### 15.3 Инварианты FF-дельты
+
+- `src-mv3-overlay-firefox/` — точная копия Chrome-дерева + **ровно 3 канонических файла**: `manifest.json`, `background/service.js`, `mass-download/service-core.js`. Лок: `node tools/md-ff-delta.mjs`.
+- **Никогда** не возвращать `importScripts` в FF `background/service.js` (упоминания в комментариях допустимы; smoke проверяет отсутствие **вызова**).
+- Остальные «расхождения» деревьев — CRLF-шум (Audit N-20); сравнивать только `git diff --no-index --ignore-cr-at-eol`.
+- Детали и процедура re-base — `Docs/FIREFOX_OVERLAY.md` (актуальнее этого раздела).
+
+### 15.4 Открытые FF-задачи
+
+1. **FF e-hentai, окно галереи** (`REPORT_GALLERY_BATCH_2026-09-06.md` §27, активно): Save из грида отправляет только proven 2–3 ячейки, остальные не резолвятся; Ctrl+Q по той же странице работает. Главный подозреваемый — разный живой сив FF vs Chrome («отравленный альбом»). **Правки не вносить до фактов.**
+2. **FF pixiv — нулевой лог**: в масс-загрузку не попадает ничего; нужна FF Browser Console (§26.8, задача P3-FF).
+3. **Chrome pixiv** (не FF, но связано) — платформенная стена downloads/DNR, отчёт §26.7.
+
+### 15.5 Проверка FF-сборки руками
+
+1. `about:debugging#/runtime/this-firefox` → Load Temporary Add-on → `src-mv3-overlay-firefox/manifest.json`.
+2. Настройки → выдать **userScripts** (без него — молча ничего).
+3. Smoke: hover → Ctrl+Q → прогресс-таб → файлы; Cancel; приватное окно (`incognito: spanning`, `task.isPrivate`); Browser Console без флуда «message port closed».
+4. Перед релизом: `web-ext lint` (AMO требует signing).

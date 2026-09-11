@@ -7,7 +7,7 @@ This document provides a technical overview of the Manifest V3 migration, the ar
 ### Service Worker (background/service.js)
 In Manifest V3, the persistent background page is replaced by a **Service Worker**. 
 - **Persistence**: Service workers are ephemeral and will suspend after periods of inactivity.
-- **State Management**: Use `chrome.storage.local` or `chrome.storage.session` for persistence. Do not rely on global variables for long-term state unless a "keep-alive" mechanism is active.
+- **State Management**: `chrome.storage.local` holds settings/sieve. **Mass-download queues/progress are deliberately in-memory only** (`service-init.js`) and are lost when the worker dies — this is a known gap, not an oversight (see `Audit/AUDIT_STATUS_CURRENT.md` §6.1). A "keep-alive" mechanism (below) reduces, but does not remove, the risk.
 - **Networking**: `XMLHttpRequest` is not available. Use the `fetch()` API for all network requests.
 
 ### User Scripts API
@@ -66,11 +66,16 @@ reachable through this bridge. **Do not route new commands through
 `winOnMessage`;** if upstream ever hardens this bridge (per-frame nonce), port
 the fix.
 
-## 4. Working with Referers
+## 4. Working with Referers (corrected 2026-09-11)
 
-MV3 significantly restricts header modification.
-- **Current Approach**: The background script injects the `Referer` header directly into `fetch()` calls for validation.
-- **Downloads**: `chrome.downloads.download` inherits headers in some contexts, but for strict hosts, we may eventually need `chrome.declarativeNetRequest` to strip `Sec-Fetch-*` headers or override `Referer` globally for download requests.
+MV3 significantly restricts header modification, and the naive approach **does not work**:
+
+- **`fetch()` from the service worker cannot set `Referer`.** `Referer` is a forbidden header name per the Fetch spec; Chrome silently drops it (the request goes out with `Origin: chrome-extension://…` and no Referer). A gate that requires Referer answers 403. Same for `XMLHttpRequest`-allowed header sets.
+- **`chrome.downloads.download({ headers })` cannot set `Referer` on Chrome** — the headers parameter is restricted to the XMLHttpRequest-allowed set, where `Referer` is forbidden. (Firefox 70+ is the exception and *does* allow it.)
+- **Actual mechanism: `declarativeNetRequest` session rules** — `src-mv3-overlay/mass-download/md-dnr.js` (`mdDnrRearm()` on boot/`onStartup`/`onInstalled`, `mdDnrRequestFor()` for the per-request lookup) stamps the Referer for registry hosts so both SW `fetch` validation and the browser-context download pass the gate. Note the known Chrome limitation: DNR rules match SW `fetch`, but **not** the `downloads` API request (Chromium issue 339385537) — pixiv-class downloads on Chrome remain blocked by that platform wall (see `REPORT_GALLERY_BATCH_2026-09-06.md` §26.7).
+- **Firefox delta:** FF event pages allow `headers: [{ name: "Referer", … }]` in `downloads.download`, so the FF tree adds it directly (guarded by `platform === "firefox"`) instead of relying on DNR alone.
+
+Do not "restore" a `Referer` header on a SW `fetch()` — it never reaches the network.
 
 ---
 

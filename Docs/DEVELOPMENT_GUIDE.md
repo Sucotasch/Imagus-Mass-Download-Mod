@@ -18,6 +18,8 @@
 
 ## 2. Критические баги и Технический долг
 
+> **Статус (2026-09-11):** все три пункта ниже — исторические, исправлены. Актуальный статус остатков — `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` §2 (все закрыты кроме R-07).
+
 ### 1. Ошибка `persistState()` и сбой прерывания (Cancel All)
 *   **Где**: `src-mv3-overlay/background/service.js`, `src-mv3-overlay/content/content.js`.
 *   **Симптом**: При попытке остановить сканирование расширение падало, а загрузки продолжались.
@@ -52,5 +54,9 @@
 
 ## 4. Добавление новых горячих клавиш
 1.  Добавьте ключ в `defaults.json` (секция `keys`).
-2.  Добавьте обработчик в `content.js`, функция `onKeyDown`.
+2.  Добавьте обработчик в `content.js` — **функция `PVI.key_action`** (сюда попадают и `keydown`, и клавиши плеера/оверлея; отдельного `onKeyDown` в коде нет).
 3.  Зарегистрируйте новое поле ввода в `options.html` / `options.js`.
+
+## 5. Referer для downloads (актуально с v2026.8.20.7+)
+
+`fetch()` из service worker **не может** выставить `Referer` (запрещённое имя по Fetch-спеке; Chrome молча игнорирует), а `chrome.downloads.download` на Chrome не принимает Referer в `headers`. Поэтому Referer для gate-хостов (pixiv и т.п.) ставится **session-правилом `declarativeNetRequest`** — `mass-download/md-dnr.js` (`mdDnrRearm` / `mdDnrRequestFor`). На Firefox 70+ downloads-API **разрешает** `headers` — там дельта-файлы добавляют нативный Referer напрямую. Подробности: `Docs/FIREFOX_OVERLAY.md` §2 и `Docs/MV3_DEVELOPMENT.md` §4.

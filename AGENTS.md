@@ -13,7 +13,7 @@ Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + ori
 | Directory | Role | Edit? |
 |-----------|------|-------|
 | **`src-mv3-overlay/`** | **Active development (Chrome)** — fresh upstream + modular mass-download | **Yes (default)** |
-| **`src-mv3-overlay-firefox/`** | **Active development (Firefox)** — byte-copy of `src-mv3-overlay/` + FF deltas (manifest, `mdAck`, download `incognito`). Branch `feature/overlay-firefox` | Yes (keep delta minimal — see `Docs/FIREFOX_OVERLAY.md`) |
+| **`src-mv3-overlay-firefox/`** | **Active development (Firefox)** — byte-copy of `src-mv3-overlay/` + **exactly 3 canonical delta files** (`manifest.json` with a `background.scripts` array, `background/service.js` with `mdAck` + native Referer headers, `mass-download/service-core.js` with download `incognito` + Referer headers). Lives in `mv3-version` since 2026-09-10 (the old `feature/overlay-firefox` is its ancestor). **Never** put `importScripts` in the FF `service.js` — an FF event page has no such API, the background dies silently, and the build shipped dead from the overlay port right up to v2026.8.20.9 | Yes (keep delta minimal — see `Docs/FIREFOX_OVERLAY.md`) |
 | `src-mv3/` | Older MV3 mod (monolithic mass-download inside service/content) | Only if fixing the stable `mv3-version` line |
 | `src/` | Legacy MV2; built by `build.py` | Only for MV2 legacy |
 | `Imagus-Reborn-base/` | Upstream snapshot (hababr/Imagus-Reborn) | **Do not edit** — reference only (gitignored) |
@@ -33,7 +33,7 @@ Mass-download is a **hybrid overlay** on upstream Imagus-Reborn:
 
 | Layer | Approach | Why |
 |-------|----------|-----|
-| Service worker | Extracted to `mass-download/` via `importScripts()` | One-way dependency; globals OK |
+| Service worker | Extracted to `mass-download/` — Chrome via `importScripts()`, Firefox via the manifest `background.scripts` array (FF event pages have no `importScripts`) | One-way dependency; globals OK |
 | Content script | **Inline** in `content.js` (markers `>>>` / `<<<`) | `PVI` is **IIFE-local** — external files cannot see it |
 | Options / popup / progress | Patched into `options/` | UI + `da` settings |
 | Defaults / locales | `data/defaults.json` (`da` key), `_locales/*/messages.json` (`DA_*`) | Config + i18n |
@@ -44,6 +44,7 @@ src-mv3-overlay/
 ├── mass-download/
 │   ├── service-init.js            # Queues, stats, activeControllers (globals)
 │   ├── service-core.js            # Validation, downloads, progress, message handlers
+│   ├── md-dnr.js                  # declarativeNetRequest Referer rules (pixiv-class hosts; mdDnrRearm / mdDnrRequestFor)
 │   └── content-block.js           # REFERENCE only — paste target for content.js markers
 ├── content/content.js             # Upstream PVI + inline mass-download blocks
 ├── content/relay.js               # Upstream relay
@@ -59,13 +60,15 @@ src-mv3-overlay/
 Top of `background/service.js`:
 
 ```js
-importScripts('../mass-download/service-init.js', '../mass-download/service-core.js');
+importScripts('../mass-download/service-init.js', '../mass-download/service-core.js', '../mass-download/md-dnr.js');
 ```
+
+On Firefox there is no `importScripts` (the background is an event page, not a worker): the same three modules load through the manifest's `background.scripts` array, in the same order, **before** `background/service.js` (whose top-level code calls `mdDnrRearm()` and needs them defined).
 
 Mass-download `handleMessage` cases (after upstream `resolve`):  
 `downloadAll`, `openDownloadProgress`, `registerProgressTab`, `downloadMass`, `resolveAndDownloadGroups`, `updateStatus`, `updateFilterStats`, `reportSkippedItem` (gallery-save diagnostics: skipped progress entry + Save Log), `stopScanning`, `getDownloadStatus`, `getDownloadLog`, `clearCompletedDownloads`, `clearAllDownloads`, `retryDownload`, `refererDownloadReady`, `refererDownloadFailed`.
 
-`getDownloadLog` is the progress-tab **Save Log** path — it returns serialized items (with per-item `contentType`/`fileSize`/`filterTimeMs`/`httpStatus`/`filterMethod`/`source`/`isHd`/`elementInfo`/`filename`) + `downloadStats` + version + `sessionStart` + `da`/`hz.hiRes` settings, and is one of the handlers that must `return true` (async `sendResponse`).
+`getDownloadLog` is the progress-tab **Save Log** path — it returns serialized items (with per-item `contentType`/`fileSize`/`filterTimeMs`/`httpStatus`/`filterMethod`/`source`/`isHd`/`elementInfo`/`filename`) + `downloadStats` + version + `sessionStart` + `da`/`hz.hiRes` settings, and does `return true` — **though its `sendResponse` is synchronous** (`BT-11` in `Audit/FULL_AUDIT_BOTH_TREES_2026-09-11.md`): the flag is harmless (it only holds the channel open) and consistent across both trees, so do not "fix" it by removing the flag without a live Save Log test.
 
 Handlers live in `mass-download/service-core.js` (`handleDownloadAll`, `handleDownloadMass`, …).
 
@@ -94,6 +97,7 @@ When re-applying onto a new upstream: merge upstream `content.js`, then re-inser
 | `src-mv3-overlay/background/service.js` | SW: sieve update, settings, message bus + mass-download cases |
 | `src-mv3-overlay/mass-download/service-init.js` | In-memory queues / stats / AbortControllers |
 | `src-mv3-overlay/mass-download/service-core.js` | Filter validation, download queue, progress tab, circuit breaker |
+| `src-mv3-overlay/mass-download/md-dnr.js` | Session DNR rules that stamp the Referer for registry hosts (Chrome); FF mirrors it via `mdDnrRequestFor` |
 | `src-mv3-overlay/content/content.js` | PVI + mass-download scan / monkey-patch of `PVI.set`/`PVI.show` |
 | `src-mv3-overlay/mass-download/content-block.js` | Reference for content patches (not loaded at runtime) |
 | `src-mv3-overlay/common/app.js` | Shared utilities |
@@ -121,7 +125,7 @@ Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `sr
 - **User scripts need Developer Mode.**
 - **Sieve rules starting with `_`** are user/local — never overwrite on auto-update.
 - **Weekly sieve auto-update** via `chrome.alarms` (upstream feature; mod may add retry/timeout hardening).
-- **Verification tools (run from repo root):** `node tools/md-unit-smoke.mjs` (dedup contract both trees + MIME/ext helpers) and `node tools/md-marker-check.mjs` (byte-sync of the 5 marker sections, both trees). The smoke test **cuts functions out of source text** assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` can break extraction. When diffing the two trees, use `git diff --no-index --ignore-cr-at-eol` — flat diffs show ~13 phantom files from CRLF noise (N-20); do not "fix" line endings tree-wide.
+- **Verification tools (run from repo root):** `node tools/md-unit-smoke.mjs` (dedup contract both trees + MIME/ext helpers + Firefox locks: `background.scripts` order, no `importScripts` call, Referer headers), `node tools/md-marker-check.mjs` (byte-sync of the 5 marker sections, both trees), `node tools/md-ff-delta.mjs` (FF tree differs in exactly the 3 canonical files), `node tools/_chk_defaults.mjs` (key defaults in both trees), `node scripts/verify-syntax.mjs` (`node --check` on the Chrome runtime JS). The smoke test **cuts functions out of source text** assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` can break extraction. When diffing the two trees, use `git diff --no-index --ignore-cr-at-eol` — flat diffs show ~13 phantom files from CRLF noise (N-20); do not "fix" line endings tree-wide.
 
 ## Settings (`da` in `defaults.json`)
 
@@ -177,7 +181,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 
 **Input validation / regex:**
 - ReDoS in `_hasStopWords` — escape keywords; try/catch
-- Media ext regex `\\.` bug / audio→jpg — use `_getMediaExt()`
+- Media ext regex `\\.` bug / audio→jpg — `_getMediaExt()` was removed; use `getUrlExtension()` + `isExcludedType()` with `MIME_TO_EXT`
 - Stop-words `href.includes` false positives — segment-boundary regex
 - Content-Type vs dotted extensions — use `isExcludedType()` with `MIME_TO_EXT`
 
@@ -225,7 +229,9 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 |-----|----------|
 | `Docs/MASS_DOWNLOAD_STRATEGY.md` | Overlay design, entry points, re-base procedure |
 | `Docs/MASS_DOWNLOAD_ALGORITHM.md` | Two-phase algorithm, heuristics, circuit breaker |
-| `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` | Post-audit dev guide: residual bugs, hooks, anti-patterns; §14 = Imagus engine internals (hover→find→resolve→set, sieve resolver, mod's capture) + commit-sourced lessons since v2026.7.25.2 |
+| `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` | Dev guide: §2 = verified status of every residual (all closed but R-07), §14 = Imagus engine internals (hover→find→resolve→set, sieve resolver, mod's capture) + commit-sourced lessons since v2026.7.25.2, §15 = Firefox overlay reality (dead event page → v2026.8.20.9 fixes) |
+| `Docs/UPSTREAM_820_INTEGRATION_PLAN.md` | Upstream v2026.8.20 integration / re-base checklist (both overlay trees) |
+| `knowledge.md` (repo root) | Condensed project knowledge: layout, commands, conventions, gotchas |
 | `Docs/PROJECT_STRUCTURE.md` | Components, message bus, dependency map |
 | `Docs/MV3_DEVELOPMENT.md` | MV3 SW, userScripts, migration notes |
 | `Docs/UPSTREAM_725_INTEGRATION_PLAN.md` | Upstream v2026.7.25 integration / re-base checklist |
@@ -238,7 +244,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 ## Conventions
 
 - Vanilla JS, `"use strict"`, ES6+, no frameworks
-- No linter / formatter / automated tests in-repo
+- No linter / formatter / test framework — verification is the hand-run Node smoke scripts listed under "Architecture Gotchas"
 - Prefer minimal diffs; do not “improve” unrelated upstream style
 - When editing mass-download SW logic: change `mass-download/service-*.js`, not a duplicate copy inside upstream sections
 - When editing content mass-download: change both `content.js` **and** keep `content-block.js` in sync as the reference
