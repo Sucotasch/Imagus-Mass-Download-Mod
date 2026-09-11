@@ -219,6 +219,20 @@ function mdDnrEnsureRule(url, referer) {
         });
 }
 
+// "Is the rule actually LIVE for this URL?" — {host, referer} when the
+// registry covers the host AND installation already succeeded, otherwise
+// null. The offscreen tier (service-core.js, Chrome) uses it as a fail-fast
+// gate: the extension-origin fetch is only worth attempting when the Referer
+// substitution really is in place, because without it the CDN answers 403 to
+// every context (the 2026-09-11 FF log) and the tier would just buffer an
+// error page. Distinct from mdDnrRequestFor(), which answers "should there be
+// a rule" without looking at installation state.
+function mdDnrRuleActiveFor(url, referer) {
+    var req = mdDnrRequestFor(url, referer);
+    if (!req) return null;
+    return mdDnrActive[req.host] === true ? req : null;
+}
+
 // Hook: ensure the rule before any privileged fetch/download of a
 // registry host. Callers: processFilterQueue (before HEAD), the GET
 // fallback, processDownloadQueue (BROWSER-path tasks that skipped the

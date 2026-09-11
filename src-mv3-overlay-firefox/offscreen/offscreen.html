@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Imagus Mass Download - offscreen fetch</title>
+</head>
+<body>
+<!--
+  Invisible helper document for the mass-download offscreen tier (Chrome only).
+
+  Created on demand by chrome.offscreen.createDocument({reasons:['BLOBS']}) from
+  mass-download/service-core.js and never opened as a UI page. It exists because
+  a Referer-gated CDN (i.pximg.net) answers 403 to chrome.downloads.download in
+  Chrome: the DNR session rule that lifts the gate matches the extension's
+  fetch, not the downloads API, and the downloads API cannot be given a Referer
+  header. An extension-origin document is neither CORS-restricted nor outside
+  the DNR rule set, and it can createObjectURL - which the MV3 service worker
+  cannot. See offscreen.js and Docs/FIX_PLAN_CHROME_OFFSCREEN_PIXIV_2026-09-11.md.
+-->
+<script src="offscreen.js"></script>
+</body>
+</html>

@@ -2212,3 +2212,30 @@ Hover подтверждён пользователем в обоих брауз
   снимается DNR» вместо 42 `SERVER_FORBIDDEN`.
 - **Chrome rule34** — нужны данные из §29.3; после них, вероятно, отдельный фикс устойчивости
   страницы прогресса (сверка со SW вместо «вечных» строк) — отдельное решение.
+
+## 30. ИСПОЛНЕНО 2026-09-11 — offscreen-тир для Referer-гейт хостов (Chrome)
+
+Решение пользователя: **вариант «а» (offscreen-документ)**. Дизайн: `Docs/FIX_PLAN_CHROME_OFFSCREEN_PIXIV_2026-09-11.md`.
+
+### 30.1. Что сделано
+
+| Файл | Что |
+|------|-----|
+| `offscreen/offscreen.html`, `offscreen/offscreen.js` (×2 дерева, байт-в-байт) | приёмник `mdOffscreenFetch` / `mdOffscreenRevoke`: extension-origin fetch (`credentials:'include'`, CORS не действует, DNR подставляет Referer) → потоковое чтение с лимитом **10 MiB** → `URL.createObjectURL` → ответ строкой; само-закрытие через 30 с простоя |
+| `src-mv3-overlay/manifest.json` | `permissions += "offscreen"` (в FF-манифест НЕ добавляется) |
+| `mass-download/md-dnr.js` (×2) | `mdDnrRuleActiveFor(url, referer)` — «правило реально стоит» (без него offscreen-фетч бессмыслен) |
+| `mass-download/service-core.js` (**только Chrome-копия**) | `mdOffscreenSupported/Ensure/Send/RevokeObjectUrl` + `mdTryOffscreenDownload`; хук в `onChanged` (interrupted) — offscreen до `advanceToNextCandidate`; хук в `triggerRefererDownload` — offscreen вместо page-fetch (со fallback'ом по **фильтр-контракту** `requeueNextCandidateForFilter`, а не по download-контракту); маршрутизация отзыва blob-URL по `_objectUrlScope === 'offscreen'` |
+| `tools/md-unit-smoke.mjs` | 14 локов offscreen-тира (permission только в Chrome-манифесте, идентичность файлов двух деревьев, лимит вместо whole-body чтения, гейты API/правила/одной попытки, запрет ссылок в FF-копии) |
+
+**Сопутствующая находка (баг):** ветка `interrupted` могла выполняться **дважды** для одного `downloadId` (`state` и `error` приходят отдельными дельтами) — раньше это давало двойной `advance` по цепочке кандидатов; теперь есть гвард `_interruptHandled` (одна вердикт-ветка на загрузку).
+
+### 30.2. Верификация
+
+`node --check` по всем изменённым runtime-файлам (включая `offscreen/offscreen.js`), `md-unit-smoke` (все ассерты + dedup обоих деревьев), `md-marker-check` 5/5×2, `md-ff-delta` (ровно 3 канонических файла — `offscreen/*` присутствуют в обоих деревьях именно поэтому), `_chk_defaults` ×2, `verify-syntax` — **всё зелёное**.
+
+### 30.3. Что может проверить только живой прогон (kill-criteria §5 плана)
+
+1. **KILL-1 (главный):** скачает ли `chrome.downloads.download` blob-URL, созданный **в offscreen-документе** (прецедент — страничные blob-URL скачиваются).
+2. **KILL-2:** применяется ли DNR-правило к fetch из offscreen-документа (`HEAD/200` в консоли вкладки offscreen / строка `DNR referer rule active for i.pximg.net`).
+
+**Ожидание живого теста (Chrome, pixiv):** в Session Log → строки `filterMethod=OFFSCREEN`, `downloaded>0`, 0 × `SERVER_FORBIDDEN`, в истории Chrome нет заглушек; после сессии offscreen-документ закрыт (не висит в `chrome://extensions`). Если KILL-1 не проходит — вариант «а» отпадает, остаётся (б) скрытый iframe расширения.

@@ -419,10 +419,15 @@ function releaseDownloadSlot(task) {
         task._revokeUrl = null;
     }
     if (task._objectUrl) {
-        // Chrome path: the object URL lives in the PAGE's URL registry — ask
-        // the content script to revoke it (fire-and-forget; if the initiator
-        // tab is gone the blob dies with the page anyway).
-        if (downloadInitiatorTabId) {
+        if (task._objectUrlScope === 'offscreen') {
+            // The offscreen tier creates the object URL in the offscreen
+            // document, which is the only context that can revoke it (the
+            // content-script route below would revoke nothing there).
+            mdOffscreenRevokeObjectUrl(task._objectUrl);
+        } else if (downloadInitiatorTabId) {
+            // Chrome path: the object URL lives in the PAGE's URL registry — ask
+            // the content script to revoke it (fire-and-forget; if the initiator
+            // tab is gone the blob dies with the page anyway).
             chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'revokeObjectUrl', url: task._objectUrl }).catch(() => {});
         }
         task._objectUrl = null;
@@ -839,6 +844,177 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
     }
 }
 
+// --- Offscreen fetch tier (Chrome only, 2026-09-11) ---
+// A Referer-gated CDN (i.pximg.net) cannot be downloaded by the browser in
+// Chrome: the DNR session rule that lifts the gate matches the extension's
+// fetch (HEAD/200 in every filter request of the live logs) but NOT
+// chrome.downloads.download (42 SERVER_FORBIDDEN, unchanged across
+// v2026.8.20.7/.8/.9 — STATUS note in md-dnr.js), and the downloads API cannot
+// be handed a Referer header here (`headers` is restricted to the XHR-allowed
+// set, where Referer is forbidden; MDN documents the Firefox-70+-only
+// exception the FF tree uses). The page-context fetch cannot substitute
+// either: the credentialed CORS request to such a CDN dies with "Failed to
+// fetch" (live log 2026-09-10T16-46-13, credentialed and cookieless).
+// What is left is an EXTENSION-ORIGIN document (offscreen/*): not
+// CORS-restricted, matched by the same DNR rule as the SW fetch, and able to
+// URL.createObjectURL — which the MV3 SW cannot. It fetches the bytes and
+// returns just the blob URL string (extension messaging is JSON, so bytes
+// could never cross it); the SW downloads that URL, and the second step
+// touches no network at all.
+const MD_OFFSCREEN_DOC = 'offscreen/offscreen.html';
+var mdOffscreenSetup = null;
+
+function mdOffscreenSupported() {
+    return platform !== 'firefox'
+        && typeof chrome !== 'undefined'
+        && !!(chrome.offscreen && chrome.offscreen.createDocument);
+}
+
+// Idempotent document creation. The cached promise is dropped on failure so a
+// transient error cannot disable the tier for the rest of the session.
+function mdOffscreenEnsure() {
+    if (mdOffscreenSetup) return mdOffscreenSetup;
+    mdOffscreenSetup = (async function () {
+        try {
+            // Chrome 116+ can answer "is it already open?" exactly; older
+            // versions fall through to createDocument, whose duplicate-document
+            // error is handled below.
+            if (chrome.runtime.getContexts) {
+                const ctxs = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+                if (ctxs && ctxs.length > 0) return true;
+            }
+        } catch (_) { /* older Chrome */ }
+        try {
+            await chrome.offscreen.createDocument({
+                url: MD_OFFSCREEN_DOC,
+                reasons: ['BLOBS'],
+                justification: 'Fetch Referer-gated media in an extension-origin document - '
+                    + 'Chrome cannot attach the Referer that chrome.downloads needs.'
+            });
+            return true;
+        } catch (e) {
+            const msg = (e && e.message) ? e.message : '';
+            // "Only a single offscreen document may be created" = already open.
+            if (/single offscreen|already exists/i.test(msg)) return true;
+            console.warn(manifest.name + ': offscreen document unavailable', e);
+            return false;
+        }
+    })().then(function (ok) {
+        if (!ok) mdOffscreenSetup = null;
+        return ok;
+    });
+    return mdOffscreenSetup;
+}
+
+// The offscreen listener registers while the document loads, so the first
+// delivery can race createDocument's resolution — retry it a couple of times.
+function mdOffscreenSend(msg, attempts) {
+    return chrome.runtime.sendMessage(msg).catch(function (e) {
+        if (attempts <= 0) throw e;
+        return new Promise(function (resolve) { setTimeout(resolve, 150); })
+            .then(function () { return mdOffscreenSend(msg, attempts - 1); });
+    });
+}
+
+// Fire-and-forget: the document may already have self-closed, and a leaked
+// blob URL dies with the document anyway.
+function mdOffscreenRevokeObjectUrl(objectUrl) {
+    if (!objectUrl) return;
+    mdOffscreenSend({ cmd: 'mdOffscreenRevoke', objectUrl: objectUrl }, 0)
+        .catch(function () { /* document gone */ });
+}
+
+// Hand one task to the tier. Resolves true when the item now lives in
+// downloadQueue as an object-URL download (the caller must NOT advance its
+// candidate chain), false when the caller should run its normal fallback.
+// Never rejects: the caller holds a download slot across this call.
+async function mdTryOffscreenDownload(task) {
+    try {
+        if (!task || !mdOffscreenSupported()) return false;
+        if (task._offscreenTried) return false;
+        if (task._blob || task._objectUrl) return false; // already materialized
+        if (!scanInProgress || userCanceled) return false;
+        if (task._session !== sessionId) return false;
+        // Fail fast unless the host is registry-covered AND its rule is live:
+        // without the Referer substitution the fetch would 403 like everything
+        // else (the 2026-09-11 FF log proves the gate is absolute otherwise).
+        if (!mdDnrRuleActiveFor(task.url, task.referer)) return false;
+        task._offscreenTried = true; // set BEFORE the attempt: no retry loops
+        updateDownloadProgress(task.url, 'pending', 0, 'Retrying via offscreen fetch', null, task);
+
+        const ok = await mdOffscreenEnsure();
+        if (!ok) {
+            updateDownloadProgress(task.url, 'failed', 0, 'Offscreen document unavailable', null, task);
+            return false;
+        }
+        let res;
+        try {
+            res = await mdOffscreenSend({ cmd: 'mdOffscreenFetch', url: task.url, referer: task.referer || '' }, 2);
+        } catch (e) {
+            mdOffscreenSetup = null; // it may have self-closed — recreate next time
+            updateDownloadProgress(task.url, 'failed', 0,
+                'Offscreen fetch failed: ' + ((e && e.message) || e), null, task);
+            return false;
+        }
+        if (!res || !res.ok || !res.objectUrl) {
+            updateDownloadProgress(task.url, 'failed', 0,
+                'Offscreen fetch failed: ' + ((res && res.error) || 'no object URL'), null, task);
+            return false;
+        }
+
+        // Same size/type policy as the page-fetch path (handleRefererDownloadReady)
+        // — the offscreen tier must not be a way around the user's settings.
+        const da = cachedPrefs.da || {};
+        const excludedExtensions = getExcludedExtensions(da);
+        const size = Number(res.size) || 0;
+        const type = res.contentType || '';
+        const dropIt = function (reason) {
+            mdOffscreenRevokeObjectUrl(res.objectUrl);
+            updateDownloadProgress(task.url, 'skipped', 0, reason, null, task);
+            downloadStats.skipped++;
+            return true;
+        };
+        if (isExcludedType(task.url, type, excludedExtensions)) return dropIt('Excluded type');
+        const minImageSize = (da.minImageSize != null ? da.minImageSize : 45) * 1024;
+        const minVideoSize = (da.minVideoSize != null ? da.minVideoSize : 2) * 1024 * 1024;
+        if (type.startsWith('image/') && minImageSize > 0 && size < minImageSize) return dropIt('Too small');
+        if (type.startsWith('video/') && minVideoSize > 0 && size < minVideoSize) return dropIt('Too small');
+
+        // A NEW task object: the caller still releases the failed download's
+        // slot on the OLD object, and sharing it would set _slotReleased here —
+        // this download's slot would then never be returned (same contract as
+        // advanceToNextCandidate). The URL stays the ORIGINAL CDN url so the
+        // filename derivation in processDownloadQueue keeps working; only the
+        // download target is swapped for the object URL.
+        const newTask = {
+            url: task.url,
+            referer: task.referer || '',
+            isPrivate: task.isPrivate === true,
+            source: task.source || 'group',
+            isHd: !!task.isHd,
+            elementInfo: task.elementInfo || null,
+            contentType: type,
+            fileSize: size,
+            httpStatus: 200,
+            filterMethod: 'OFFSCREEN',
+            _objectUrl: res.objectUrl,
+            _objectUrlScope: 'offscreen',
+            _session: task._session,
+            _candidates: Array.isArray(task._candidates) ? task._candidates : [],
+            _attempts: recordCandidateAttempt(task, 'browser download refused -> offscreen fetch'),
+            _candidateCount: task._candidateCount != null ? task._candidateCount : null,
+            _pickReason: task._pickReason || null,
+            _offscreenTried: true
+        };
+        downloadQueue.push(newTask);
+        processDownloadQueue();
+        return true;
+    } catch (e) {
+        console.warn(manifest.name + ': offscreen tier error', e);
+        return false;
+    }
+}
+
 // Stage 5: the filter phase hit a hard 403/404 (host wants a real
 // browser context) — retry through the page: the content script fetches with
 // auto cookies/Referer and returns a blob, which we download from an object
@@ -848,6 +1024,30 @@ function triggerRefererDownload(task) {
     if (!downloadInitiatorTabId) {
         updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable (no initiator tab)', null, task);
         return Promise.resolve();
+    }
+    // Offscreen tier (Chrome): the page-context fetch below is guaranteed to
+    // die with CORS on a Referer-gated CDN (live log 2026-09-10T16-46-13:
+    // "Failed to fetch" for i.pximg.net, credentialed and cookieless), so the
+    // extension-origin document is tried first whenever the host's DNR rule is
+    // live. Checked BEFORE the pinned-'browser' branch on purpose: a pinned
+    // host would otherwise be pushed straight into the download path that
+    // cannot carry the Referer.
+    if (mdOffscreenSupported() && mdDnrRuleActiveFor(task.url, task.referer)) {
+        return mdTryOffscreenDownload(task).then(function (handled) {
+            if (handled) return;
+            // We are in the FILTER phase here, so the failure fallback is the
+            // filter contract (Stage 5d/5f): the next candidate goes back
+            // through HEAD/GET validation instead of straight to the browser
+            // download path — with the rule live it validates clean and only
+            // the download phase can 403.
+            if (!requeueNextCandidateForFilter(task)) {
+                // Do not overwrite the specific reason the tier recorded
+                // (HTTP status, "too large", document unavailable).
+                const entry = downloadProgress[task.url];
+                updateDownloadProgress(task.url, 'failed', 0,
+                    (entry && entry.error) ? entry.error : 'Offscreen fetch failed', null, task);
+            }
+        });
     }
     // P-1: a host pinned 'browser' this session (both probe modes died
     // transport-wise) skips the doomed content fetch entirely and goes
@@ -1584,13 +1784,34 @@ chrome.downloads.onChanged.addListener(function (delta) {
                     || dlErr === 'SERVER_UNAUTHORIZED') {
                     mdSwallow(chrome.downloads.erase({ id: delta.id }));
                 }
-                // Stage 5b: dead link -> try the next fallback candidate. The
-                // old row is kept as a 'failed' attempt with an advance marker
-                // (FIX-2); only mark failed outright if no candidate remains.
-                if (!alreadyCanceled && !advanceToNextCandidate(existingTask, 'interrupted: ' + (results[0].error || 'unknown'))) {
-                    updateDownloadProgress(url, 'failed', 0, mapDownloadInterruptReason(results[0].error), delta.id, existingTask);
+                // One verdict per download: `state` and `error` may arrive in
+                // separate deltas, and a second pass through this branch would
+                // advance the item twice (or start a second offscreen fetch).
+                const firstVerdict = !existingTask._interruptHandled;
+                existingTask._interruptHandled = true;
+                const interruptReason = 'interrupted: ' + (results[0].error || 'unknown');
+                if (alreadyCanceled || !firstVerdict) {
+                    releaseDownloadSlot(existingTask);
+                } else {
+                    // Stage 5b + offscreen tier: a Referer-gated host gets ONE
+                    // extension-origin fetch first (chrome.downloads cannot
+                    // carry the Referer its DNR rule needs — see the STATUS
+                    // note in md-dnr.js), then a dead link advances to the next
+                    // fallback candidate. The old row is kept as a 'failed'
+                    // attempt with an advance marker (FIX-2); the item is only
+                    // marked failed outright when no candidate remains.
+                    // mdTryOffscreenDownload never rejects — the slot, released
+                    // in the continuation below, is what would leak if it did.
+                    mdTryOffscreenDownload(existingTask).then(function (handled) {
+                        if (!handled && !advanceToNextCandidate(existingTask, interruptReason)) {
+                            updateDownloadProgress(url, 'failed', 0, mapDownloadInterruptReason(results[0].error), delta.id, existingTask);
+                        }
+                        releaseDownloadSlot(existingTask);
+                    }).catch(function (e) {
+                        console.warn(manifest.name + ': interrupt continuation failed', e);
+                        releaseDownloadSlot(existingTask);
+                    });
                 }
-                releaseDownloadSlot(existingTask);
             }
         } else if (results[0].totalBytes > 0) {
             const progress = Math.round((results[0].bytesReceived / results[0].totalBytes) * 100);

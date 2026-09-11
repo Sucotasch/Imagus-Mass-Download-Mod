@@ -50,6 +50,7 @@ src-mv3-overlay/
 ├── content/relay.js               # Upstream relay
 ├── common/app.js                  # Shared cfg / Port / utilities
 ├── options/                       # options, popup, download-progress, SieveUI
+├── offscreen/                     # Chrome only: offscreen.html/js — Referer-gated byte fetch tier
 ├── data/defaults.json             # hz / keys / tls / da
 ├── data/sieve.json                # Site media rules
 └── manifest.json                  # MV3 (versions numeric-only in both trees — Chrome rejects suffixes like `-pre`; FF tree adds gecko settings + relay content_scripts)
@@ -97,7 +98,8 @@ When re-applying onto a new upstream: merge upstream `content.js`, then re-inser
 | `src-mv3-overlay/background/service.js` | SW: sieve update, settings, message bus + mass-download cases |
 | `src-mv3-overlay/mass-download/service-init.js` | In-memory queues / stats / AbortControllers |
 | `src-mv3-overlay/mass-download/service-core.js` | Filter validation, download queue, progress tab, circuit breaker |
-| `src-mv3-overlay/mass-download/md-dnr.js` | Session DNR rules that stamp the Referer for registry hosts (Chrome); FF mirrors it via `mdDnrRequestFor` |
+| `src-mv3-overlay/mass-download/md-dnr.js` | Session DNR rules that stamp the Referer for registry hosts (Chrome fetch path); FF mirrors it via `mdDnrRequestFor` |
+| `src-mv3-overlay/offscreen/offscreen.js` | Chrome offscreen tier: extension-origin fetch of a Referer-gated CDN + `createObjectURL` (the SW cannot create one, and `chrome.downloads` cannot carry the Referer) |
 | `src-mv3-overlay/content/content.js` | PVI + mass-download scan / monkey-patch of `PVI.set`/`PVI.show` |
 | `src-mv3-overlay/mass-download/content-block.js` | Reference for content patches (not loaded at runtime) |
 | `src-mv3-overlay/common/app.js` | Shared utilities |
@@ -114,6 +116,8 @@ Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `sr
 
 - **Service Worker is ephemeral.** Three keep-alive tiers: permanent `setInterval(chrome.runtime.getPlatformInfo, 25000)` (service.js), a session alarm `md-session-keepalive` (0.5 min, only while a scan/download session is active), and a silent looping audio element in the content script during scans.
 - **Referer-retry (hotlink protection):** filter-phase 403/404 → `triggerRefererDownload` → `downloadWithReferer` to content → page-context fetch (`credentials:'include'`) → object URL → `refererDownloadReady/Failed`. While a retry is in flight `activeRefererRetries` keeps the session alive; `refererRetryUrls` guards the watchdog against double slot-release. Chrome: object URL is created in the PAGE and revoked via message on release (SW has no `createObjectURL`).
+- **DNR reaches the fetch, NOT `chrome.downloads` (measured, three runs):** the session rule lifts a hotlink gate for the extension's `fetch` (HEAD/200) but never for `chrome.downloads.download` (`interrupted: SERVER_FORBIDDEN`, unchanged by widening `resourceTypes`/dropping `initiatorDomains`). Do not retry that hypothesis — see the STATUS note in `md-dnr.js`.
+- **Chrome offscreen tier (pixiv-class hosts):** when the DNR rule is live and a download of a registry host is refused, `mdTryOffscreenDownload` fetches the bytes once from the extension-origin `offscreen/` document (no CORS, DNR applies, `createObjectURL` exists there), then downloads the `blob:` URL — the second step hits no network. Gates: `chrome.offscreen` present, rule live, one attempt per task (`_offscreenTried`), 10 MiB body cap, size/type settings still applied; revoke is routed by `_objectUrlScope === 'offscreen'`. The files exist in the FF tree too (md-ff-delta parity) but are never loaded there — Firefox uses its native downloads Referer header.
 - **No `XMLHttpRequest` in SW.** Use `fetch()` + `AbortController`.
 - **Queues are in-memory only** (`filterQueue`, `downloadQueue`, `downloadStats` in SW). Worker restart loses progress; nothing is persisted to `chrome.storage` for queues.
 - **Clean stop:** on `stopScanning` / cancel, mark tasks canceled and abort every entry in `activeControllers` (keys should be unique IDs, not raw URLs).
@@ -125,7 +129,7 @@ Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `sr
 - **User scripts need Developer Mode.**
 - **Sieve rules starting with `_`** are user/local — never overwrite on auto-update.
 - **Weekly sieve auto-update** via `chrome.alarms` (upstream feature; mod may add retry/timeout hardening).
-- **Verification tools (run from repo root):** `node tools/md-unit-smoke.mjs` (dedup contract both trees + MIME/ext helpers + Firefox locks: `background.scripts` order, no `importScripts` call, Referer headers), `node tools/md-marker-check.mjs` (byte-sync of the 5 marker sections, both trees), `node tools/md-ff-delta.mjs` (FF tree differs in exactly the 3 canonical files), `node tools/_chk_defaults.mjs` (key defaults in both trees), `node scripts/verify-syntax.mjs` (`node --check` on the Chrome runtime JS). The smoke test **cuts functions out of source text** assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` can break extraction. When diffing the two trees, use `git diff --no-index --ignore-cr-at-eol` — flat diffs show ~13 phantom files from CRLF noise (N-20); do not "fix" line endings tree-wide.
+- **Verification tools (run from repo root):** `node tools/md-unit-smoke.mjs` (dedup contract both trees + MIME/ext helpers + Firefox locks: `background.scripts` order, no `importScripts` call, Referer headers + DNR/offscreen locks: cross-engine `resourceTypes` without `webbundle`, no throwing DNR install, offscreen permission only in the Chrome manifest), `node tools/md-marker-check.mjs` (byte-sync of the 5 marker sections, both trees), `node tools/md-ff-delta.mjs` (FF tree differs in exactly the 3 canonical files), `node tools/_chk_defaults.mjs` (key defaults in both trees), `node scripts/verify-syntax.mjs` (`node --check` on the Chrome runtime JS). The smoke test **cuts functions out of source text** assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` can break extraction. When diffing the two trees, use `git diff --no-index --ignore-cr-at-eol` — flat diffs show ~13 phantom files from CRLF noise (N-20); do not "fix" line endings tree-wide.
 
 ## Settings (`da` in `defaults.json`)
 

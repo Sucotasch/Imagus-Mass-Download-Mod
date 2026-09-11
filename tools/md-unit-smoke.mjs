@@ -483,6 +483,64 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             join(repoRoot, 'src-mv3-overlay/background/service.js'), 'utf8');
         assert.ok(!/mdAck\(\)/.test(chromeServiceSrc),
             'BT-06: mdAck() is a Firefox-only shim — the Chrome service worker must not grow it');
+
+        // Offscreen tier (2026-09-11, Chrome pixiv): the only context that can
+        // both pass a Referer-gated CDN (extension origin: no CORS, DNR applies)
+        // and produce an object URL (the MV3 SW cannot). Locks:
+        //  - the permission exists in the Chrome manifest and NOT in FF (FF
+        //    keeps its native downloads-header path);
+        //  - the helper document exists in BOTH trees (md-ff-delta enforces the
+        //    file sets) and is identical; it streams with a cap;
+        //  - the SW gates the tier on chrome.offscreen, on a LIVE DNR rule and
+        //    on one attempt per task;
+        //  - the item is handed over as an object-URL download whose revoke is
+        //    routed to the offscreen document, not to the content script;
+        //  - the size/type policy still applies (no settings bypass);
+        //  - the FF copy of service-core.js never references the tier.
+        const offJs = readFileSync(
+            join(repoRoot, 'src-mv3-overlay/offscreen/offscreen.js'), 'utf8');
+        const offJsFf = readFileSync(
+            join(repoRoot, 'src-mv3-overlay-firefox/offscreen/offscreen.js'), 'utf8');
+        const chromeManifest = JSON.parse(readFileSync(
+            join(repoRoot, 'src-mv3-overlay/manifest.json'), 'utf8'));
+        assert.ok((chromeManifest.permissions || []).includes('offscreen'),
+            'offscreen tier: Chrome manifest declares the offscreen permission');
+        assert.ok(!(ffManifest.permissions || []).includes('offscreen'),
+            'offscreen tier: FF manifest must not request offscreen');
+        assert.equal(offJs.replace(/\r\n/g, '\n'), offJsFf.replace(/\r\n/g, '\n'),
+            'offscreen tier: helper document identical in both trees');
+        assert.ok(offJs.includes('URL.createObjectURL'),
+            'offscreen tier: helper creates the object URL');
+        assert.ok(/MAX_OFFSCREEN_FETCH = 10 \* 1024 \* 1024/.test(offJs),
+            'offscreen tier: helper caps the buffered body (mirrors MAX_FALLBACK_SIZE)');
+        assert.ok(!/\.blob\(\)/.test(offJs),
+            'offscreen tier: helper streams with a running cap, never resp.blob()');
+        assert.ok(offJs.includes('mdOffscreenRevoke'),
+            'offscreen tier: helper serves the revoke command');
+        const swOff = cutFnFrom(src, 'mdTryOffscreenDownload');
+        assert.ok(/mdOffscreenSupported\(\)/.test(swOff),
+            'offscreen tier: SW gates on the API check');
+        assert.ok(/mdDnrRuleActiveFor\(/.test(swOff),
+            'offscreen tier: SW requires a LIVE DNR rule before fetching');
+        assert.ok(/task\._offscreenTried\) return false/.test(swOff),
+            'offscreen tier: one attempt per task (no retry loop)');
+        assert.ok(swOff.includes("filterMethod: 'OFFSCREEN'"),
+            'offscreen tier: rows are marked OFFSCREEN');
+        assert.ok(swOff.includes("_objectUrlScope: 'offscreen'"),
+            'offscreen tier: revoke routed to the document');
+        assert.ok(/isExcludedType\(task\.url, type, excludedExtensions\)/.test(swOff),
+            'offscreen tier: size/type policy still applies');
+        assert.ok(/chrome\.offscreen/.test(cutFnFrom(src, 'mdOffscreenSupported')),
+            'offscreen tier: a missing API degrades to the previous behavior');
+        assert.ok(/mdOffscreenRevokeObjectUrl\(task\._objectUrl\)/.test(
+            cutFnFrom(src, 'releaseDownloadSlot')),
+            'offscreen tier: object URLs of this tier are revoked in the document');
+        assert.ok(!/mdOffscreen|OFFSCREEN/.test(ffCoreSrc),
+            'offscreen tier: FF service-core.js must not reference the tier');
+        assert.ok(/function mdDnrRuleActiveFor\(/.test(dnrSrc),
+            'offscreen tier: md-dnr exposes the live-rule lookup');
+        assert.ok(/mdDnrActive\[req\.host\] === true/.test(dnrSrc),
+            'offscreen tier: the lookup reflects real install state');
     }
 }
 
