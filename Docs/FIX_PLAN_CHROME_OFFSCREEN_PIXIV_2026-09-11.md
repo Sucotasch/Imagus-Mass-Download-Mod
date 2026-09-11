@@ -6,7 +6,11 @@
 > **Реализовано по этому плану** (отличия от проекта: `offscreen.js` само-закрывается через 30 с;
 > fallback в фильтр-фазе идёт по фильтр-контракту `requeueNextCandidateForFilter`, а не через
 > `advanceToNextCandidate`; добавлен гвард `_interruptHandled` от двойной вердикт-ветки).
-> **Живые kill-проверки §5 ещё не пройдены** (нужен прогон в Chrome) — см. §30.3 отчёта.
+>
+> **ЖИВЫЕ KILL-ПРОВЕРКИ §5 ПРОЙДЕНЫ 2026-09-11** (Chrome, pixiv): `downloaded` 0 → 21,
+> `failed` 42 → 1. Полный разбор — `REPORT_GALLERY_BATCH_2026-09-06.md` **§30.4**.
+> Живой прогон изменил два проектных решения — оба аннотированы в теле:
+> **лимит → 32 MiB** (вместо 10 MiB, §4) и **idle-close не трогает неотозванные blob-URL** (§5.3).
 **Контекст-улики:** `REPORT_GALLERY_BATCH_2026-09-06.md` §29.2 (данные трёх логов),
 `Audit/FULL_AUDIT_BOTH_TREES_2026-09-11.md`.
 
@@ -37,7 +41,7 @@ mdOffscreenFetch(task)                      (mass-download/service-core.js)
 chrome.runtime.sendMessage({cmd:'mdFetchBlob', url, referer})   ← строки, JSON-safe
         │
    offscreen/offscreen.js:  fetch(url, {credentials:'include'})   ← extension-origin: CORS не действует,
-        │                    DNR подставляет Referer; лимит 10 MiB (как MAX_FALLBACK_SIZE)
+        │                    DNR подставляет Referer; лимит 32 MiB (см. отмену в §4)
         │                    → URL.createObjectURL(blob)
         ▼  {ok:true, objectUrl, size, contentType}
 SW: downloadQueue.push({…task, _objectUrl, _objectUrlScope:'offscreen', filterMethod:'OFFSCREEN'})
@@ -48,7 +52,9 @@ SW: downloadQueue.push({…task, _objectUrl, _objectUrlScope:'offscreen', filter
 ```
 
 Само-закрытие: offscreen-документ гасит себя через 30 с простоя (`window.close()`), чтобы не держать
-память и не мешать жизненному циклу SW.
+память и не мешать жизненному циклу SW — но **не раньше, чем отозваны все живые blob-URL**
+(`liveObjectUrls`; иначе `window.close()` убил бы blob-хранилище под ещё идущей загрузкой), с жёстким
+потолком `HARD_LIFETIME_MS` = 5 мин на случай, когда SW умер, не отозвав URL (см. §5.3).
 
 ## 3. Изменения по файлам
 
@@ -79,17 +85,42 @@ SW: downloadQueue.push({…task, _objectUrl, _objectUrlScope:'offscreen', filter
    Лимит фетча — 10 MiB (как `MAX_FALLBACK_SIZE`/`MAX_PAGE_FETCH`); сверх лимита — отказ и обычный
    advance (pixiv-примеры в логе: 1.1-3.4 MB, то есть под лимитом).
 
+   > **ОТМЕНЕНО ПО СЛЕДСТВИЯМ (2026-09-11, живой прогон).** Приравнивание к `MAX_FALLBACK_SIZE` было
+   > ошибкой: те лимиты ограничивают **кучу, которую мод сам наливает и сам сливает** (SW/страница),
+   > а здесь байты уходят в `chrome.downloads` как blob — число должно диктоваться медиа, которое обязано
+   > пролезть. Замер по всем сохранённым логам (773 строки с размером): максимум **29.97 MB**, выше 32 MiB —
+   > ноль, а лимит 10 MiB **молча подменил 15 из них** на уменьшенные производные (в прогоне 19-59-41
+   > оригинал 12.10 MB уступил `master1200` 675 KB). Итог: **`MAX_OFFSCREEN_FETCH = 32 MiB`**, а расхождение
+   > с `MAX_FALLBACK_SIZE` теперь намеренное (подробности — в комментарии константы в `offscreen.js`).
+   > Плюс пречек `Content-Length` — отказ **до чтения тела** (раньше до `cap` байт скачивалось и выбрасывалось).
+
 ## 5. Риски и kill-criteria (проверять по порядку, до полной обвязки)
 
 1. **KILL-1 (главный): скачает ли `chrome.downloads.download` blob-URL, созданный в offscreen-документе?**
    Прецедент: страничные blob-URL качаются (Chrome-ветка referer-retry). Проверка — 10 строк в консоли SW
    при открытом offscreen-документе. Если нет — вариант (а) отпадает, остаётся (б) iframe.
+
+   > **ПРОЙДЕН 2026-09-11** (живой прогон, `log/imagus-mass-download-log-2026-09-11T19-59-41.txt`):
+   > `downloaded` 0 → **21**, `failed` 42 → 1; строки `COMPLETED … OFFSCREEN/200` с цепочкой
+   > `attempts: HEAD/200 browser download refused -> offscreen fetch <url>`. Проба в консоли SW не удалась
+   > по вине самой пробы (в SW нет `window`, и без `mdOffscreenEnsure()` документ не создан) — вопрос
+   > закрыт фактом из лога. См. §30.4 отчёта.
 2. **KILL-2: применяется ли DNR-правило к fetch из offscreen-документа?** Высокая уверенность (тот же
    extension-origin/xhr-путь, что у SW; правило без `initiatorDomains`), но подтвердить логом
    `DNR referer rule active for i.pximg.net` + `HEAD/200`.
+
+   > **ПРОЙДЕН 2026-09-11:** каждый offscreen-фетч вернул 200 — ни одного `Filter error` /
+   > `SERVER_FORBIDDEN` на этом пути. DNR достаёт и до offscreen-документа.
 3. **KILL-3: память.** 30-40 MB PNG × 3 параллельных = до ~120 MB в куче документа. Отсюда: лимит 10 MiB,
    отзыв URL сразу после загрузки, само-закрытие документа. Если понадобится больше — это отдельное
    решение (стриминг через `File System Access` в offscreen — не в этом объёме).
+
+   > **Пересчитан 2026-09-11.** Оценка верна по механизму, значение — нет (см. отмену в §4). Актуально:
+   > потолок `3 × 32 MiB` ≈ 96 MB, короткий пик на элемент до ~2× (сборка `Blob` может копировать буферы —
+   > не проверялось). Живо освобождается по `mdOffscreenRevoke` (в `releaseDownloadSlot`), а не в конце
+   > сессии; документ закрывается через 30 с простоя, но **не раньше, чем отозваны все живые blob-URL**
+   > — иначе `window.close()` убивал бы blob-хранилище под ещё идущей загрузкой (найдено чтением кода,
+   > в прогоне не проявлялось: фетчи шли потоком и перезапускали таймер).
 4. **Совместимость:** `chrome.offscreen` есть с Chrome 109; при отсутствии API — деградация к текущему
    поведению (ровно как DNR сегодня). Реализовывать строго через проверку наличия API.
 5. **Chrome Web Store:** новая permission `offscreen` — в отзыве обосновывается (буферизация медиа

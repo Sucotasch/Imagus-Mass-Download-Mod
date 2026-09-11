@@ -28,23 +28,48 @@
 //   {cmd:'mdOffscreenRevoke', objectUrl}    -> no response needed
 //
 // Lifetime: self-closes after IDLE_CLOSE_MS without a request, so an idle
-// session does not keep an extra document alive for the service worker.
+// session does not keep an extra document alive for the service worker — but
+// never while an object URL is still unrevoked, because window.close() tears
+// down this document's blob registry and would cut an active download that is
+// still reading one (see armIdleClose).
 
 (function () {
-    // Mirrors the SW's MAX_FALLBACK_SIZE / the content script's MAX_PAGE_FETCH:
-    // the bytes are buffered in this document's heap, so the contract is
-    // "bounded buffer or explicit refusal", never "buffer the whole video".
-    // Pixiv originals in the live logs ran 1.1-3.4 MB, well inside this.
-    var MAX_OFFSCREEN_FETCH = 10 * 1024 * 1024;
+    // A DIFFERENT bound from the SW's MAX_FALLBACK_SIZE / the content script's
+    // MAX_PAGE_FETCH, which cap a heap the mod itself fills and drains. The
+    // bytes here go straight to chrome.downloads as a blob, so the number has
+    // to be dictated by the media that must fit through it, not by a heap
+    // budget: measured over 773 sized rows in every saved log the largest item
+    // was 29.97 MB and NONE exceeded 32 MiB, while the old 10 MiB refused 15 of
+    // them (live 2026-09-11: a 12.10 MB pixiv original fell back to its 675 KB
+    // master1200). 32 MiB keeps the buffer bounded with the whole observed
+    // distribution inside it. Contract is still "bounded buffer or explicit
+    // refusal", never "buffer the whole video": the reader below stops at the
+    // cap and the Content-Length pre-check refuses an oversize body unread.
+    var MAX_OFFSCREEN_FETCH = 32 * 1024 * 1024;
     var IDLE_CLOSE_MS = 30000;
+    // Escape hatch: a fetch re-arms the idle timer, so a busy session never
+    // reaches this. It only fires when the SW died (or was killed mid-session)
+    // without sending the revoke, leaving URLs this document can never learn
+    // are finished. Blob reads are local, not network, so a real download has
+    // long finished by then.
+    var HARD_LIFETIME_MS = 300000; // 5 min of idle WITH live URLs
     var idleTimer = null;
+    var liveObjectUrls = 0;
+    var idleWithBlobsSince = 0;
 
     function armIdleClose() {
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(function () {
             idleTimer = null;
-            // Closing the document releases the heap and lets the SW idle out
-            // normally; the next mdOffscreenFetch recreates it.
+            if (liveObjectUrls > 0) {
+                if (!idleWithBlobsSince) idleWithBlobsSince = Date.now();
+                if (Date.now() - idleWithBlobsSince < HARD_LIFETIME_MS) {
+                    armIdleClose();
+                    return;
+                }
+            }
+            // Closing releases the heap and lets the SW idle out normally; the
+            // next mdOffscreenFetch recreates the document.
             try { window.close(); } catch (e) { /* already gone */ }
         }, IDLE_CLOSE_MS);
     }
@@ -82,9 +107,13 @@
             chunks.push(step.value);
         }
         var blob = new Blob(chunks, { type: type });
+        var objectUrl = URL.createObjectURL(blob);
+        // Counted so the idle close cannot tear down a blob the downloader is
+        // still reading; the SW decrements it through mdOffscreenRevoke.
+        liveObjectUrls++;
         return {
             ok: true,
-            objectUrl: URL.createObjectURL(blob),
+            objectUrl: objectUrl,
             size: blob.size,
             contentType: type
         };
@@ -96,12 +125,19 @@
         if (msg.cmd === 'mdOffscreenRevoke') {
             if (typeof msg.objectUrl === 'string' && msg.objectUrl) {
                 try { URL.revokeObjectURL(msg.objectUrl); } catch (e) { /* already revoked */ }
+                // A revoke can arrive after window.close() was already armed for
+                // this URL, so re-arm: with the count back at zero the document
+                // is free to close on the next idle tick.
+                if (liveObjectUrls > 0) liveObjectUrls--;
+                if (liveObjectUrls === 0) idleWithBlobsSince = 0;
+                armIdleClose();
             }
             return false;
         }
 
         if (msg.cmd !== 'mdOffscreenFetch') return false;
 
+        idleWithBlobsSince = 0; // live traffic: the hard deadline restarts
         armIdleClose();
         fetchBlob(msg.url).then(function (res) {
             sendResponse(res);
@@ -112,4 +148,8 @@
         });
         return true; // async sendResponse
     });
+
+    // Arm immediately: a document created but never used (the SW died between
+    // createDocument and the first fetch) must still go away on its own.
+    armIdleClose();
 })();

@@ -511,8 +511,16 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             'offscreen tier: helper document identical in both trees');
         assert.ok(offJs.includes('URL.createObjectURL'),
             'offscreen tier: helper creates the object URL');
-        assert.ok(/MAX_OFFSCREEN_FETCH = 10 \* 1024 \* 1024/.test(offJs),
-            'offscreen tier: helper caps the buffered body (mirrors MAX_FALLBACK_SIZE)');
+        // 32 MiB is deliberately NOT MAX_FALLBACK_SIZE (10 MiB): that one caps a
+        // heap the mod fills and drains itself, while these bytes go straight to
+        // chrome.downloads as a blob. Measured over every saved log: 773 sized
+        // rows, max 29.97 MB, none above 32 MiB; the 10 MiB value refused 15.
+        assert.ok(/MAX_OFFSCREEN_FETCH = 32 \* 1024 \* 1024/.test(offJs),
+            'offscreen tier: helper caps the buffered body at the measured 32 MiB');
+        assert.ok(/liveObjectUrls\+\+/.test(offJs) && /idleWithBlobsSince/.test(offJs),
+            'offscreen tier: idle close cannot tear down an unrevoked blob');
+        assert.ok(/HARD_LIFETIME_MS/.test(offJs),
+            'offscreen tier: a document the SW abandoned still closes on its own');
         assert.ok(!/\.blob\(\)/.test(offJs),
             'offscreen tier: helper streams with a running cap, never resp.blob()');
         assert.ok(/Content-Length/.test(offJs) && /tooLarge: true/.test(offJs),
