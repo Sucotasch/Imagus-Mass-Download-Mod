@@ -4,7 +4,7 @@
 
 A Chrome extension (Manifest V3): Imagus "hover-to-enlarge" plus a bulk media download feature. Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + original Imagus (Zren). Mass-download is a **hybrid overlay** on upstream Imagus-Reborn: SW logic split out into `mass-download/` modules; content patches stay **inline** in `content.js` because `PVI` is IIFE-local.
 
-- **Branch:** `mv3-version` · current version `2026.8.20.9`
+- **Branch:** `mv3-version` · current version `2026.8.20.10`
 - **Active tree (default — edit this):** `src-mv3-overlay/` — load unpacked in Chrome (`chrome://extensions` → Developer mode; required for `chrome.userScripts`). No build step.
 - **Firefox tree:** `src-mv3-overlay-firefox/` — byte-copy of the overlay + **exactly 3 canonical delta files**: `manifest.json` (`background.scripts` array), `background/service.js` (`mdAck` + native Referer headers), `mass-download/service-core.js` (`incognito` + Referer headers). Lives in `mv3-version` since 2026-09-10. **Never** put `importScripts` in the FF `service.js` — an FF event page has no such API and the whole background dies (this shipped broken from the overlay port until v2026.8.20.9). See `Docs/FIREFOX_OVERLAY.md` and DEV_GUIDE §15.
 - **Older trees:** `src-mv3/` (older monolithic MV3 — only for fixing the stable line), `src/` (legacy MV2, built by `build.py`).
