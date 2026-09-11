@@ -57,6 +57,16 @@
         var resp = await fetch(url, { credentials: 'include' });
         if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status, status: resp.status };
         var type = resp.headers.get('Content-Type') || '';
+        // Declared-size pre-check: refuse WITHOUT reading a single byte when the
+        // server already says the body is over the cap. The streaming loop below
+        // would also stop it (that is what keeps memory bounded), but it would
+        // first pull `cap` bytes off the wire and throw them away — measurable
+        // waste on a large file, and the reason this check exists.
+        var declared = Number(resp.headers.get('Content-Length'));
+        if (isFinite(declared) && declared > MAX_OFFSCREEN_FETCH) {
+            try { await resp.body.cancel(); } catch (e) { /* best-effort */ }
+            return { ok: false, error: 'Too large for offscreen fetch', tooLarge: true, declared: declared };
+        }
         var reader = (resp.body && resp.body.getReader) ? resp.body.getReader() : null;
         if (!reader) return { ok: false, error: 'No response body' };
         var chunks = [];

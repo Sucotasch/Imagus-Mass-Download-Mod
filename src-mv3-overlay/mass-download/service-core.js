@@ -942,24 +942,39 @@ async function mdTryOffscreenDownload(task) {
         task._offscreenTried = true; // set BEFORE the attempt: no retry loops
         updateDownloadProgress(task.url, 'pending', 0, 'Retrying via offscreen fetch', null, task);
 
-        const ok = await mdOffscreenEnsure();
-        if (!ok) {
-            updateDownloadProgress(task.url, 'failed', 0, 'Offscreen document unavailable', null, task);
+        // Every failed tier attempt must leave a trace in _attempts: the
+        // caller's advanceToNextCandidate immediately overwrites this row with
+        // the interrupt reason, so without the entry the real cause is invisible
+        // in the Save Log. Live example (2026-09-11T19-59-41): a 12.10 MB pixiv
+        // original tripped the tier's size cap, fell back to the 675 KB
+        // master1200, and the row only said "interrupted: SERVER_FORBIDDEN".
+        const miss = function (text, status) {
+            task._attempts = recordCandidateAttempt(
+                Object.assign({}, task, {
+                    filterMethod: 'OFFSCREEN',
+                    httpStatus: Number(status) || task.httpStatus || 0
+                }), text);
+            updateDownloadProgress(task.url, 'failed', 0, text, null, task);
             return false;
-        }
+        };
+
+        const ok = await mdOffscreenEnsure();
+        if (!ok) return miss('Offscreen document unavailable');
         let res;
         try {
             res = await mdOffscreenSend({ cmd: 'mdOffscreenFetch', url: task.url, referer: task.referer || '' }, 2);
         } catch (e) {
             mdOffscreenSetup = null; // it may have self-closed — recreate next time
-            updateDownloadProgress(task.url, 'failed', 0,
-                'Offscreen fetch failed: ' + ((e && e.message) || e), null, task);
-            return false;
+            return miss('Offscreen fetch failed: ' + ((e && e.message) || e));
         }
         if (!res || !res.ok || !res.objectUrl) {
-            updateDownloadProgress(task.url, 'failed', 0,
-                'Offscreen fetch failed: ' + ((res && res.error) || 'no object URL'), null, task);
-            return false;
+            // tooLarge is a policy refusal (the document's buffer cap), not a
+            // network error — name it so the fallback to a smaller derivative
+            // is explainable rather than mysterious.
+            const text = (res && res.tooLarge)
+                ? 'Offscreen fetch skipped: ' + (res.error || 'over the tier size cap')
+                : 'Offscreen fetch failed: ' + ((res && res.error) || 'no object URL');
+            return miss(text, res && res.status);
         }
 
         // Same size/type policy as the page-fetch path (handleRefererDownloadReady)

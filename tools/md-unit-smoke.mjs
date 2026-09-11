@@ -515,6 +515,8 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             'offscreen tier: helper caps the buffered body (mirrors MAX_FALLBACK_SIZE)');
         assert.ok(!/\.blob\(\)/.test(offJs),
             'offscreen tier: helper streams with a running cap, never resp.blob()');
+        assert.ok(/Content-Length/.test(offJs) && /tooLarge: true/.test(offJs),
+            'offscreen tier: a declared oversize body is refused before it is read');
         assert.ok(offJs.includes('mdOffscreenRevoke'),
             'offscreen tier: helper serves the revoke command');
         const swOff = cutFnFrom(src, 'mdTryOffscreenDownload');
@@ -524,6 +526,8 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             'offscreen tier: SW requires a LIVE DNR rule before fetching');
         assert.ok(/task\._offscreenTried\) return false/.test(swOff),
             'offscreen tier: one attempt per task (no retry loop)');
+        assert.ok(/const miss = function/.test(swOff),
+            'offscreen tier: a failed attempt is recorded in _attempts (survives the advance)');
         assert.ok(swOff.includes("filterMethod: 'OFFSCREEN'"),
             'offscreen tier: rows are marked OFFSCREEN');
         assert.ok(swOff.includes("_objectUrlScope: 'offscreen'"),
