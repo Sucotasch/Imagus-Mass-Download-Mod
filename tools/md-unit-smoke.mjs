@@ -959,8 +959,8 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
 }
 
 // ===========================================================================
-// 2026-09-12 batch — D-1, D-5, D-6, D-7, D-8, D-10 (decisions taken after
-// REVIEW_BT_AND_V). These are the DURABLE locks; the interactive/behavioural
+// 2026-09-12 batch — D-1, D-5, D-6, D-7, D-8 (decisions taken after
+// REVIEW_BT_AND_V) plus the D-10 REVERT. These are the DURABLE locks; the interactive/behavioural
 // verification of the same fixes (real functions cut out and executed against
 // fake storage and DOM) lives in .unlazy/review-verify-2026-09-12/ and is not
 // part of the repo. Every lock below states WHY it exists, because a future
@@ -1057,51 +1057,30 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `D-7: ${tree} — Clear All must reset the breaker`);
     }
 
-    // --- D-10: session-scoped "already downloaded" memory -------------------
+    // --- D-10: REVERTED 2026-09-12 (after the owner's review) ---------------
+    // "Do not download what this browser session already downloaded" is GONE, by
+    // decision. Its benefit (no "name (1).jpg" on a re-scan) was inferred from
+    // reading the code and never reported as a symptom, while its cost was a real
+    // denial of a legitimate wish — files deleted, moved, or simply wanted again.
+    // The tell that the fix was wrong: it needed a SECOND fix (deletion
+    // detection + Retry on every terminal row) just to undo its own harm.
+    // These locks keep it out: the per-scan dedup stays per-scan, and no
+    // session-spanning downloaded-keys memory may return unnoticed.
     for (const tree of batchTrees) {
         const core = readNorm(tree, 'mass-download/service-core.js');
-        assert.ok(/MD_DOWNLOADS_KEY = 'mdSessionDownloads'/.test(core),
-            `D-10: ${tree} — the memory must live in its own storage.session key`);
-        assert.ok(/MD_SKIP_ALREADY_DOWNLOADED = 'Already downloaded \(this session\)'/.test(core),
-            `D-10: ${tree} — the skipped row must name the reason (never a silent drop)`);
-        const pfq = cutFnFrom(core, 'processFilterQueue');
-        assert.ok(/const skipReason = mdDedupSkipReason\(dupKey, hashKey\);/.test(pfq),
-            `D-10: ${tree} — the filter stage must go through the single decision point`);
-        assert.ok(/await mdSessionDownloadsReady\(\)/.test(pfq),
-            `D-10: ${tree} — the memory must be loaded before the first verdict (else the first scan after a restart re-downloads)`);
-        assert.ok(/keepCompletedRow/.test(pfq),
-            `D-10: ${tree} — an existing 'completed' row must not be downgraded to 'skipped'`);
-        const remember = cutFnFrom(core, 'mdRememberDownloaded');
-        assert.ok(/sessionDownloadedKeys\.add\(key\)/.test(remember) && /MD_DOWNLOADS_MAX_KEYS/.test(remember),
-            `D-10: ${tree} — remembering must be capped (FIFO), or the stored set grows with the session`);
-        const rememberCalls = (core.match(/mdRememberDownloaded\(/g) || []).length;
-        assert.strictEqual(rememberCalls, 3,
-            `D-10: ${tree} — exactly two completion call sites (adopt + onChanged) plus the definition, found ${rememberCalls}`);
-        // REGRESSION: clearing the memory in the per-scan reset would undo the
-        // whole fix; it is cleared by Clear All and by a reload instead.
-        assert.ok(!/mdClearSessionDownloads/.test(cutFnFrom(core, 'resetMassDownloadSession')),
-            `D-10: ${tree} — resetMassDownloadSession must NOT clear the session memory (that is the point of the fix)`);
-        assert.ok(/mdClearSessionDownloads\(\);/.test(cutFnFrom(core, 'handleClearAll')),
-            `D-10: ${tree} — Clear All = clean slate, so it clears the memory`);
-        const svcFile = readNorm(tree, 'background/service.js');
-        assert.ok(/mdDropSessionSnapshot\(\);\n[\s\S]{0,240}mdClearSessionDownloads\(\);/.test(svcFile),
-            `D-10: ${tree} — a reload/update drops the memory too (fresh session, nothing skipped)`);
-
-        // Behavioural: the decision point is pure, so it can be executed here.
-        const dedupFactory = new Function(`
-            const globalProcessedUrls = new Set(['in-scan']);
-            const globalProcessedMediaHashes = new Set(['hashkey']);
-            const sessionDownloadedKeys = new Set(['downloaded']);
-            const MD_SKIP_ALREADY_DOWNLOADED = 'Already downloaded (this session)';
-            ${cutFnFrom(core, 'mdDedupSkipReason')}
-            return mdDedupSkipReason;
-        `);
-        const dedup = dedupFactory();
-        assert.strictEqual(dedup('in-scan', ''), 'Duplicate (same file)', `D-10: ${tree} in-scan duplicate reason`);
-        assert.strictEqual(dedup('other', 'hashkey'), 'Duplicate (same file on another host)', `D-10: ${tree} cross-host reason`);
-        assert.strictEqual(dedup('downloaded', ''), 'Already downloaded (this session)', `D-10: ${tree} session-memory reason`);
-        assert.strictEqual(dedup('fresh', ''), null, `D-10: ${tree} an unseen file must still be filtered`);
+        const code = core.replace(/^\s*\/\/.*$/gm, '');
+        for (const gone of ['mdSessionDownloads', 'sessionDownloadedKeys', 'mdRememberDownloaded',
+                            'mdClearSessionDownloads', 'mdDedupSkipReason', 'MD_SKIP_ALREADY_DOWNLOADED']) {
+            assert.ok(!code.includes(gone),
+                `D-10 REVERTED: ${tree} must not carry the ${gone} machinery (see Docs/FIX_PLAN_REVIEW_2026-09-12.md)`);
+        }
+        // The dedup branch must stay pure per-scan: no second set in it, and the
+        // explicit Retry remains the only sanctioned re-download path.
+        const dedupBranch = cutFnFrom(core, 'processFilterQueue');
+        assert.ok(/Explicit retries bypass the set/.test(dedupBranch),
+            `D-10 REVERTED: ${tree} — an explicit retry stays the single sanctioned re-download path`);
     }
+
 
     // --- D-1: the e-hentai pagination guard ---------------------------------
     for (const tree of batchTrees) {
@@ -1130,16 +1109,12 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         cutSpan(cCore, 'const MD_BREAKER_FAILURES', 'async function validateSingleUrlContent'),
         cutSpan(fCore, 'const MD_BREAKER_FAILURES', 'async function validateSingleUrlContent'),
         'D-7: the breaker block must be byte-identical in both trees');
-    assert.strictEqual(
-        cutSpan(cCore, 'const MD_DOWNLOADS_KEY', 'async function processFilterQueue'),
-        cutSpan(fCore, 'const MD_DOWNLOADS_KEY', 'async function processFilterQueue'),
-        'D-10: the session-memory block must be byte-identical in both trees');
     const [cApp, fApp] = batchTrees.map(t => readNorm(t, 'common/app.js'));
     assert.strictEqual(cApp, fApp, 'D-5: common/app.js must stay byte-identical in both trees');
     const [cInit, fInit] = batchTrees.map(t => readNorm(t, 'mass-download/service-init.js'));
     assert.strictEqual(cInit, fInit, 'D-7: mass-download/service-init.js must stay byte-identical in both trees');
 
-    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8, D-10) hold in both trees');
+    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert) hold in both trees');
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

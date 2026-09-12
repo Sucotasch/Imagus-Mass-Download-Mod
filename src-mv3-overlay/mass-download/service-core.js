@@ -854,7 +854,6 @@ function mdApplySnapshot(snap) {
                 if (found.fileSize) item.task.fileSize = found.fileSize;
                 updateDownloadProgress(item.task.url, 'completed', 100, null, item.downloadId, item.task);
                 downloadStats.downloaded++;
-                mdRememberDownloaded(item.task.url); // D-10
                 releaseDownloadSlot(item.task);
                 return;
             }
@@ -1063,9 +1062,6 @@ function handleClearAll() {
     // Reset validation state too (Audit N-12): a tripped circuit breaker must
     // not leak from the cleared session into the next one (D-7: per-host map).
     mdBreakerReset();
-    // "Clear All" = clean slate, so the D-10 memory goes with the rows it
-    // protects: the next scan is free to download everything again.
-    mdClearSessionDownloads();
 }
 
 function handleRetryDownload(msg, sender) {
@@ -1818,116 +1814,7 @@ function triggerRefererDownload(task) {
     return Promise.resolve();
 }
 
-// ---------------------------------------------------------------------------
-// D-10 (2026-09-12) — "already downloaded in this browser session".
-//
-// handleOpenDownloadProgress calls resetMassDownloadSession(), which clears the
-// per-scan dedup sets on purpose. The side effect was that a SECOND pass over
-// the same page (the normal lazy-load workflow: scroll, press the hotkey again
-// to pick up what just appeared) re-downloaded every file it already had, and
-// Chrome's conflictAction 'uniquify' dropped "name (1).jpg" copies next to the
-// originals. The set below remembers what THIS BROWSER SESSION has already
-// finished, independently of the per-scan sets, and survives both worker death
-// (chrome.storage.session) and session resets. It disappears when the browser
-// session ends or the extension is reloaded, which is exactly the scope the
-// name promises.
-//
-// Deliberately a VISIBLE outcome, never a silent drop: within one scan the row
-// already reads 'completed' and is left alone, otherwise the row names the
-// reason. Explicit Retry is unaffected — it bypasses dedup entirely.
-// ---------------------------------------------------------------------------
-const MD_DOWNLOADS_KEY = 'mdSessionDownloads';
-const MD_DOWNLOADS_VERSION = 1;
-const MD_DOWNLOADS_MAX_KEYS = 4000;
-const MD_DOWNLOADS_DEBOUNCE_MS = 2000;
-const MD_SKIP_ALREADY_DOWNLOADED = 'Already downloaded (this session)';
-var sessionDownloadedKeys = new Set();
-var mdDownloadsTimer = null;
-var mdDownloadsBusy = false;
-var mdDownloadsPromise = null;
-var mdDownloadsGen = 0;
-var mdDownloadsAwaited = false;
-
-// Loaded lazily and awaited by the filter queue, so the very first scan after a
-// worker restart cannot re-download something this session already has.
-function mdSessionDownloadsReady() {
-    if (mdDownloadsPromise) return mdDownloadsPromise;
-    const gen = mdDownloadsGen;
-    mdDownloadsPromise = new Promise(function (resolve) {
-        let p;
-        try { p = chrome.storage.session.get(MD_DOWNLOADS_KEY); } catch (e) { resolve(); return; }
-        p.then(function (r) {
-            // A Clear All while this read was in flight must not resurrect the
-            // set it just emptied.
-            if (gen !== mdDownloadsGen) { resolve(); return; }
-            const rec = r && r[MD_DOWNLOADS_KEY];
-            if (rec && rec.v === MD_DOWNLOADS_VERSION && Array.isArray(rec.keys)) {
-                rec.keys.forEach(function (k) { if (typeof k === 'string' && k) sessionDownloadedKeys.add(k); });
-            }
-            resolve();
-        }).catch(function () { resolve(); });
-    });
-    return mdDownloadsPromise;
-}
-
-function mdScheduleDownloadsPersist() {
-    if (mdDownloadsTimer) return;
-    mdDownloadsTimer = setTimeout(function () {
-        mdDownloadsTimer = null;
-        mdFlushSessionDownloads();
-    }, MD_DOWNLOADS_DEBOUNCE_MS);
-}
-
-function mdFlushSessionDownloads() {
-    if (mdDownloadsBusy) { mdScheduleDownloadsPersist(); return; }
-    mdDownloadsBusy = true;
-    const done = function () { mdDownloadsBusy = false; };
-    try {
-        chrome.storage.session.set({
-            [MD_DOWNLOADS_KEY]: { v: MD_DOWNLOADS_VERSION, keys: Array.from(sessionDownloadedKeys) }
-        }).catch(function () {}).then(done);
-    } catch (e) {
-        done();
-    }
-}
-
-function mdRememberDownloaded(url) {
-    const key = fileKey(url);
-    if (!key || sessionDownloadedKeys.has(key)) return;
-    sessionDownloadedKeys.add(key);
-    // FIFO cap: a Set iterates in insertion order, so the oldest keys go first.
-    if (sessionDownloadedKeys.size > MD_DOWNLOADS_MAX_KEYS) {
-        const it = sessionDownloadedKeys.values();
-        while (sessionDownloadedKeys.size > MD_DOWNLOADS_MAX_KEYS) sessionDownloadedKeys.delete(it.next().value);
-    }
-    mdScheduleDownloadsPersist();
-}
-
-// "Clear All" means a clean slate: after it, a scan may download everything
-// again. Also cancels an in-flight load (see the generation guard above).
-function mdClearSessionDownloads() {
-    mdDownloadsTimer = null;
-    mdDownloadsGen++;
-    mdDownloadsPromise = null;
-    sessionDownloadedKeys.clear();
-    try { chrome.storage.session.remove(MD_DOWNLOADS_KEY).catch(function () {}); } catch (e) { /* storage unavailable */ }
-}
-
-// Single decision point for the filter-stage dedup (pure: three reads, no
-// writes) — the caller mutates the sets and the progress table.
-function mdDedupSkipReason(dupKey, hashKey) {
-    if (globalProcessedUrls.has(dupKey)) return 'Duplicate (same file)';
-    if (hashKey && globalProcessedMediaHashes.has(hashKey)) return 'Duplicate (same file on another host)';
-    if (sessionDownloadedKeys.has(dupKey)) return MD_SKIP_ALREADY_DOWNLOADED;
-    return null;
-}
-
 async function processFilterQueue() {
-    // D-10: wait for the session memory exactly once, before any dedup verdict.
-    if (!mdDownloadsAwaited) {
-        mdDownloadsAwaited = true;
-        await mdSessionDownloadsReady();
-    }
     let maxConcurrentFilters = Number(cachedPrefs.da?.maxConcurrentFilters) || 5;
     if (!Number.isFinite(maxConcurrentFilters) || maxConcurrentFilters < 1) maxConcurrentFilters = 5;
 
@@ -1948,19 +1835,13 @@ async function processFilterQueue() {
             // (live rows [001]+[021] downloaded the same 4.45 MB mp4 twice).
             // mediaHashKey '' (not hash-shaped) never blocks anything.
             const hashKey = mediaHashKey(task.url);
-            const skipReason = mdDedupSkipReason(dupKey, hashKey);
-            if (skipReason) {
+            if (globalProcessedUrls.has(dupKey)
+                || (hashKey && globalProcessedMediaHashes.has(hashKey))) {
                 downloadStats.skipped++;
-                const row = downloadProgress[task.url];
-                // D-10: when this session already downloaded the file, an earlier
-                // scan's 'completed' row IS the visible answer — rewriting it as
-                // 'skipped' would erase the recorded size/MIME. Every other skip
-                // reason overwrites the row exactly as before.
-                const keepCompletedRow = skipReason === MD_SKIP_ALREADY_DOWNLOADED
-                    && row && row.status === 'completed';
-                if (!keepCompletedRow) {
-                    updateDownloadProgress(task.url, 'skipped', 0, skipReason, null, task);
-                }
+                updateDownloadProgress(task.url, 'skipped', 0,
+                    globalProcessedUrls.has(dupKey)
+                        ? 'Duplicate (same file)'
+                        : 'Duplicate (same file on another host)', null, task);
                 continue;
             }
             globalProcessedUrls.add(dupKey);
@@ -2612,7 +2493,6 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 if (results[0].fileSize) existingTask.fileSize = results[0].fileSize;
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
-                mdRememberDownloaded(url); // D-10
                 sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
                 releaseDownloadSlot(existingTask);
             } else if (delta.state.current === 'interrupted') {

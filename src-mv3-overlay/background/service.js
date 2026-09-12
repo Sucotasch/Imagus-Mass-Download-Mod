@@ -1152,10 +1152,6 @@ chrome.runtime.onInstalled.addListener(function (e) {
     // a crash. (Chrome also clears storage.session on reload/update; this covers
     // Firefox, where session storage is only cleared when the browser stops.)
     mdDropSessionSnapshot();
-    // D-10: the same reasoning for the "already downloaded in this session"
-    // memory — a reload/update starts a fresh session, so the next scan is not
-    // silently skipping files in the name of the previous one.
-    mdClearSessionDownloads();
     if (e.reason === "update") {
         registerContentScripts();
     } else if (e.reason === "install") {
