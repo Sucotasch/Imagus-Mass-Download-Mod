@@ -293,11 +293,18 @@ function resetMassDownloadSession() {
 }
 
 function handleOpenDownloadProgress(msg, sender) {
+    // New scan start: resetMassDownloadSession() drops every non-terminal row
+    // (completed/skipped are kept), so a freshly created progress tab — and the
+    // mirror it asks for — is legitimately EMPTY until the scan produces rows.
+    console.info(mdWorkerLabel() + ': mass-download session opened by worker gen '
+        + (workerStarts.length || '?') + ' (non-terminal rows of the previous session dropped)');
     resetMassDownloadSession();
     downloadInitiatorTabId = sender.tab?.id;
     scanInProgress = true;
     contentScanDone = false;
     ensureSessionKeepalive();
+    // FIX-7: the new session immediately supersedes any recoverable snapshot.
+    mdFlushSession();
     const showProgressTab = cachedPrefs?.da?.showProgressTab !== false;
     if (showProgressTab) {
         getOrCreateProgressTab(downloadInitiatorTabId).catch(err => {
@@ -348,6 +355,7 @@ function handleDownloadMass(msg, sender) {
         elementInfo: msg.elementInfo || null
     });
     processFilterQueue();
+    mdSchedulePersist();
 }
 
 function handleResolveGroups(msg, sender) {
@@ -366,6 +374,7 @@ function handleUpdateStatus(msg) {
 
 function handleUpdateFilterStats(msg) {
     downloadStats.found += (msg.found || 0);
+    mdSchedulePersist();
     // Content's DOM pre-filter rejects vs SW's size/type skips are separate
     // counters now (Audit BUG-08); the message shape from content is unchanged.
     downloadStats.prefiltered += (msg.filtered || 0);
@@ -389,6 +398,8 @@ function handleStopScanning() {
     userCanceled = true;
     activeRefererRetries = 0;
     refererRetryUrls.clear();
+    // FIX-7: an explicit stop discards the recoverable session.
+    mdDropSessionSnapshot();
 
     filterQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
     downloadQueue.forEach(task => updateDownloadProgress(task.url, 'canceled', 0, 'Canceled by user', null, task));
@@ -455,14 +466,22 @@ function mdRecordWorkerStart() {
     try {
         chrome.storage.session.get('mdWorkerStarts').then(function (r) {
             const prev = r && Array.isArray(r.mdWorkerStarts) ? r.mdWorkerStarts : [];
+            const prevStart = prev.length ? prev[prev.length - 1] : 0;
             workerStarts = prev.concat([workerStartMs]).slice(-24);
             const gen = workerStarts.length;
+            // How long the previous instance lived is the whole diagnosis: ~30 s
+            // after its last event means the idle timer won (the keep-alive
+            // failed), minutes mean Chrome's per-operation limit or a crash, and
+            // a start right after an extension reload / browser start shows up
+            // in the onInstalled/onStartup lines next to this one.
+            const lived = prevStart ? ' (lived ' + Math.round((workerStartMs - prevStart) / 1000) + 's)' : '';
             // Persist FIRST, log afterwards: a failure in the log line must never
             // skip the write (the marker is the actual diagnostic payload).
             return chrome.storage.session.set({ mdWorkerStarts: workerStarts }).then(function () {
                 console.info(mdWorkerLabel() + ': mass-download worker gen ' + gen
                     + ' started ' + new Date(workerStartMs).toISOString()
-                    + (prev.length ? ' — previous worker gen ' + prev.length + ' terminated (in-memory queues lost)' : ''));
+                    + (prevStart ? ' — previous gen ' + prev.length + ' ended' + lived
+                        + ', in-memory queues lost' : ' (first start of this browser session)'));
             });
         }).catch(function () { /* diagnostics only — never fatal */ });
     } catch (e) { /* storage.session unavailable: keep the in-memory marker */ }
@@ -471,7 +490,376 @@ mdRecordWorkerStart();
 
 // Shipped with getDownloadStatus / getDownloadLog (see the header note above).
 function workerMarker() {
-    return { start: workerStartMs, gen: workerStarts.length || null };
+    return { start: workerStartMs, gen: workerStarts.length || null, recovered: mdRecoveredInfo };
+}
+
+// --- Session snapshot and recovery (FIX-7, 2026-09-12) --------------------
+// A mass-download session lives in THIS worker's memory only. When the worker
+// is terminated mid-scan, the progress tab keeps the last pushed snapshot and
+// froze on 'Pending' rows while the respawned worker had empty queues and could
+// never finish them (live logs 2026-09-11T18-20-54, 2026-09-12T16-17-02 and
+// 16-36-35: "Session start: -", found=0, banner shown, 98 rows on screen). The
+// worker marker above only DESCRIBES that loss; this snapshot makes it
+// recoverable: the queues, the row table and the dedup bookkeeping are mirrored
+// into chrome.storage.session and picked up again by a worker that starts
+// without a session of its own.
+//
+// Why storage.session and not storage.local: Chrome clears session storage when
+// the browser session ends AND when the extension is reloaded/updated — i.e.
+// exactly the two cases in which the user's session is deliberately gone
+// (documented on developer.chrome.com/docs/extensions/reference/api/storage).
+// A snapshot therefore cannot outlive its browser session and can never
+// resurrect a session the user restarted on purpose; onInstalled drops it too
+// (belt and braces, service.js).
+//
+// What is deliberately NOT recoverable: a task whose bytes already live in a
+// Blob / page-created object URL. Those handles cannot cross a worker restart,
+// so such a row is restored as 'failed' with its candidate chain intact — a
+// Retry re-runs the normal pipeline for it.
+const MD_SNAPSHOT_KEY = 'mdSessionSnapshot';
+const MD_SNAPSHOT_VERSION = 1;
+// Caps keep the snapshot far below the storage.session quota: the row table is
+// already capped by maxProgressRecords, the queues are the only unbounded part.
+const MD_SNAPSHOT_MAX_TASKS = 1500;
+const MD_SNAPSHOT_MAX_KEYS = 4000;
+// 1 s, not less: the download phase fires a delta per chunk, and each flush
+// serializes the whole row table + both queues. On a death the loss is at most
+// one second of row transitions, which the onSuspend flush mostly eliminates.
+const MD_SNAPSHOT_DEBOUNCE_MS = 1000;
+var mdPersistTimer = null;
+var mdPersistBusy = false;
+var mdRestoreStarted = false;
+// What the recovery moved. Shipped with the worker marker so the Save Log and
+// the progress tab can tell a recovered run from a fresh one.
+var mdRecoveredInfo = null;
+
+// Serializable view of a task. Everything the filter/download phases need to
+// resume an item is kept (candidate chain, attempt chain, selection telemetry);
+// live handles (timers, download ids, blobs, object URLs) are dropped — they are
+// either meaningless or invalid in the next worker instance.
+function mdSnapshotTask(t) {
+    if (!t || typeof t.url !== 'string' || !t.url) return null;
+    return {
+        url: t.url,
+        referer: t.referer || '',
+        isPrivate: t.isPrivate === true,
+        source: t.source || '',
+        isHd: !!t.isHd,
+        elementInfo: t.elementInfo || null,
+        contentType: t.contentType || '',
+        fileSize: t.fileSize || 0,
+        filterMethod: t.filterMethod || '',
+        httpStatus: t.httpStatus || 0,
+        filename: t.filename || null,
+        candidates: Array.isArray(t._candidates) ? t._candidates.slice(0, 32) : null,
+        attempts: Array.isArray(t._attempts) ? t._attempts.slice(-12) : null,
+        candidateCount: t._candidateCount != null ? t._candidateCount : null,
+        pickReason: t._pickReason || null,
+        offscreenTried: !!t._offscreenTried,
+        // A materialized payload: the NEXT worker can only re-run the fetch.
+        volatile: !!(t._objectUrl || t._blob)
+    };
+}
+
+function mdTaskFromSnapshot(s) {
+    if (!s || typeof s.url !== 'string' || !s.url) return null;
+    return {
+        url: s.url,
+        referer: s.referer || '',
+        isPrivate: s.isPrivate === true,
+        source: s.source || 'recovered',
+        isHd: !!s.isHd,
+        elementInfo: s.elementInfo || null,
+        contentType: s.contentType || '',
+        fileSize: s.fileSize || 0,
+        filterMethod: s.filterMethod || '',
+        httpStatus: s.httpStatus || 0,
+        filename: s.filename || null,
+        _candidates: Array.isArray(s.candidates) ? s.candidates.slice() : [],
+        _attempts: Array.isArray(s.attempts) ? s.attempts.slice() : null,
+        _candidateCount: s.candidateCount != null ? s.candidateCount : null,
+        _pickReason: s.pickReason || null,
+        _offscreenTried: !!s.offscreenTried
+    };
+}
+
+function mdBuildSnapshot() {
+    const rows = [];
+    for (const url in downloadProgress) {
+        const e = downloadProgress[url];
+        if (!e) continue;
+        rows.push({
+            url: url,
+            status: e.status,
+            progress: e.progress || 0,
+            error: e.error || null,
+            downloadId: e.downloadId != null ? e.downloadId : null,
+            timestamp: e.timestamp || 0,
+            task: mdSnapshotTask(e.task)
+        });
+        if (rows.length >= MD_SNAPSHOT_MAX_TASKS) break;
+    }
+    return {
+        v: MD_SNAPSHOT_VERSION,
+        workerStart: workerStartMs,
+        sessionId: sessionId,
+        sessionStart: sessionStartTime,
+        scanInProgress: scanInProgress,
+        contentScanDone: contentScanDone,
+        stats: { found: downloadStats.found, prefiltered: downloadStats.prefiltered, skipped: downloadStats.skipped, downloaded: downloadStats.downloaded },
+        initiatorTab: downloadInitiatorTabId != null ? downloadInitiatorTabId : null,
+        hostModes: Object.assign(Object.create(null), refererHostModes),
+        rows: rows,
+        processedUrls: Array.from(globalProcessedUrls).slice(-MD_SNAPSHOT_MAX_KEYS),
+        processedHashes: Array.from(globalProcessedMediaHashes).slice(-MD_SNAPSHOT_MAX_KEYS),
+        filterQueue: filterQueue.slice(0, MD_SNAPSHOT_MAX_TASKS).map(mdSnapshotTask).filter(Boolean),
+        downloadQueue: downloadQueue.slice(0, MD_SNAPSHOT_MAX_TASKS).map(mdSnapshotTask).filter(Boolean)
+    };
+}
+
+// Trailing-edge debounce with a hard minimum gap: the download phase fires a
+// progress delta per chunk, and the snapshot must never become the hot path.
+// The guard is on the TIMER, not on the event, so a stream of deltas produces
+// at most two writes per second.
+function mdSchedulePersist() {
+    if (mdPersistTimer) return;
+    mdPersistTimer = setTimeout(function () {
+        mdPersistTimer = null;
+        mdFlushSession();
+    }, MD_SNAPSHOT_DEBOUNCE_MS);
+}
+
+function mdDropSessionSnapshot() {
+    mdPersistTimer = null;
+    try { chrome.storage.session.remove(MD_SNAPSHOT_KEY).catch(function () {}); }
+    catch (e) { /* storage unavailable */ }
+}
+
+// Immediate write. A session that has already ended has nothing to recover, so
+// the snapshot is REMOVED instead of refreshed — the tab keeps the finished
+// run's rows on screen either way.
+function mdFlushSession() {
+    if (mdPersistBusy) { mdSchedulePersist(); return; }
+    if (!scanInProgress) { mdDropSessionSnapshot(); return; }
+    let snap;
+    try { snap = mdBuildSnapshot(); } catch (e) { return; }
+    mdPersistBusy = true;
+    const done = function () { mdPersistBusy = false; };
+    try {
+        chrome.storage.session.set({ [MD_SNAPSHOT_KEY]: snap }).catch(function () {}).then(done);
+    } catch (e) {
+        done();
+    }
+}
+
+// Rebuild the session inside a worker that never opened one. Only an
+// interrupted, still-running session is restored; a finished/stopped one has
+// nothing to resume.
+function mdApplySnapshot(snap) {
+    const rows = Array.isArray(snap.rows) ? snap.rows : [];
+    const requeue = [];
+    const adopt = [];
+    const seenIds = new Set();
+    let restoredRows = 0;
+    let droppedVolatile = 0;
+
+    sessionId = Number(snap.sessionId) || sessionId;
+    const st = snap.stats || {};
+    downloadStats = {
+        found: Number(st.found) || 0,
+        prefiltered: Number(st.prefiltered) || 0,
+        skipped: Number(st.skipped) || 0,
+        downloaded: Number(st.downloaded) || 0
+    };
+    downloadInitiatorTabId = snap.initiatorTab != null ? snap.initiatorTab : null;
+    if (snap.hostModes && typeof snap.hostModes === 'object') {
+        refererHostModes = Object.create(null);
+        Object.assign(refererHostModes, snap.hostModes);
+    }
+    globalProcessedUrls.clear();
+    (Array.isArray(snap.processedUrls) ? snap.processedUrls : []).forEach(function (k) { if (k) globalProcessedUrls.add(k); });
+    globalProcessedMediaHashes.clear();
+    (Array.isArray(snap.processedHashes) ? snap.processedHashes : []).forEach(function (k) { if (k) globalProcessedMediaHashes.add(k); });
+
+    // The session is (re)OWNED by this worker: the tab's classifier compares the
+    // worker start with the session start and would otherwise keep reading the
+    // recovered rows as 'lost' (classifyWorkerState in options/download-progress.js).
+    sessionStartTime = workerStartMs;
+    scanInProgress = true;
+    contentScanDone = !!snap.contentScanDone;
+    userCanceled = false;
+    completionNotified = false;
+
+    // Row table first: the tasks are pushed through the normal pipeline below,
+    // which overwrites each row's status as it picks the item up.
+    rows.forEach(function (row) {
+        if (!row || typeof row.url !== 'string' || !row.url) return;
+        const src = row.task || null;
+        const task = mdTaskFromSnapshot(src);
+        let status = row.status || 'pending';
+        let error = row.error || null;
+        const nonTerminal = status === 'scanning' || status === 'pending' || status === 'downloading';
+        if (nonTerminal) {
+            if (status === 'downloading' && row.downloadId != null && task && !seenIds.has(row.downloadId)) {
+                // In flight when the worker died. Chrome keeps running a
+                // chrome.downloads task after the extension worker is gone, but
+                // downloadIdToTask died with the worker — nothing would ever
+                // finish that row, and re-downloading the URL would leave a
+                // '(1)' duplicate next to the live file.
+                seenIds.add(row.downloadId);
+                adopt.push({ downloadId: row.downloadId, task: task });
+                task._downloadId = row.downloadId;
+            } else if (src && src.volatile) {
+                status = 'failed';
+                error = 'Interrupted by a background restart — Retry';
+                droppedVolatile++;
+            } else if (task) {
+                requeue.push(task);
+            }
+        }
+        downloadProgress[row.url] = {
+            url: row.url,
+            status: status,
+            progress: row.progress || 0,
+            error: error,
+            downloadId: row.downloadId != null ? row.downloadId : null,
+            task: task,
+            timestamp: row.timestamp || Date.now()
+        };
+        restoredRows++;
+    });
+
+    (Array.isArray(snap.filterQueue) ? snap.filterQueue : []).forEach(function (s) {
+        const t = mdTaskFromSnapshot(s);
+        if (t) requeue.push(t);
+    });
+    (Array.isArray(snap.downloadQueue) ? snap.downloadQueue : []).forEach(function (s) {
+        const t = mdTaskFromSnapshot(s);
+        if (t) requeue.push(t);
+    });
+
+    // The re-queued tasks go back through the FILTER phase (uniform path: the
+    // size/type policy is re-applied and no task skips validation because it was
+    // restored). Their URLs are already in the dedup sets — added when this same
+    // item was first picked up — so the keys are released first, or
+    // processFilterQueue would drop every one of them as a duplicate.
+    requeue.forEach(function (t) {
+        globalProcessedUrls.delete(fileKey(t.url));
+        const h = mediaHashKey(t.url);
+        if (h) globalProcessedMediaHashes.delete(h);
+    });
+
+    // Slots for in-flight downloads are claimed BEFORE the re-queued work starts
+    // so the concurrency cap is never exceeded; each adoption call releases its
+    // slot unless the download really is still running.
+    if (adopt.length > 0) activeDownloads += adopt.length;
+    adopt.forEach(function (item) {
+        chrome.downloads.search({ id: item.downloadId }, function (results) {
+            const found = results && results[0];
+            if (chrome.runtime.lastError || !found) {
+                updateDownloadProgress(item.task.url, 'failed', 0,
+                    'Download lost when the background restarted', item.downloadId, item.task);
+                releaseDownloadSlot(item.task);
+                return;
+            }
+            if (found.state === 'complete') {
+                if (found.mime) item.task.contentType = found.mime;
+                if (found.fileSize) item.task.fileSize = found.fileSize;
+                updateDownloadProgress(item.task.url, 'completed', 100, null, item.downloadId, item.task);
+                downloadStats.downloaded++;
+                releaseDownloadSlot(item.task);
+                return;
+            }
+            if (found.state === 'in_progress') {
+                downloadIdToTask.set(item.downloadId, item.task);
+                // Re-armed from here: an orphaned download that never reports
+                // again would otherwise hold its slot for the rest of the session.
+                armStallWatchdog(item.task, item.downloadId);
+                if (mdRecoveredInfo) mdRecoveredInfo.adopted++;
+                return;
+            }
+            // interrupted while this worker was dead: continue the candidate
+            // chain exactly like the live interrupt path does, else fail the row.
+            if (!advanceToNextCandidate(item.task, 'interrupted: ' + (found.error || 'unknown') + ' (background restart)')) {
+                updateDownloadProgress(item.task.url, 'failed', 0, mapDownloadInterruptReason(found.error), item.downloadId, item.task);
+            }
+            releaseDownloadSlot(item.task);
+        });
+    });
+
+    requeue.forEach(function (t) { filterQueue.push(t); });
+
+    mdRecoveredInfo = {
+        sessionStart: snap.sessionStart || null,
+        workerStart: snap.workerStart || null,
+        rows: restoredRows,
+        requeued: requeue.length,
+        adopted: 0,
+        droppedVolatile: droppedVolatile
+    };
+
+    ensureSessionKeepalive();
+    // A full mirror: whatever the tab was showing was stale by definition. Its
+    // registration died with the previous worker, so the page re-registers on
+    // its own once its liveness probe sees the new session start (the progress
+    // tab cannot be pushed to while nothing is registered).
+    processFilterQueue();
+    processDownloadQueue();
+    sendToProgressTab({
+        cmd: 'updateStatus',
+        status: scanInProgress ? 'Scanning... (recovered after a background restart)' : '',
+        items: serializeAllProgress(),
+        stats: downloadStats,
+        sessionStart: sessionStartTime
+    });
+    console.info(mdWorkerLabel() + ': mass-download session RECOVERED after a background restart — '
+        + restoredRows + ' rows, ' + requeue.length + ' re-queued, ' + adopt.length + ' in-flight download(s) checked, '
+        + droppedVolatile + ' row(s) needing a manual Retry; previous session start '
+        + (snap.sessionStart ? new Date(snap.sessionStart).toISOString() : '-'));
+    mdSchedulePersist();
+}
+
+function mdRestoreSession() {
+    if (mdRestoreStarted) return;
+    mdRestoreStarted = true;
+    let p;
+    try { p = chrome.storage.session.get(MD_SNAPSHOT_KEY); } catch (e) { return; }
+    p.then(function (r) {
+        const snap = r && r[MD_SNAPSHOT_KEY];
+        if (!snap || snap.v !== MD_SNAPSHOT_VERSION) return;
+        // Only an interrupted, still-running session is worth resuming; a
+        // finished or canceled one has nothing left to do.
+        if (!snap.scanInProgress) { mdDropSessionSnapshot(); return; }
+        // Our own (or a newer) snapshot: a first start of this browser session
+        // has nothing to restore, and two racing restores must not interleave.
+        if (!(Number(snap.workerStart) < workerStartMs)) return;
+        mdApplySnapshot(snap);
+    }).catch(function () { /* diagnostics only — never fatal */ });
+}
+
+// Delayed on purpose: runtime.onInstalled (extension reload/update) fires during
+// the first event dispatch after this script evaluates, and its handler drops the
+// snapshot. Waiting past that dispatch keeps a deliberate reload from being
+// mistaken for a crash (storage.session is cleared on reload anyway — see the
+// block comment above).
+setTimeout(mdRestoreSession, 400);
+
+// The one place Chrome tells us a termination was proactive: this fires for the
+// idle timer and for the per-operation limit, never for a reload or a crash.
+// Logging it turns "the worker died again" into "the worker was suspended with
+// N seconds of work left", and the snapshot is flushed while the callback still
+// runs.
+if (chrome.runtime.onSuspend) {
+    chrome.runtime.onSuspend.addListener(function () {
+        mdFlushSession();
+        console.info(mdWorkerLabel() + ': worker suspending now (lived '
+            + Math.round((Date.now() - workerStartMs) / 1000) + 's) — session snapshot written for recovery');
+    });
+    if (chrome.runtime.onSuspendCanceled) {
+        chrome.runtime.onSuspendCanceled.addListener(function () {
+            console.info(mdWorkerLabel() + ': suspension canceled — worker stays alive');
+        });
+    }
 }
 
 function handleGetDownloadStatus(msg, sendResponse) {
@@ -837,6 +1225,8 @@ function checkAllQueuesEmpty() {
         if (contentScanDone) {
             scanInProgress = false;
             clearSessionKeepalive();
+            // FIX-7: a drained session has nothing to resume — drop the snapshot.
+            mdFlushSession();
         }
         // Notify only on natural completion, once per session (Audit N-06):
         // after a user cancel (userCanceled) or repeated drain timers we must
@@ -928,6 +1318,8 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
         const toRemove = sorted.slice(0, keys.length - maxRecords);
         toRemove.forEach(k => delete downloadProgress[k]);
     }
+    // FIX-7: every row transition is a persisted state change (debounced).
+    mdSchedulePersist();
 }
 
 // --- Offscreen fetch tier (Chrome only, 2026-09-11) ---
@@ -1002,6 +1394,46 @@ function mdOffscreenSend(msg, attempts) {
     });
 }
 
+// FIX-9 (2026-09-12): the tier must never be able to hold a download slot
+// hostage. chrome.runtime.sendMessage settles only when the offscreen document
+// ANSWERS — a document torn down mid-fetch, or one whose reply is lost, leaves
+// the promise pending forever, and the caller (mdTryOffscreenDownload) holds one
+// of the maxConcurrentDownloads slots across that call. Three such hangs pin
+// activeDownloads at the cap and every remaining row sits at 'pending' with no
+// error anywhere (the shape of the 2026-09-12 rule34 run: 3 rows 'Downloading'
+// on 0%, 47 rows pending forever). The ceiling is deliberately generous: the
+// document's own stall watchdog re-arms on every chunk, so a slow-but-alive read
+// of a 32 MiB file must not be cut short — only a document that never answers is.
+const MD_OFFSCREEN_ANSWER_MS = 180 * 1000;
+
+function mdOffscreenFetchBounded(msg) {
+    const send = mdOffscreenSend(msg, 2);
+    return new Promise(function (resolve, reject) {
+        let settled = false;
+        const timer = setTimeout(function () {
+            if (settled) return;
+            settled = true;
+            // The document may still answer later with a fresh object URL; that
+            // URL would live until the document closes, so revoke it when it does.
+            send.then(function (late) {
+                if (late && late.objectUrl) mdOffscreenRevokeObjectUrl(late.objectUrl);
+            }).catch(function () {});
+            reject(new Error('offscreen timeout after ' + MD_OFFSCREEN_ANSWER_MS + 'ms'));
+        }, MD_OFFSCREEN_ANSWER_MS);
+        send.then(function (res) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(res);
+        }).catch(function (e) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(e);
+        });
+    });
+}
+
 // Fire-and-forget: the document may already have self-closed, and a leaked
 // blob URL dies with the document anyway.
 function mdOffscreenRevokeObjectUrl(objectUrl) {
@@ -1048,7 +1480,7 @@ async function mdTryOffscreenDownload(task) {
         if (!ok) return miss('Offscreen document unavailable');
         let res;
         try {
-            res = await mdOffscreenSend({ cmd: 'mdOffscreenFetch', url: task.url, referer: task.referer || '' }, 2);
+            res = await mdOffscreenFetchBounded({ cmd: 'mdOffscreenFetch', url: task.url, referer: task.referer || '' });
         } catch (e) {
             mdOffscreenSetup = null; // it may have self-closed — recreate next time
             return miss('Offscreen fetch failed: ' + ((e && e.message) || e));

@@ -670,8 +670,24 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
                 && /typeof manifest !== 'undefined'/.test(coreText),
                 `session loss: ${label} must guard the manifest lookup`);
             assert.ok(coreText.indexOf("chrome.storage.session.set({ mdWorkerStarts: workerStarts })") <
-                coreText.indexOf('console.info(mdWorkerLabel()'),
+                coreText.indexOf("console.info(mdWorkerLabel() + ': mass-download worker gen '"),
                 `session loss: ${label} must persist before it logs (log failure cannot skip the write)`);
+            // The start line must carry how long the PREVIOUS instance lived —
+            // that single number is what separates an idle kill (~30 s) from the
+            // 5-minute per-operation limit, a crash, or a deliberate reload.
+            assert.ok(/const lived = prevStart \? ' \(lived '/.test(coreText),
+                `session loss: ${label} must report the previous worker's lifetime`);
+            assert.ok(/ended' \+ lived/.test(coreText),
+                `session loss: ${label} must print the lifetime on the start line`);
+            assert.ok(/has no previous start\b|first start of this browser session/.test(coreText),
+                `session loss: ${label} must mark a first-ever start (counter reset = browser restart)`);
+            assert.ok(/mass-download session opened by worker gen/.test(
+                cutFnFrom(coreText, 'handleOpenDownloadProgress')),
+                `session loss: ${label} must log the session start together with its generation`);
+            assert.ok(/extension \(re\)loaded — onInstalled reason:/.test(svcText),
+                `session loss: ${label} must log extension reloads (reload wipes the session too)`);
+            assert.ok(/browser session started — worker start history reset/.test(svcText),
+                `session loss: ${label} must log browser starts (they reset the start counter)`);
             assert.ok(/if \(!task \|\| task\._slotReleased\) return;/.test(coreText),
                 `session loss: ${label} slot guard intact (marker work must not disturb it)`);
             assert.ok(/worker: workerMarker\(\)/.test(coreText),
@@ -700,8 +716,15 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             const tabText = tabSources[tree];
             assert.ok(/setInterval\(workerWatchdog, 5000\)/.test(tabText),
                 `session loss: ${tree} must probe the worker on a timer`);
-            assert.ok(/if \(stateLost\) return;/.test(cutFnBalanced(tabText, 'workerWatchdog')),
-                `session loss: ${tree} probe must stop once the loss has been reported`);
+            // FIX-8: the probe must NOT stop once the loss is reported. A session
+            // can come back (fresh scan, or a worker that restored its queues from
+            // the snapshot) and the page is no longer registered with that worker,
+            // so a push could never reach it — the old `if (stateLost) return;`
+            // left the page frozen on stale rows forever (live 2026-09-12).
+            assert.ok(/if \(!stateLost && Date\.now\(\) - lastPushAt < SILENCE_MS\) return;/.test(cutFnBalanced(tabText, 'workerWatchdog')),
+                `session loss: ${tree} probe must keep polling after the loss (the session can be recovered)`);
+            assert.ok(/chrome\.runtime\.sendMessage\(\{ cmd: 'registerProgressTab' \}\)/.test(cutFnBalanced(tabText, 'workerWatchdog')),
+                `session loss: ${tree} a new/recovered session must make the page re-register (pushes need a registration)`);
             // The probe must not bail out on a background tab — that is exactly
             // the case that matters (the user watches the source page while the
             // session dies). Only the reported state short-circuits it.
@@ -795,6 +818,83 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             assert.ok(/clearTimeout\(task\._stallTimer\);/.test(cutFnFrom(coreText, 'releaseDownloadSlot')),
                 `stall watchdog: ${label} releaseDownloadSlot must clear the stall timer`);
         }
+
+        // --- 2026-09-12: session snapshot + recovery (FIX-7) ---
+        // Live evidence (log/Chrome Pending imagus-mass-download-log-2026-09-12
+        // T16-17-02.txt): the answering worker had "Session start: -", gen 2, and
+        // "previous gen 1 ended (lived 93s)" — the scan was still in flight (462
+        // found on screen, 47 rows pending forever) in a worker that no longer
+        // existed. The marker made the loss provable; the snapshot makes it
+        // recoverable, which is what these locks protect.
+        const SNAP_START = '// --- Session snapshot and recovery (FIX-7, 2026-09-12)';
+        const snapBlock = (t) => t
+            .slice(t.indexOf(SNAP_START), t.indexOf('function handleGetDownloadStatus', t.indexOf(SNAP_START)))
+            .replace(/\r\n/g, '\n');
+        assert.ok(src.indexOf(SNAP_START) > 0, 'FIX-7: snapshot block present in the Chrome core');
+        assert.equal(snapBlock(ffCoreSrc), snapBlock(src),
+            'FIX-7: the snapshot/recovery block must be a copy, not a fork (both trees)');
+        assert.ok(/const MD_SNAPSHOT_KEY = 'mdSessionSnapshot';/.test(src),
+            'FIX-7: the snapshot key is declared');
+        assert.ok(/rows: rows,/.test(cutFnFrom(src, 'mdBuildSnapshot')),
+            'FIX-7: the snapshot must carry the row table — without it nothing is restored');
+        assert.ok(!/objectUrl:|_blob:|_stallTimer:|_watchdog:/.test(cutFnFrom(src, 'mdSnapshotTask')),
+            'FIX-7: no live handle may be persisted (an object URL/blob cannot cross a restart)');
+        assert.ok(/volatile: !!\(t\._objectUrl \|\| t\._blob\)/.test(cutFnFrom(src, 'mdSnapshotTask')),
+            'FIX-7: a materialized payload must be flagged so the next worker knows it is gone');
+        const apply = cutFnFrom(src, 'mdApplySnapshot');
+        assert.ok(/sessionStartTime = workerStartMs;/.test(apply),
+            'FIX-7: the recovered session must be re-keyed to the recovering worker (else the tab reads it as lost forever)');
+        assert.ok(/globalProcessedUrls\.delete\(fileKey\(t\.url\)\)/.test(apply),
+            'FIX-7: re-queued URLs must be released from the dedup set (else the filter drops them as duplicates)');
+        assert.ok(/activeDownloads \+= adopt\.length;/.test(apply),
+            'FIX-7/FIX-9: adopted in-flight downloads must claim their slots before the queue restarts');
+        assert.ok(/armStallWatchdog\(item\.task, item\.downloadId\)/.test(apply),
+            'FIX-7: an orphaned in-flight download must get a fresh stall watchdog');
+        assert.ok(/advanceToNextCandidate\(item\.task, 'interrupted: '/.test(apply),
+            'FIX-7: a download interrupted while the worker was dead must continue its candidate chain');
+        assert.ok(/if \(!scanInProgress\) \{ mdDropSessionSnapshot\(\); return; \}/.test(cutFnFrom(src, 'mdFlushSession')),
+            'FIX-7: a finished session must leave no recoverable snapshot');
+        for (const [label, coreText, svcText] of [['Chrome', src, chromeServiceSrc2], ['FF', ffCoreSrc, ffServiceSrc]]) {
+            assert.ok(/setTimeout\(mdRestoreSession, 400\);/.test(coreText),
+                `FIX-7: ${label} must attempt the restore AFTER the onInstalled dispatch (a reload is not a crash)`);
+            assert.ok(/if \(!snap\.scanInProgress\) \{ mdDropSessionSnapshot\(\); return; \}/.test(coreText),
+                `FIX-7: ${label} must refuse a snapshot of a finished session`);
+            assert.ok(/if \(!\(Number\(snap\.workerStart\) < workerStartMs\)\) return;/.test(coreText),
+                `FIX-7: ${label} must refuse its own/newer snapshot (no self-restore, no double restore)`);
+            assert.ok(/chrome\.runtime\.onSuspend\.addListener/.test(coreText),
+                `FIX-7: ${label} must log a proactive suspension (the only non-guess diagnosis of an idle kill)`);
+            assert.ok(/mdFlushSession\(\);[\s\S]{0,200}onSuspend|onSuspend[\s\S]{0,200}mdFlushSession\(\)/.test(coreText),
+                `FIX-7: ${label} must flush the snapshot while the suspension callback still runs`);
+            assert.ok(/onInstalled\.addListener\(function \(e\) \{[\s\S]{0,700}mdDropSessionSnapshot\(\);/.test(svcText),
+                `FIX-7: ${label} onInstalled must drop the snapshot (a reload discards the session)`);
+            assert.ok(/recovered: mdRecoveredInfo/.test(coreText),
+                `FIX-7: ${label} the worker marker must ship the recovery record`);
+            assert.ok(/mdSchedulePersist\(\);/.test(cutFnFrom(coreText, 'updateDownloadProgress')),
+                `FIX-7: ${label} row transitions must schedule a snapshot (the download phase is the long tail)`);
+            assert.ok(/mdFlushSession\(\);/.test(cutFnFrom(coreText, 'checkAllQueuesEmpty')),
+                `FIX-7: ${label} a drained session must drop the snapshot`);
+            assert.ok(/mdDropSessionSnapshot\(\);/.test(cutFnFrom(coreText, 'handleStopScanning')),
+                `FIX-7: ${label} an explicit stop discards the recoverable session`);
+        }
+        for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+            assert.ok(/Recovered: session resumed after a background restart/.test(tabSources[tree]),
+                `FIX-7: ${tree} Save Log must name a recovered session (never as a lost one)`);
+        }
+
+        // --- 2026-09-12: the offscreen tier can no longer hold a slot hostage (FIX-9) ---
+        // chrome.runtime.sendMessage settles only when the document ANSWERS; a
+        // document torn down mid-fetch left mdTryOffscreenDownload pending
+        // forever while it held one of maxConcurrentDownloads slots. Three such
+        // hangs = the cap pinned and every remaining row 'pending' with no error.
+        assert.ok(/function mdOffscreenFetchBounded\(/.test(src), 'FIX-9: the offscreen wait must be bounded');
+        assert.ok(!/await mdOffscreenSend\(\{ cmd: 'mdOffscreenFetch'/.test(src),
+            'FIX-9: the tier must never await an unbounded answer while holding a download slot');
+        assert.ok(/mdOffscreenFetchBounded\(\{ cmd: 'mdOffscreenFetch'/.test(cutFnFrom(src, 'mdTryOffscreenDownload')),
+            'FIX-9: mdTryOffscreenDownload must use the bounded wait');
+        assert.ok(/mdOffscreenRevokeObjectUrl\(late\.objectUrl\)/.test(cutFnFrom(src, 'mdOffscreenFetchBounded')),
+            'FIX-9: a late answer must not leak its object URL');
+        assert.ok(!/mdOffscreenFetchBounded/.test(ffCoreSrc),
+            'FIX-9: FF has no offscreen tier — the helper must not be mirrored there');
     }
 }
 

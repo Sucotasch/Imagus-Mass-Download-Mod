@@ -1079,11 +1079,28 @@ chrome.tabs.onActivated.addListener(async function(info) {
 chrome.action.setTitle({ title: `${manifest.name} v${manifest.version}\nClick to toggle on this site` });
 updatePrefs(null, registerContentScripts);
 chrome.runtime.onStartup.addListener(updatePrefs);
+// Diagnostic companion to the worker marker (mdRecordWorkerStart in
+// service-core.js): a browser start is the one event that clears
+// chrome.storage.session, i.e. the only legitimate reason for the worker start
+// counter to fall back to 1. Without this line a reset counter and a fresh
+// death look identical in the log.
+chrome.runtime.onStartup.addListener(function () {
+    console.info(manifest.name + ': browser session started — worker start history reset (storage.session cleared)');
+});
 // Fix E (pixiv 403): DNR session rules live across SW restarts — re-mark
 // the in-memory registry state from the live session rules so a resumed
 // SW does not re-install them blindly (idempotent either way).
 mdDnrRearm();
 chrome.runtime.onInstalled.addListener(function (e) {
+    // An unpacked reload reports 'update' too, so this line also marks the
+    // deliberate reloads that discard the in-memory session — otherwise a
+    // reload-induced empty state reads as a crash in the logs.
+    console.info(manifest.name + ': extension (re)loaded — onInstalled reason: ' + e.reason);
+    // FIX-7: a deliberate reload/update discards the recoverable mass-download
+    // session instead of resurrecting it — a reload is the user's decision, not
+    // a crash. (Chrome also clears storage.session on reload/update; this covers
+    // Firefox, where session storage is only cleared when the browser stops.)
+    mdDropSessionSnapshot();
     if (e.reason === "update") {
         registerContentScripts();
     } else if (e.reason === "install") {

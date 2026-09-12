@@ -93,15 +93,30 @@
         // exactly the case that matters (the user is working on the source page
         // while the session dies behind them), and Chrome throttles background
         // timers anyway — the guard only delayed detection.
-        if (stateLost) return;
         if (countNonTerminal(Object.values(downloadItems)) === 0) return;
-        if (Date.now() - lastPushAt < SILENCE_MS) return;
+        // FIX-8: the lost state must KEEP probing (one message per interval). A
+        // session can come back — a fresh scan, or a worker that restored its
+        // queues from the session snapshot — and this page is not registered with
+        // that worker any more (registration died with the previous instance), so
+        // a push could never reach it. The old `if (stateLost) return;` froze the
+        // page on stale rows forever, which is precisely how the 2026-09-12 runs
+        // looked from the user's side.
+        if (!stateLost && Date.now() - lastPushAt < SILENCE_MS) return;
         chrome.runtime.sendMessage({ cmd: 'getDownloadStatus' }, function (resp) {
             if (chrome.runtime.lastError || !resp) return;   // no worker at all
             const verdict = classifyWorkerState(resp, Object.values(downloadItems), lastSeenSessionStart);
             if (resp.sessionStart) lastSeenSessionStart = resp.sessionStart;
-            if (verdict === 'newsession') clearStateLost();
-            else if (verdict === 'lost') showStateLost();
+            if (verdict === 'newsession') {
+                clearStateLost();
+                // Deliberately NOT mirrored from this response — only the worker
+                // pushes rows (see the RENDERING note below). Re-registering is
+                // what makes the worker adopt this tab again and push its own
+                // mirror; it is idempotent and one-shot, because from here on
+                // every push carries the same sessionStart that is stored above.
+                chrome.runtime.sendMessage({ cmd: 'registerProgressTab' });
+            } else if (verdict === 'lost') {
+                showStateLost();
+            }
         });
     }
 
@@ -462,6 +477,18 @@
         lines.push('Session start: ' + fmtTs(data.sessionStart));
         lines.push('Worker: ' + (data.worker && data.worker.start
             ? fmtTs(data.worker.start) + ' (gen ' + (data.worker.gen || '?') + ')' : '-'));
+        // FIX-7: a worker that resumed an interrupted session says so, so a
+        // recovered run is never mistaken for a fresh one (and the "session
+        // state lost" block below is not printed for it).
+        if (data.worker && data.worker.recovered) {
+            const rc = data.worker.recovered;
+            lines.push('Recovered: session resumed after a background restart — '
+                + (rc.rows || 0) + ' row(s), ' + (rc.requeued || 0) + ' re-queued, '
+                + (rc.adopted || 0) + ' in-flight download(s) adopted, '
+                + (rc.droppedVolatile || 0) + ' needing a manual Retry (page-fetch/temporary URL lost)'
+                + '; interrupted session start ' + fmtTs(rc.sessionStart)
+                + ', interrupted worker ' + fmtTs(rc.workerStart));
+        }
         if (opts && opts.stateLost) {
             lines.push('');
             lines.push('!! SESSION STATE LOST — the worker that answered this request (' + fmtTs(data.worker && data.worker.start)
