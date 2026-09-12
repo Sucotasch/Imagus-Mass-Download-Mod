@@ -918,6 +918,40 @@
                 if (PVI.handleGroupAnalysisComplete) {
                     PVI.handleGroupAnalysisComplete(d.processedCount || 0);
                 }
+            } else if (d.cmd === 'resumeGroupAnalysis') {
+                // The worker restarted mid-scan and lost the request it was
+                // answering, while this page is still waiting for
+                // 'groupAnalysisComplete' — nobody would ever send it, and the
+                // scan sat at "Analyzing N complex items" for good (live
+                // 2026-09-12 19:58: background restart 36 s into the session,
+                // 8 of 42 files, nothing in flight). The groups are still in
+                // memory here, so send them again — the worker's restored dedup
+                // sets make that safe.
+                if (!PVI.downloadAllActive) return;
+                if (PVI.downloadAllQueue && PVI.downloadAllQueue.length > 0) {
+                    // Still walking this page's DOM: there is nothing to re-send
+                    // yet, but say so. The worker's answer window is bounded and
+                    // silence is read as an orphaned content script — without
+                    // this ack a live-but-busy page would be declared dead and
+                    // never get its closing 'groupAnalysisComplete'.
+                    Port.send({ cmd: 'resumeGroupAnalysisAck' });
+                    return;
+                }
+                if (PVI.ambiguousUrlGroups && PVI.ambiguousUrlGroups.length > 0) {
+                    const resumedMessage = `Resumed after a background restart. Analyzing ${PVI.ambiguousUrlGroups.length} complex items...`;
+                    PVI._updateDownloadAllStatus(resumedMessage);
+                    Port.send({ cmd: 'updateStatus', status: resumedMessage, done: false });
+                    Port.send({
+                        cmd: 'resolveAndDownloadGroups',
+                        groups: PVI.ambiguousUrlGroups,
+                        referer: window.location.href
+                    });
+                } else if (PVI.handleGroupAnalysisComplete) {
+                    // Nothing left to resolve on this page: close the scan, so
+                    // the worker is not left waiting for a 'done' that can no
+                    // longer come from anywhere.
+                    PVI.handleGroupAnalysisComplete(0);
+                }
             } else if (d.cmd === 'downloadWithReferer') {
                 PVI._downloadWithReferer(d);
             } else if (d.cmd === 'revokeObjectUrl') {

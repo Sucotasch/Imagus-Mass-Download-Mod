@@ -655,6 +655,12 @@ function handleMessage(message, sender, sendResponse) {
             handleResolveGroups(msg, sender);
             mdAck();
             break;
+        // The page says it is alive but still walking its own DOM queue (see
+        // mdAskInitiatorToResume / mdProbeInitiatorTab): answers the bounded
+        // resume window without ending it as "no one home".
+        case 'resumeGroupAnalysisAck':
+            mdResumeAck();
+            break;
         case 'updateStatus':
             handleUpdateStatus(msg);
             mdAck();

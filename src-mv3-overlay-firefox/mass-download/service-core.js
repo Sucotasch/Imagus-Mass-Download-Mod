@@ -360,6 +360,9 @@ function handleDownloadMass(msg, sender) {
 
 function handleResolveGroups(msg, sender) {
     // See handleDownloadMass: no session revive (Audit N-02).
+    // An arriving group payload IS the answer to a resume request: the page is
+    // alive and working, so stop the bounded wait (mdProbeInitiatorTab).
+    mdResumeAskedAt = 0;
     processUrlGroupsWithValidation(msg.groups, msg.referer, sender);
 }
 
@@ -367,6 +370,7 @@ function handleUpdateStatus(msg) {
     sendToProgressTab(msg);
     if (msg.done) {
         // Content finished scanning — do not cancel in-flight filter/download.
+        mdResumeAskedAt = 0; // the page answered (it closed the scan itself)
         contentScanDone = true;
         setTimeout(checkAllQueuesEmpty, 100);
     }
@@ -529,6 +533,15 @@ const MD_SNAPSHOT_DEBOUNCE_MS = 1000;
 var mdPersistTimer = null;
 var mdPersistBusy = false;
 var mdRestoreStarted = false;
+// 2026-09-12 19:58, live: the worker restarted 36 s into a session whose page was
+// waiting for `groupAnalysisComplete` — the request that would have produced that
+// message died with the previous worker, so the page sat on "Analyzing 82 complex
+// items" for many minutes with 8 of 42 files and NOTHING in flight. This
+// timestamp is the bounded window in which the restored worker waits for the
+// page to answer the resume request (a live content script answers in
+// milliseconds; an orphaned one never does).
+const MD_RESUME_ANSWER_MS = 20000;
+var mdResumeAskedAt = 0;
 // What the recovery moved. Shipped with the worker marker so the Save Log and
 // the progress tab can tell a recovered run from a fresh one.
 var mdRecoveredInfo = null;
@@ -614,8 +627,9 @@ function mdNoWorkInFlight() {
 // instead of hanging, and no false "all downloads completed" is announced over
 // them. activeDownloads is untouched: live downloads still finish and release
 // their slots normally.
-function mdConcludeAbandonedScan() {
-    console.warn(mdWorkerLabel() + ': the scanned page is gone (closed or navigated) and nothing is in flight'
+function mdConcludeAbandonedScan(reasonText) {
+    console.warn(mdWorkerLabel() + ': ' + (reasonText
+        || 'the scanned page is gone (closed or navigated) and nothing is in flight')
         + ' — concluding the scan so the session can end');
     downloadInitiatorTabId = null;
     contentScanDone = true;
@@ -633,10 +647,55 @@ function mdConcludeAbandonedScan() {
 // one state that would otherwise sit there forever with pending rows.
 function mdProbeInitiatorTab() {
     if (!scanInProgress || contentScanDone || !mdNoWorkInFlight()) return;
+    // Bounded answer window (2026-09-12 19:58 live): after a restore the worker
+    // ASKS the page to resume its group analysis (mdAskInitiatorToResume). A live
+    // content script answers at once; no answer inside MD_RESUME_ANSWER_MS means
+    // the page cannot answer at all — an orphaned content script (extension
+    // reloaded while the tab stayed open) or a detached renderer. Waiting for a
+    // `done` that cannot come is exactly the freeze this file keeps re-learning
+    // to avoid, so conclude instead: the rows keep their Retry.
+    if (mdResumeAskedAt && (Date.now() - mdResumeAskedAt) > MD_RESUME_ANSWER_MS) {
+        mdResumeAskedAt = 0;
+        mdConcludeAbandonedScan('the page did not answer the resume request sent after a background restart');
+        return;
+    }
     if (downloadInitiatorTabId == null) { mdConcludeAbandonedScan(); return; }
     let p;
     try { p = chrome.tabs.get(downloadInitiatorTabId); } catch (e) { return; }
     Promise.resolve(p).catch(function () { mdConcludeAbandonedScan(); });
+}
+
+// A restored session must re-drive the PAGE, not only its own queues. Two very
+// different things died with the previous worker: the queues (recovered from the
+// snapshot) and the *in-flight conversation* with the page. The page's half of
+// that conversation is a promise to send the closing `done` — and it only does
+// that after `groupAnalysisComplete`, which the new worker would never send
+// because it never received the `resolveAndDownloadGroups` request. Live case
+// 2026-09-12 19:58: restart 36 s in, page frozen on "Analyzing 82 complex items",
+// 8 of 42 files, nothing in flight. The page still holds all 82 groups in memory,
+// so ask it to re-send them: the snapshot restores the dedup keys (plus the
+// terminal rows, see mdApplySnapshot), so a re-sent group can never re-download a
+// file we already have.
+function mdAskInitiatorToResume() {
+    if (downloadInitiatorTabId == null || contentScanDone) return;
+    mdResumeAskedAt = Date.now();
+    try {
+        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'resumeGroupAnalysis' })
+            .catch(function () { mdCheckInitiatorGone(); });
+    } catch (e) {
+        mdCheckInitiatorGone();
+    }
+}
+
+// The page answered the resume request with "alive, but still walking my DOM"
+// (content: the downloadAllQueue guard). That is a full answer for the one
+// question the bounded window asks — is anybody home — so the wait ends here.
+// Without it the window would expire on a busy-but-healthy page and conclude a
+// scan that is about to send its own groups, breaking the very conversation this
+// file is trying to restore. Only the timestamp is cleared: the queues, the
+// session and the initiator id are untouched.
+function mdResumeAck() {
+    mdResumeAskedAt = 0;
 }
 
 // Is the scanned page still there? Only ever called after a message to the
@@ -767,6 +826,21 @@ function mdApplySnapshot(snap) {
     (Array.isArray(snap.processedUrls) ? snap.processedUrls : []).forEach(function (k) { if (k) globalProcessedUrls.add(k); });
     globalProcessedMediaHashes.clear();
     (Array.isArray(snap.processedHashes) ? snap.processedHashes : []).forEach(function (k) { if (k) globalProcessedMediaHashes.add(k); });
+    // Belt and braces for the re-sent groups (mdAskInitiatorToResume): the key
+    // lists above are written by a debounced flush, so a file that finished in
+    // the last moments before the restart can be missing from them — while its
+    // ROW is a stronger, immediate fact. Terminal rows only: a row that is still
+    // running is re-queued below (and its keys are deliberately released just
+    // before that).
+    rows.forEach(function (row) {
+        if (!row || typeof row.url !== 'string' || !row.url) return;
+        const st = row.status;
+        if (st !== 'completed' && st !== 'skipped' && st !== 'canceled') return;
+        const k = fileKey(row.url);
+        if (k) globalProcessedUrls.add(k);
+        const h = mediaHashKey(row.url);
+        if (h) globalProcessedMediaHashes.add(h);
+    });
 
     // The session is (re)OWNED by this worker: the tab's classifier compares the
     // worker start with the session start and would otherwise keep reading the
@@ -903,6 +977,9 @@ function mdApplySnapshot(snap) {
         + restoredRows + ' rows, ' + requeue.length + ' re-queued, ' + adopt.length + ' in-flight download(s) checked, '
         + droppedVolatile + ' row(s) needing a manual Retry; previous session start '
         + (snap.sessionStart ? new Date(snap.sessionStart).toISOString() : '-'));
+    // The queues are ours again; the page's half of the conversation is not —
+    // ask it to re-send the groups it is still waiting on (see the function).
+    mdAskInitiatorToResume();
     mdSchedulePersist();
 }
 

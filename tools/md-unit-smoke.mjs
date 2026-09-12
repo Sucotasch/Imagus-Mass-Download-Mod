@@ -1212,7 +1212,71 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `SUPERSEDE: ${fn} must be byte-identical in both trees`);
     }
 
-    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert + progress-window rule + supersede rule) hold in both trees');
+    // --- Resume after a background restart (2026-09-12 19:58 live) ----------
+    // The worker restarted mid-scan and lost the request it was answering, while
+    // the page kept waiting for `groupAnalysisComplete` — no one could send it,
+    // so the scan sat on "Analyzing 82 complex items" with 8 of 42 files and
+    // NOTHING in flight (the queues had drained: the probe's tab-exists branch
+    // deliberately kept the session). The fix has three parts, and all three must
+    // stay wired: the restore asks the page to resume, the answer stops the
+    // bounded wait, and a page that cannot answer ends the wait instead of
+    // freezing. Executed in .unlazy/…/repro-resume-after-restart.mjs.
+    for (const tree of batchTrees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const coreCode = core.replace(/^\s*\/\/.*$/gm, '');
+        const content = readNorm(tree, 'content/content.js');
+        const block = readNorm(tree, 'mass-download/content-block.js');
+        assert.ok(/function mdAskInitiatorToResume\(/.test(core),
+            `RESUME: ${tree} — the restore must be able to ask the page to resume`);
+        assert.ok(/const MD_RESUME_ANSWER_MS = 20000;/.test(core),
+            `RESUME: ${tree} — the answer window must be bounded (an orphaned content script never answers)`);
+        // The wiring: a helper nobody calls is dead code.
+        assert.ok(/mdAskInitiatorToResume\(\);\n\s*mdSchedulePersist\(\);/.test(cutFnFrom(core, 'mdApplySnapshot')),
+            `RESUME: ${tree} — mdApplySnapshot must actually send the resume request`);
+        assert.ok(/if \(mdResumeAskedAt && \(Date\.now\(\) - mdResumeAskedAt\) > MD_RESUME_ANSWER_MS\)/.test(cutFnFrom(core, 'mdProbeInitiatorTab'))
+            && /did not answer the resume request/.test(cutFnFrom(core, 'mdProbeInitiatorTab')),
+            `RESUME: ${tree} — the probe must conclude when the asked page cannot answer, even with a live tab`);
+        const groups = cutFnFrom(core, 'handleResolveGroups');
+        assert.ok(/mdResumeAskedAt = 0;/.test(groups),
+            `RESUME: ${tree} — an arriving group payload is the answer: it must clear the window`);
+        // The busy-page answer: handler + dispatched switch case (a handler
+        // nobody calls is dead code, and the window would expire anyway).
+        assert.ok(/function mdResumeAck\(\) \{\s*mdResumeAskedAt = 0;\s*\}/.test(core),
+            `RESUME: ${tree} — mdResumeAck must only clear the window`);
+        const sw = readNorm(tree, 'background/service.js');
+        assert.ok(/case 'resumeGroupAnalysisAck':\s*\n\s*mdResumeAck\(\);/.test(sw),
+            `RESUME: ${tree} — the SW switch must dispatch resumeGroupAnalysisAck`);
+        assert.ok(/mdResumeAskedAt = 0;/.test(cutFnFrom(core, 'handleUpdateStatus')),
+            `RESUME: ${tree} — so must the closing done-message`);
+        // A re-sent group must never re-download a file we already have: the
+        // snapshot's key lists are debounced, so terminal ROWS are seeded too.
+        const apply = cutFnFrom(core, 'mdApplySnapshot');
+        assert.ok(/st !== 'completed' && st !== 'skipped' && st !== 'canceled'/.test(apply)
+            && /globalProcessedUrls\.add\(k\)/.test(apply),
+            `RESUME: ${tree} — terminal rows must seed the dedup keys, or the resumed groups duplicate downloads`);
+        // Page side: the handler, and the two guards that keep it honest.
+        const branch = content.slice(content.indexOf("d.cmd === 'resumeGroupAnalysis'"), content.indexOf("d.cmd === 'downloadWithReferer'"));
+        assert.ok(/cmd: 'resolveAndDownloadGroups'[\s\S]*groups: PVI\.ambiguousUrlGroups/.test(branch),
+            `RESUME: ${tree} — the page must re-send the groups it still holds`);
+        // The bounded window reads SILENCE as "the page is gone", so a busy page
+        // must answer instead of returning silently — otherwise the worker
+        // concludes a healthy scan and the page never gets its closing
+        // groupAnalysisComplete (the exact freeze this batch is fixing, only
+        // self-inflicted). Checked as a shape: ack, then return.
+        assert.ok(/PVI\.downloadAllQueue && PVI\.downloadAllQueue\.length > 0\)\s*\{[\s\S]*?cmd: 'resumeGroupAnalysisAck'[\s\S]*?return;/.test(branch),
+            `RESUME: ${tree} — a page still walking its own DOM queue must ack, not stay silent`);
+        assert.ok(!/PVI\.downloadAllQueue && PVI\.downloadAllQueue\.length > 0\) return;/.test(branch),
+            `RESUME: ${tree} — the silent early-return must be gone (it looks like a dead page)`);
+        assert.ok(branch === block.slice(block.indexOf("d.cmd === 'resumeGroupAnalysis'"), block.indexOf("d.cmd === 'downloadWithReferer'")),
+            `RESUME: ${tree} — content.js and content-block.js must carry the identical branch`);
+    }
+    for (const fn of ['mdAskInitiatorToResume', 'mdResumeAck', 'mdProbeInitiatorTab', 'handleResolveGroups']) {
+        assert.strictEqual(cutFnFrom(readNorm(batchTrees[0], 'mass-download/service-core.js'), fn),
+            cutFnFrom(readNorm(batchTrees[1], 'mass-download/service-core.js'), fn),
+            `RESUME: ${fn} must be byte-identical in both trees`);
+    }
+
+    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert + progress-window rule + supersede rule + resume-after-restart) hold in both trees');
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');
