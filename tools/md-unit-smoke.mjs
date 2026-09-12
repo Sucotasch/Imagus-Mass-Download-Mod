@@ -857,8 +857,25 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         for (const [label, coreText, svcText] of [['Chrome', src, chromeServiceSrc2], ['FF', ffCoreSrc, ffServiceSrc]]) {
             assert.ok(/setTimeout\(mdRestoreSession, 400\);/.test(coreText),
                 `FIX-7: ${label} must attempt the restore AFTER the onInstalled dispatch (a reload is not a crash)`);
-            assert.ok(/if \(!snap\.scanInProgress\) \{ mdDropSessionSnapshot\(\); return; \}/.test(coreText),
-                `FIX-7: ${label} must refuse a snapshot of a finished session`);
+            assert.ok(/if \(!snap\.scanInProgress\) \{[\s\S]{0,120}if \(!scanInProgress\) mdDropSessionSnapshot\(\);[\s\S]{0,60}return;/.test(coreText),
+                `FIX-7: ${label} must refuse a finished session's snapshot (and only drop it when no live session owns the key)`);
+            // A throw inside the apply must land in a DEFINED state, never in a
+            // half-restored session (rows pending with no queue behind them is
+            // exactly the freeze FIX-7 removes), and the slot counter must not be
+            // zeroed (adoption callbacks may still release slots — N-19).
+            assert.ok(/catch \(e\) \{\s*\n\s*mdAbortRecovery\(e\);/.test(coreText),
+                `FIX-7: ${label} a failed apply must abort the recovery instead of leaving a half-session`);
+            const abort = cutFnFrom(coreText, 'mdAbortRecovery');
+            assert.ok(/scanInProgress = false;/.test(abort) && /mdDropSessionSnapshot\(\);/.test(abort),
+                `FIX-7: ${label} abort must close the session and drop the snapshot`);
+            assert.ok(!/activeDownloads\s*=\s*0/.test(abort),
+                `FIX-7: ${label} abort must NOT zero activeDownloads (negative counter breaks the cap)`);
+            assert.ok(/status === 'pending' \|\| e\.status === 'scanning' \|\| e\.status === 'downloading'/.test(abort),
+                `FIX-7: ${label} abort must surface non-terminal rows as failures (no invisible pending rows)`);
+            // Race: the storage read is async — a scan started by this worker while
+            // it was in flight already owns the state and must never be stomped.
+            assert.ok(/if \(scanInProgress\) return;[\s\S]{0,120}try \{\s*\n\s*mdApplySnapshot\(snap\);/.test(coreText),
+                `FIX-7: ${label} must never restore on top of a session started during the read`);
             assert.ok(/if \(!\(Number\(snap\.workerStart\) < workerStartMs\)\) return;/.test(coreText),
                 `FIX-7: ${label} must refuse its own/newer snapshot (no self-restore, no double restore)`);
             assert.ok(/chrome\.runtime\.onSuspend\.addListener/.test(coreText),

@@ -819,6 +819,33 @@ function mdApplySnapshot(snap) {
     mdSchedulePersist();
 }
 
+// A recovery that throws half-way is WORSE than no recovery: rows would be on
+// screen as 'pending' with no queue behind them — exactly the freeze FIX-7
+// exists to remove — and the keep-alive would keep this worker waking forever
+// for a session that can never make progress. So any failure of the apply step
+// ends in a DEFINED state instead: non-terminal rows become visible failures
+// with a Retry hint, the snapshot is dropped (there is nothing left to resume)
+// and the session is closed. activeDownloads is deliberately NOT zeroed — the
+// adoption callbacks already issued may still run and release their slots;
+// zeroing here would drive the counter negative and break the concurrency cap
+// (the N-19 correction).
+function mdAbortRecovery(err) {
+    console.warn(mdWorkerLabel() + ': session recovery failed — rows left as visible failures', err);
+    scanInProgress = false;
+    contentScanDone = true;
+    userCanceled = false;
+    completionNotified = true; // never announce "all downloads completed" for this
+    clearSessionKeepalive();
+    mdDropSessionSnapshot();
+    for (const url in downloadProgress) {
+        const e = downloadProgress[url];
+        if (e && (e.status === 'pending' || e.status === 'scanning' || e.status === 'downloading')) {
+            updateDownloadProgress(url, 'failed', 0,
+                'Session recovery failed — start the scan again', null, e.task);
+        }
+    }
+}
+
 function mdRestoreSession() {
     if (mdRestoreStarted) return;
     mdRestoreStarted = true;
@@ -828,13 +855,27 @@ function mdRestoreSession() {
         const snap = r && r[MD_SNAPSHOT_KEY];
         if (!snap || snap.v !== MD_SNAPSHOT_VERSION) return;
         // Only an interrupted, still-running session is worth resuming; a
-        // finished or canceled one has nothing left to do.
-        if (!snap.scanInProgress) { mdDropSessionSnapshot(); return; }
+        // finished or canceled one has nothing left to do. Dropping it is safe
+        // only while no other session owns the key.
+        if (!snap.scanInProgress) {
+            if (!scanInProgress) mdDropSessionSnapshot();
+            return;
+        }
         // Our own (or a newer) snapshot: a first start of this browser session
         // has nothing to restore, and two racing restores must not interleave.
         if (!(Number(snap.workerStart) < workerStartMs)) return;
-        mdApplySnapshot(snap);
-    }).catch(function () { /* diagnostics only — never fatal */ });
+        // The storage read is async: a scan started by THIS worker while it was
+        // in flight already owns the state (and may have written its own
+        // snapshot) — restoring on top of it would inject the old session's
+        // rows/queues into a live scan. Never stomp it, and never drop the key:
+        // that fresh snapshot is the live one now.
+        if (scanInProgress) return;
+        try {
+            mdApplySnapshot(snap);
+        } catch (e) {
+            mdAbortRecovery(e);
+        }
+    }).catch(function (e) { console.warn(mdWorkerLabel() + ': session restore lookup failed', e); });
 }
 
 // Delayed on purpose: runtime.onInstalled (extension reload/update) fires during
