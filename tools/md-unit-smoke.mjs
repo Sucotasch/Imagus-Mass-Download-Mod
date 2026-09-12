@@ -1132,6 +1132,17 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `ROWS: ${tree} — the Saved Log must name the row cap next to the scan totals`);
         assert.ok(/getElementById\('listNote'\)/.test(tabCode),
             `ROWS: ${tree} — the tab must explain the rolling window on screen`);
+        // 2026-09-12 19:46 (owner report): downloaded=41 vs completed=40 with a
+        // FULL 100-row list — the old note compared the total row count, so it
+        // stayed silent exactly when it was needed and the gap read as a lost
+        // file. Compare COMPLETED rows with the live counter instead.
+        assert.ok(/function mdLogCapNote\(/.test(tabCode) && /mdLogCapNote\(byStatus, stats\)/.test(tabCode),
+            `ROWS: ${tree} — the Saved Log must route its cap note through mdLogCapNote()`);
+        assert.ok(/const completed = byStatus\.completed \|\| 0;/.test(cutFnFrom(tab, 'mdLogCapNote'))
+            && /if \(completed >= downloaded\) return '';/.test(cutFnFrom(tab, 'mdLogCapNote')),
+            `ROWS: ${tree} — the note must fire when completed rows < downloaded (and stay silent when they agree)`);
+        assert.ok(!/items\.length < \(stats\.downloaded/.test(tabCode),
+            `ROWS REGRESSION: ${tree} — the total-row-count comparison never fired on a full list; it must not return`);
         const tabHtml = readNorm(tree, 'options/download-progress.html');
         assert.ok(/id="listNote"/.test(tabHtml), `ROWS: ${tree} — the note element must exist in the page`);
         assert.ok(/Rows in List/.test(tabHtml),

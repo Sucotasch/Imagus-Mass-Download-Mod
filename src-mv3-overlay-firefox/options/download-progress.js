@@ -287,6 +287,22 @@
     }
 
     // The table is a ROLLING WINDOW (da.maxProgressRecords), not the whole
+    // The Saved Log must explain the difference between its own rows and the
+    // scan's live counters, or "downloaded=41 / completed=40" reads as a lost
+    // file. Owner report 2026-09-12 19:46: the 41st row (an mp4) had simply
+    // been evicted by da.maxProgressRecords while its file WAS on disk. The old
+    // check compared the TOTAL row count, so it stayed silent exactly when the
+    // list was full — i.e. always when this can happen. Kept as a pure function
+    // so the smoke harness can execute it on the real numbers.
+    function mdLogCapNote(byStatus, stats) {
+        const completed = byStatus.completed || 0;
+        const downloaded = stats.downloaded || 0;
+        if (completed >= downloaded) return '';
+        return ' | NOTE: ' + (downloaded - completed) + ' completed download(s) are NOT listed below'
+            + ' — the oldest finished rows drop off when the list hits the cap.'
+            + ' The files are on disk; check the download folder, not this list.';
+    }
+
     // session. Saying so is the difference between "the page lies" and "the page
     // shows the last N records" — the counters for the scan itself are in the
     // Saved Log (downloaded=, skipped=).
@@ -543,9 +559,7 @@
             + '; a finished row is dropped before a live one, oldest first)'
             + ' — by status: '
             + (Object.keys(byStatus).map(s => s + '=' + byStatus[s]).join(', ') || 'none')
-            + (items.length < (stats.downloaded || 0) + (stats.skipped || 0)
-                ? ' | NOTE: fewer rows than completed downloads — the rest dropped off the capped list'
-                : ''));
+            + mdLogCapNote(byStatus, stats));
         // 2026-09-12: a superseded candidate URL is listed as 'skipped' by
         // design (the item did not fail — another candidate replaced it). Say
         // so here, or the skipped count looks like unexplained noise.
