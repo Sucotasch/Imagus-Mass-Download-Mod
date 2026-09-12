@@ -583,6 +583,66 @@ function mdTaskFromSnapshot(s) {
     };
 }
 
+// --- Page liveness (D-9, 2026-09-12) --------------------------------------
+// A session can also end up silent WITHOUT dying: the page is closed, navigated
+// away or frozen, so contentScanDone never arrives while the queues and the
+// counters are empty. The worker then keeps being woken (session keep-alive
+// alarm) for a session that cannot progress, and the rows just sit at 'pending'
+// with no explanation — the last remaining shape of "stuck forever".
+//
+// This is deliberately INFORMATIONAL: it names the situation in the progress tab
+// and the Save Log and changes nothing else. Closing such a session on a timer
+// would be a gamble — Chrome freezes/throttles timers in hidden tabs, so a
+// perfectly healthy scan can legitimately go quiet for minutes, and cancelling
+// it would strand the work (tasks arriving after scanInProgress=false are marked
+// canceled). The session, the snapshot and the rows all survive, so anything the
+// page still sends is picked up normally.
+//
+// Only messages that can ONLY come from the scanned page count as liveness
+// (MD_PAGE_MSG_CMDS in handleMessage): the progress tab polls this worker every
+// few seconds and would otherwise mask a dead page completely.
+const MD_PAGE_MSG_CMDS = {
+    downloadMass: 1,
+    resolveAndDownloadGroups: 1,
+    updateStatus: 1,
+    updateFilterStats: 1,
+    reportSkippedItem: 1,
+    refererDownloadReady: 1,
+    refererDownloadFailed: 1
+};
+// Floor for the warning; scaled up in mdContentSilenceLimitMs so it can never
+// fire inside a legitimate single-item wait (resolutionTimeout per element).
+const MD_CONTENT_SILENCE_MIN_MS = 3 * 60 * 1000;
+var mdContentSeenAt = Date.now();
+var mdContentStallWarned = false;
+
+function mdNoteContentSeen() {
+    mdContentSeenAt = Date.now();
+    mdContentStallWarned = false;
+}
+
+// "Nothing in flight" — the drain condition of checkAllQueuesEmpty without its
+// contentScanDone term (keep the two in sync if that condition ever changes).
+function mdNoWorkInFlight() {
+    return filterQueue.length === 0 && downloadQueue.length === 0
+        && activeFilters === 0 && activeDownloads === 0 && activeRefererRetries === 0;
+}
+
+// How long the page has been silent while nothing is in flight, or null when
+// this question does not apply (session over, scan finished, work running).
+function mdPageSilentMs() {
+    if (!scanInProgress || contentScanDone || !mdNoWorkInFlight()) return null;
+    return Math.max(0, Date.now() - mdContentSeenAt);
+}
+
+// Three per-item waits with no word from the page mean the page is gone: the
+// content sends at least one message per resolved element and per filter chunk
+// (50 ms), so a healthy scan never reaches this.
+function mdContentSilenceLimitMs() {
+    const perItem = Math.max(Number(cachedPrefs && cachedPrefs.da && cachedPrefs.da.resolutionTimeout) || 8, 8) * 1000;
+    return Math.max(MD_CONTENT_SILENCE_MIN_MS, perItem * 3);
+}
+
 function mdBuildSnapshot() {
     const rows = [];
     for (const url in downloadProgress) {
@@ -610,6 +670,9 @@ function mdBuildSnapshot() {
         initiatorTab: downloadInitiatorTabId != null ? downloadInitiatorTabId : null,
         hostModes: Object.assign(Object.create(null), refererHostModes),
         rows: rows,
+        // Page liveness follows the session across a worker restart: a page that
+        // went quiet before the death must not get a fresh silence budget.
+        contentSeenAt: mdContentSeenAt,
         processedUrls: Array.from(globalProcessedUrls).slice(-MD_SNAPSHOT_MAX_KEYS),
         processedHashes: Array.from(globalProcessedMediaHashes).slice(-MD_SNAPSHOT_MAX_KEYS),
         filterQueue: filterQueue.slice(0, MD_SNAPSHOT_MAX_TASKS).map(mdSnapshotTask).filter(Boolean),
@@ -687,6 +750,8 @@ function mdApplySnapshot(snap) {
     sessionStartTime = workerStartMs;
     scanInProgress = true;
     contentScanDone = !!snap.contentScanDone;
+    mdContentSeenAt = Number(snap.contentSeenAt) || Date.now();
+    mdContentStallWarned = false;
     userCanceled = false;
     completionNotified = false;
 
@@ -1257,6 +1322,21 @@ function clearSessionKeepalive() {
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm || alarm.name !== KEEPALIVE_ALARM) return;
     if (!sessionHasWork()) clearSessionKeepalive();
+    // D-9: name a session whose page went quiet, once per silence window. The
+    // alarm is the only periodic tick that exists while a session is open.
+    const silent = mdPageSilentMs();
+    if (silent != null && silent > mdContentSilenceLimitMs() && !mdContentStallWarned) {
+        mdContentStallWarned = true;
+        const mins = Math.max(1, Math.round(silent / 60000));
+        console.warn(mdWorkerLabel() + ': no word from the page for ' + mins
+            + ' min and nothing in flight — session kept, waiting for the page');
+        sendToProgressTab({
+            cmd: 'updateStatus',
+            status: '⚠ No word from the page for ' + mins + ' min and nothing in flight — the scan looks interrupted '
+                + '(page closed, navigated away or frozen?). The session and its snapshot are kept; '
+                + 'press the scan hotkey on the page to continue.'
+        });
+    }
 });
 
 // --- Queue Processing ---

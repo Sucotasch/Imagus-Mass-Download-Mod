@@ -892,6 +892,29 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
                 `FIX-7: ${label} a drained session must drop the snapshot`);
             assert.ok(/mdDropSessionSnapshot\(\);/.test(cutFnFrom(coreText, 'handleStopScanning')),
                 `FIX-7: ${label} an explicit stop discards the recoverable session`);
+            // --- D-9 (2026-09-12): "queue empty, page gone" is named, not guessed ---
+            // An open session whose page never reports `done` (closed, navigated
+            // away, frozen tab) used to be indistinguishable from a working scan:
+            // pending rows, live worker, keep-alive alarm every 30 s.
+            assert.ok(/contentScanDone \|\| !mdNoWorkInFlight\(\)\) return null;/.test(cutFnFrom(coreText, 'mdPageSilentMs')),
+                `D-9: ${label} the silence report must require an open scan, no contentScanDone AND nothing in flight`);
+            assert.ok(/mdContentSeenAt = Date.now\(\);\s*\n\s*mdContentStallWarned = false;/.test(cutFnFrom(coreText, 'mdNoteContentSeen')),
+                `D-9: ${label} a page message resets both the clock and the one-shot flag`);
+            assert.ok(/Math\.max\(MD_CONTENT_SILENCE_MIN_MS, perItem \* 3\)/.test(cutFnFrom(coreText, 'mdContentSilenceLimitMs')),
+                `D-9: ${label} the limit must scale with resolutionTimeout (no false positive on a slow scan)`);
+            assert.ok(/contentSeenAt: mdContentSeenAt,/.test(cutFnFrom(coreText, 'mdBuildSnapshot')),
+                `D-9: ${label} page liveness must ride along in the snapshot (a page that went quiet stays quiet after a restart)`);
+            const warnAt = coreText.indexOf('mdContentStallWarned = true;');
+            assert.ok(warnAt > 0, `D-9: ${label} the alarm must raise the warning once per silence window`);
+            const warnBlock = coreText.slice(warnAt, warnAt + 700);
+            assert.ok(/sendToProgressTab\(/.test(warnBlock),
+                `D-9: ${label} the warning must be shown in the progress tab`);
+            assert.ok(!/updateDownloadProgress\(|scanInProgress = false/.test(warnBlock),
+                `D-9: ${label} the warning is informational: it must not fail rows nor end the session (a frozen tab can recover)`);
+            assert.ok(/MD_PAGE_MSG_CMDS\[msg\.cmd\]\) mdNoteContentSeen\(\);/.test(svcText),
+                `D-9: ${label} only page-originated messages count as liveness (the tab polls and would mask a dead page)`);
+            assert.ok(/pageSilentMs: mdPageSilentMs\(\)/.test(svcText),
+                `D-9: ${label} Save Log must carry the page-silence figure`);
         }
         for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
             assert.ok(/Recovered: session resumed after a background restart/.test(tabSources[tree]),

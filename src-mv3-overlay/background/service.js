@@ -380,6 +380,12 @@ function handleMessage(message, sender, sendResponse) {
     }
     if (!msg.cmd) return;
 
+    // Page liveness for the "stuck with nothing in flight" detector (D-9, see
+    // MD_PAGE_MSG_CMDS in service-core.js): only messages that can ONLY come
+    // from the scanned page count — the progress tab polls this worker every
+    // few seconds and must not look like a live page.
+    if (MD_PAGE_MSG_CMDS[msg.cmd]) mdNoteContentSeen();
+
     switch (msg.cmd) {
         case "hello": {
             initTab(sender, sendResponse);
@@ -617,6 +623,10 @@ function handleMessage(message, sender, sendResponse) {
                     // never opened this session" (state lost on restart). See
                     // mdRecordWorkerStart/workerMarker in service-core.js.
                     worker: workerMarker(),
+                    // D-9: how long the page has been quiet with nothing in
+                    // flight (null when the question does not apply) — the one
+                    // signal that explains "pending rows, worker alive".
+                    pageSilentMs: mdPageSilentMs(),
                     settings: {
                         hiRes: !!(cachedPrefs?.hz?.hiRes),
                         maxConcurrentFilters: Number(da.maxConcurrentFilters) || 5,
