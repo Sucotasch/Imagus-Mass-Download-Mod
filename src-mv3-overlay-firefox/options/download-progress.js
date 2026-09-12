@@ -294,7 +294,8 @@
         if (!listNoteEl) return;
         listNoteEl.textContent = 'Showing the last ' + maxProgressRecords
             + ' records — the list is capped, and the oldest finished rows drop off first.'
-            + ' The scan totals (downloaded=, skipped=) are in the Saved Log.';
+            + ' The scan totals (downloaded=, skipped=) are in the Saved Log.'
+            + ' Alternate candidate URLs that a later candidate replaced are listed as skipped (they are not missing files).';
     }
 
     // Calculate and display summary stats from the items table
@@ -376,7 +377,7 @@
           <div class="file-info">${item.progress || 0}%</div>
         </td>
         <td>
-          ${(item.status === 'failed' || item.status === 'canceled') ? `<button class="retry-btn" data-id="${escapeHtml(item.id)}">Retry</button>` : ''}
+          ${(item.status === 'failed' || item.status === 'canceled' || item.superseded) ? `<button class="retry-btn" data-id="${escapeHtml(item.id)}">Retry</button>` : ''}
         </td>
       </tr>
     `).join('');
@@ -545,6 +546,15 @@
             + (items.length < (stats.downloaded || 0) + (stats.skipped || 0)
                 ? ' | NOTE: fewer rows than completed downloads — the rest dropped off the capped list'
                 : ''));
+        // 2026-09-12: a superseded candidate URL is listed as 'skipped' by
+        // design (the item did not fail — another candidate replaced it). Say
+        // so here, or the skipped count looks like unexplained noise.
+        const supersededCount = items.filter(it => it.superseded).length;
+        if (supersededCount > 0) {
+            lines.push('  ' + supersededCount + ' row(s) are superseded candidate URLs: another candidate of the SAME preview replaced them,');
+            lines.push('  so the item is accounted for by its terminal row (completed, or one failed row if no candidate worked).');
+            lines.push('  Their own URL and last reason are kept above; the full chain is in the terminal row\'s "attempts" line.');
+        }
         lines.push('');
         lines.push('Items:');
         items.forEach((it, i) => {

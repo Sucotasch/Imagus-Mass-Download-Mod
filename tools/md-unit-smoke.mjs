@@ -1151,7 +1151,57 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
     const [cInit, fInit] = batchTrees.map(t => readNorm(t, 'mass-download/service-init.js'));
     assert.strictEqual(cInit, fInit, 'D-7: mass-download/service-init.js must stay byte-identical in both trees');
 
-    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert + progress-window rule) hold in both trees');
+    // --- Superseded candidate attempts: 'failed' must mean ITEMS -----------
+    // 2026-09-12 (log 19-07-38): 42 previews -> 42 files -> 42 completed rows,
+    // yet the table showed 46 FAILED rows. 38 of them were dead alternates of
+    // items that DID download (images/x.jpg 404s while images/x.png exists, the
+    // real file being samples/sample_x.jpg) and 8 belonged to the 2 items whose
+    // whole chain 404'd. A failed row must now mean "this item got no file": an
+    // advanced attempt becomes 'skipped' + superseded (which is what keeps its
+    // Retry) and the terminal row names how many candidates died. The behaviour
+    // is executed in .unlazy/…/repro-supersede-attempts.mjs; these locks keep
+    // the contract and catch a silent return of the phantom failure text.
+    for (const tree of batchTrees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+        const coreCode = core.replace(/^\s*\/\/.*$/gm, '');
+        const tabCode = tab.replace(/^\s*\/\/.*$/gm, '');
+        assert.ok(/function mdSupersedeAttempt\(/.test(core),
+            `SUPERSEDE: ${tree} — the single decision point must exist`);
+        assert.ok(cutFnFrom(core, 'advanceToNextCandidate').includes('mdSupersedeAttempt(oldUrl, reason, prog.task)'),
+            `SUPERSEDE: ${tree} — an advanced candidate must be marked superseded, never left as a failure`);
+        assert.ok(cutFnFrom(core, 'requeueNextCandidateForFilter').includes("mdSupersedeAttempt(task.url, 'filter-reject', task)"),
+            `SUPERSEDE: ${tree} — the filter-phase requeue must mark the rejected candidate too`);
+        assert.ok(!/trying alternate URL/.test(coreCode),
+            `SUPERSEDE REGRESSION: ${tree} — no row may claim "trying alternate URL": at the chain's end nothing is retried`);
+        assert.ok((coreCode.match(/mdItemFailedText\(/g) || []).length === 10,
+            `SUPERSEDE: ${tree} — all 9 exhausted-chain sites + the definition must use mdItemFailedText`);
+        assert.ok(/all ' \+ n \+ ' candidate URLs failed/.test(cutFnFrom(core, 'mdItemFailedText')),
+            `SUPERSEDE: ${tree} — the terminal row must say how many candidates died`);
+        assert.ok(/if \(task\) task\._attempts = recordCandidateAttempt\(task, reason\);/.test(cutFnFrom(core, 'advanceToNextCandidate')),
+            `SUPERSEDE: ${tree} — the LAST candidate's attempt must enter the chain (the rows no longer carry it)`);
+        assert.ok(cutFnFrom(core, 'mdSupersedeAttempt').includes("if (prog && prog.status === 'canceled') return;"),
+            `SUPERSEDE: ${tree} — a user cancel is the user's verdict, never a superseded attempt`);
+        assert.ok(!/Server rejected the URL \(HTTP 403\/404/.test(coreCode),
+            `SUPERSEDE REGRESSION: ${tree} — the old 403/404 conflation in the reason text must not return`);
+        assert.ok(/'Server says there is no such file \(HTTP 404/.test(coreCode)
+            && /'Server refused access to the URL \(HTTP 403/.test(coreCode),
+            `SUPERSEDE: ${tree} — SERVER_BAD_CONTENT is Chromium's HTTP 404 and SERVER_FORBIDDEN its 403`);
+        assert.ok(/superseded: !!\(t && t\._superseded\)/.test(cutFnFrom(core, 'serializeProgressEntry')),
+            `SUPERSEDE: ${tree} — the flag must cross into the tab, or the row loses its Retry`);
+        assert.ok(/item\.status === 'failed' \|\| item\.status === 'canceled' \|\| item\.superseded/.test(tabCode),
+            `SUPERSEDE: ${tree} — the tab must keep Retry on a superseded row`);
+        assert.ok(/superseded candidate URLs/.test(tabCode),
+            `SUPERSEDE: ${tree} — the Save Log must explain the superseded rows, or skipped looks like noise`);
+    }
+    // Both trees must carry the SAME block (the FF tree is a copy + deltas).
+    for (const fn of ['mdSupersedeAttempt', 'mdItemFailedText', 'advanceToNextCandidate', 'requeueNextCandidateForFilter', 'mapDownloadInterruptReason']) {
+        assert.strictEqual(cutFnFrom(readNorm(batchTrees[0], 'mass-download/service-core.js'), fn),
+            cutFnFrom(readNorm(batchTrees[1], 'mass-download/service-core.js'), fn),
+            `SUPERSEDE: ${fn} must be byte-identical in both trees`);
+    }
+
+    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert + progress-window rule + supersede rule) hold in both trees');
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

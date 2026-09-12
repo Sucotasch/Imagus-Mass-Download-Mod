@@ -868,7 +868,7 @@ function mdApplySnapshot(snap) {
             // interrupted while this worker was dead: continue the candidate
             // chain exactly like the live interrupt path does, else fail the row.
             if (!advanceToNextCandidate(item.task, 'interrupted: ' + (found.error || 'unknown') + ' (background restart)')) {
-                updateDownloadProgress(item.task.url, 'failed', 0, mapDownloadInterruptReason(found.error), item.downloadId, item.task);
+                updateDownloadProgress(item.task.url, 'failed', 0, mdItemFailedText(item.task, mapDownloadInterruptReason(found.error)), item.downloadId, item.task);
             }
             releaseDownloadSlot(item.task);
         });
@@ -1297,7 +1297,7 @@ async function handleRefererDownloadFailed(msg) {
     try { fbHost = new URL(url).host; } catch (e) { fbHost = ''; }
     if (task.httpStatus === 404 && fbHost && refererHostModes[fbHost] === 'browser') {
         if (!advanceToNextCandidate(task, 'dead link (404, pinned host)')) {
-            updateDownloadProgress(url, 'failed', 0, 'Dead link (404, pinned host)', null, task);
+            updateDownloadProgress(url, 'failed', 0, mdItemFailedText(task, 'Dead link (404, pinned host)'), null, task);
         }
         return;
     }
@@ -1394,7 +1394,10 @@ function serializeProgressEntry(entry) {
         // of already-failed attempts (each {url, method, http, reason}).
         candidateCount: t && t._candidateCount != null ? t._candidateCount : null,
         pickReason: t ? (t._pickReason || null) : null,
-        attempts: t && Array.isArray(t._attempts) ? t._attempts.slice() : null
+        attempts: t && Array.isArray(t._attempts) ? t._attempts.slice() : null,
+        // 2026-09-12: an attempt row that a later candidate replaced (see
+        // mdSupersedeAttempt). The tab keeps its Retry button alive.
+        superseded: !!(t && t._superseded)
     };
 }
 
@@ -1460,9 +1463,10 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
         // FIX-3: live rows carry the telemetry too (renderTable ignores it,
         // formatLog shows it in the Save Log).
         candidateCount: task && task._candidateCount != null ? task._candidateCount : null,
-        pickReason: task ? (task._pickReason || null) : null
+        pickReason: task ? (task._pickReason || null) : null,
+        superseded: !!(task && task._superseded)
     });
-    downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now() };
+    downloadProgress[url] = { url, status, progress, error, downloadId, task, timestamp: Date.now(), superseded: !!(task && task._superseded) };
 
     // Audit N-24: same explicit null-check as handleGetDownloadStatus.
     const maxRecords = cachedPrefs.da?.maxProgressRecords != null ? cachedPrefs.da.maxProgressRecords : 100;
@@ -1750,7 +1754,7 @@ function triggerRefererDownload(task) {
         // carries the cookies.
         if (task.httpStatus === 404) {
             if (!advanceToNextCandidate(task, 'dead link (404, pinned host)')) {
-                updateDownloadProgress(task.url, 'failed', 0, 'Dead link (404, pinned host)', null, task);
+                updateDownloadProgress(task.url, 'failed', 0, mdItemFailedText(task, 'Dead link (404, pinned host)'), null, task);
             }
             return Promise.resolve();
         }
@@ -2026,10 +2030,11 @@ async function processFilterQueue() {
                     // Stage 5f: the URL answered with an HTML page (login wall,
                     // e.g. e-hentai '/fullimg/...' originals) — try the group's
                     // next candidate through the filter before failing.
-                    if (requeueNextCandidateForFilter(task)) {
-                        updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page; trying alternate URL', null, task);
-                    } else {
-                        updateDownloadProgress(task.url, 'failed', 0, 'Server returned HTML page', null, task);
+                    // 2026-09-12: requeueNextCandidateForFilter marks the rejected
+                    // candidate itself as superseded; the row is written ONCE, and
+                    // only when no candidate is left (the item's verdict).
+                    if (!requeueNextCandidateForFilter(task)) {
+                        updateDownloadProgress(task.url, 'failed', 0, mdItemFailedText(task, 'Server returned HTML page'), null, task);
                     }
                 } else {
                     const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
@@ -2038,10 +2043,8 @@ async function processFilterQueue() {
                         task.httpStatus = response.status;
                         task.filterMethod = 'GET';
                         task.contentType = contentType;
-                        if (requeueNextCandidateForFilter(task)) {
-                            updateDownloadProgress(task.url, 'failed', 0, capped.error + '; trying alternate URL', null, task);
-                        } else {
-                            updateDownloadProgress(task.url, 'failed', 0, capped.error, null, task);
+                        if (!requeueNextCandidateForFilter(task)) {
+                            updateDownloadProgress(task.url, 'failed', 0, mdItemFailedText(task, capped.error), null, task);
                         }
                     } else {
                         // capped.tooLarge: the GET-fallback body hit the 10 MiB cap.
@@ -2102,19 +2105,15 @@ async function processFilterQueue() {
                 if (getError.name === 'AbortError') {
                     task.filterTimeMs = Date.now() - filterStart;
                     task.filterMethod = 'GET';
-                    if (requeueNextCandidateForFilter(task)) {
-                        updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout; trying alternate URL', null, task);
-                    } else {
-                        updateDownloadProgress(task.url, 'failed', 0, 'Filter timeout', null, task);
+                    if (!requeueNextCandidateForFilter(task)) {
+                        updateDownloadProgress(task.url, 'failed', 0, mdItemFailedText(task, 'Filter timeout'), null, task);
                     }
                     return;
                 }
                 task.filterTimeMs = Date.now() - filterStart;
                 task.filterMethod = 'GET';
-                if (requeueNextCandidateForFilter(task)) {
-                    updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message + '; trying alternate URL', null, task);
-                } else {
-                    updateDownloadProgress(task.url, 'failed', 0, 'Filter error: ' + getError.message, null, task);
+                if (!requeueNextCandidateForFilter(task)) {
+                    updateDownloadProgress(task.url, 'failed', 0, mdItemFailedText(task, 'Filter error: ' + getError.message), null, task);
                 }
             }
         } finally {
@@ -2324,12 +2323,49 @@ function recordCandidateAttempt(task, reason) {
     return attempts;
 }
 
+// 2026-09-12 (log 2026-09-12T19-07-38): a candidate URL that dies while the
+// item still has another candidate is NOT the item's failure. Advanced rows
+// used to stay 'failed' forever, so a scan that lost 2 items out of 42 previews
+// reported 46 failures — every fallback (the .jpg guess that 404s while the
+// .png twin exists, the mirror host that refuses the file) left a dead row
+// behind and buried the real verdict. The row is NOT deleted and NOT rewritten
+// away: it keeps its URL, its own last reason and a Retry button that re-queues
+// exactly that URL. Only the status changes to 'skipped' (+ the `superseded`
+// flag, which is what keeps Retry on it in the tab), and the whole chain stays
+// in the terminal row's `attempts` (Save Log). Numbers to re-check against:
+// 42 previews / 42 files / 42 completed rows must stay 42, and the failure
+// count must equal the items that got no file at all — not the attempts.
+function mdSupersedeAttempt(url, reason, task) {
+    const prog = downloadProgress[url];
+    // A user cancel is the user's verdict, not a superseded attempt.
+    if (prog && prog.status === 'canceled') return;
+    if (task) task._superseded = true;
+    updateDownloadProgress(url, 'skipped', 0,
+        (reason || 'failed') + ' — superseded: the item continued with another candidate URL',
+        null, task);
+}
+
+// The terminal row is the ITEM's verdict. Two things the old text got wrong:
+// (a) "- trying alternate URL" on a row that is the end of the chain (nothing is
+// being retried); (b) no hint that the alternates are gone. Only items that
+// really had alternatives (group rows, _candidateCount > 1) get the suffix.
+function mdItemFailedText(task, base) {
+    const n = (task && task._candidateCount != null) ? task._candidateCount : 0;
+    return n > 1 ? base + ' — all ' + n + ' candidate URLs failed' : base;
+}
+
 // Stage 5b/5c: when the current URL fails the browser-context download (dead
 // 404 link), advance to the next candidate instead of failing the item. Returns
 // true if advanced (task re-queued as a BROWSER download), false otherwise.
 function advanceToNextCandidate(task, reason) {
     const next = pickNextCandidate(task);
-    if (!next) return false;
+    if (!next) {
+        // 2026-09-12: the item's verdict is decided HERE, so the last
+        // candidate's own attempt must enter the chain — the rows of the
+        // earlier attempts no longer carry that story (they are superseded).
+        if (task) task._attempts = recordCandidateAttempt(task, reason);
+        return false;
+    }
     const oldUrl = task.url;
     const prog = downloadProgress[oldUrl];
     const attempts = recordCandidateAttempt(task, reason);
@@ -2358,14 +2394,15 @@ function advanceToNextCandidate(task, reason) {
         _candidateCount: task._candidateCount != null ? task._candidateCount : null,
         _pickReason: task._pickReason || null
     };
-    // FIX-2 (2026-09-09): the old candidate's row is KEPT as a terminal
-    // 'failed' record with an "advanced" marker instead of being deleted and
-    // re-keyed — the full attempt chain stays visible in the progress tab and
-    // the Save Log (previously removeProgressEntry erased the trace of every
-    // dead candidate). The old row dies with its own key; the new candidate
-    // gets a fresh row via updateDownloadProgress below.
+    // FIX-2 (2026-09-09): the old candidate's row is KEPT instead of being
+    // deleted and re-keyed — the trace of every dead candidate stays in the tab
+    // and in the Save Log (previously removeProgressEntry erased it). The old
+    // row dies with its own key; the new candidate gets a fresh row via
+    // updateDownloadProgress below.
+    // 2026-09-12: kept as SUPERSEDED, not as a failure — the item did not fail,
+    // it continued with `next` (see mdSupersedeAttempt).
     if (prog && prog.status !== 'canceled') {
-        updateDownloadProgress(oldUrl, 'failed', 0, (reason || 'failed') + ' - trying alternate URL', null, prog.task);
+        mdSupersedeAttempt(oldUrl, reason, prog.task);
     }
     globalProcessedUrls.add(fileKey(next.url));
     // Fix C-2 (2026-09-09 live test): claim the hash key too — the advance
@@ -2400,17 +2437,37 @@ function requeueNextCandidateForFilter(task) {
         _candidateCount: task._candidateCount != null ? task._candidateCount : null,
         _pickReason: task._pickReason || null
     };
+    // 2026-09-12: the rejected candidate is not the item's failure either — the
+    // item continues with `next`, so mark its row superseded right here, in the
+    // one place that knows the item is still alive (the callers used to write
+    // 'failed … trying alternate URL' themselves).
+    mdSupersedeAttempt(task.url, 'filter-reject', task);
     filterQueue.push(newTask);
     return true;
 }
 
 // Map chrome.downloads DownloadItem.error reasons to readable failure text.
-// Chrome reports both HTTP 403 and 404 as SERVER_FORBIDDEN; a rejected URL is
-// usually a deleted/404 resource (e.g. rule34's bare .jpg variants).
+//
+// 2026-09-12: the old mapping claimed "Chrome reports both HTTP 403 and 404 as
+// SERVER_FORBIDDEN" and printed the raw enum for anything else — so a genuine
+// 404 surfaced as "Server error: SERVER_BAD_CONTENT" and read like a server
+// fault, while the URL was simply dead (the live 2026-09-12 log has 46 such
+// rows, every one a 404 on wimg.rule34.xxx — checked in the browser).
+// Chromium's own mapping (HandleSuccessfulServerResponse,
+// components/download/internal/common/download_utils.cc) is:
+//   HTTP 404 (and 204/205, which carry no entity) -> SERVER_BAD_CONTENT
+//   HTTP 403                                       -> SERVER_FORBIDDEN
+//   HTTP 401/407                                   -> SERVER_UNAUTHORIZED
+//   every other 4xx/5xx                            -> SERVER_FAILED
+// The raw enum stays in the attempt chain of the Save Log, so nothing is lost —
+// only the human-readable line changes.
 function mapDownloadInterruptReason(reason) {
     if (!reason) return 'Download interrupted';
     const s = String(reason);
-    if (s === 'SERVER_FORBIDDEN' || s === 'SERVER_UNAUTHORIZED') return 'Server rejected the URL (HTTP 403/404 — file likely deleted)';
+    if (s === 'SERVER_BAD_CONTENT') return 'Server says there is no such file (HTTP 404 — dead link)';
+    if (s === 'SERVER_FORBIDDEN') return 'Server refused access to the URL (HTTP 403 — hotlink/login block)';
+    if (s === 'SERVER_UNAUTHORIZED') return 'Authorization required (HTTP 401)';
+    if (s === 'SERVER_FAILED') return 'Server error (HTTP 5xx)';
     if (s === 'USER_CANCELED') return 'Canceled by user';
     if (s === 'SERVER_CERT_PROBLEM' || s === 'NETWORK_FAILED' || s === 'NETWORK_TIMEOUT'
         || s === 'NETWORK_DISCONNECTED' || s === 'NETWORK_SERVER_DOWN'
@@ -2500,7 +2557,7 @@ chrome.downloads.onChanged.addListener(function (delta) {
                     mdRemoveFileThenErase(delta.id);
                     if (!alreadyCanceled) {
                         if (!advanceToNextCandidate(existingTask, 'HTML page')) {
-                            updateDownloadProgress(url, 'failed', 0, 'Server returned HTML page', delta.id, existingTask);
+                            updateDownloadProgress(url, 'failed', 0, mdItemFailedText(existingTask, 'Server returned HTML page'), delta.id, existingTask);
                         }
                     }
                     releaseDownloadSlot(existingTask);
@@ -2565,7 +2622,7 @@ chrome.downloads.onChanged.addListener(function (delta) {
                     // in the continuation below, is what would leak if it did.
                     mdTryOffscreenDownload(existingTask).then(function (handled) {
                         if (!handled && !advanceToNextCandidate(existingTask, interruptReason)) {
-                            updateDownloadProgress(url, 'failed', 0, mapDownloadInterruptReason(results[0].error), delta.id, existingTask);
+                            updateDownloadProgress(url, 'failed', 0, mdItemFailedText(existingTask, mapDownloadInterruptReason(results[0].error)), delta.id, existingTask);
                         }
                         releaseDownloadSlot(existingTask);
                     }).catch(function (e) {
