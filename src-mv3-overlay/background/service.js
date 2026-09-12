@@ -613,6 +613,10 @@ function handleMessage(message, sender, sendResponse) {
                     stats: downloadStats,
                     version: chrome.runtime.getManifest().version,
                     sessionStart: sessionStartTime,
+                    // Worker identity: lets Save Log prove "the worker answering
+                    // never opened this session" (state lost on restart). See
+                    // mdRecordWorkerStart/workerMarker in service-core.js.
+                    worker: workerMarker(),
                     settings: {
                         hiRes: !!(cachedPrefs?.hz?.hiRes),
                         maxConcurrentFilters: Number(da.maxConcurrentFilters) || 5,
@@ -806,8 +810,16 @@ chrome.downloads.onChanged.addListener(function (delta) {
     // fall back to the page-context retry for them (upstream 8.20 behavior).
     if ((delta.error && !delta.error.current?.startsWith("USER_")) || /\.html?$/.exec(delta.filename?.current)) {
         // calceling download of HTML files, most probably an error page
-        chrome.downloads.cancel(delta.id, () => {});
-        chrome.downloads.erase({ id: delta.id }, () => {});
+        // NF-8 (2026-09-12): consume runtime.lastError in both callbacks — a
+        // completed/cancelled item (or an already-erased one) makes these fail
+        // routinely, and an unread lastError is logged by Chrome as
+        // "Unchecked runtime.lastError".
+        chrome.downloads.cancel(delta.id, () => {
+            if (chrome.runtime.lastError) { /* already finished */ }
+        });
+        chrome.downloads.erase({ id: delta.id }, () => {
+            if (chrome.runtime.lastError) { /* already erased */ }
+        });
 
         // request alternative download method
         msg.alterDownload = true;

@@ -4431,13 +4431,17 @@
                         // otherwise the next resolve of ANY `this.res` rule
                         // (e-hentai /g/) starts from the dead chain's leftovers
                         // (the "poisoned album": stale items mixed into the next
-                        // album). Guarded by owner identity, because clearing
-                        // unconditionally would wipe a PARALLEL pagination.
+                        // album). Guarded by the owner rule's ID — object
+                        // identity can NEVER match across rounds (every {loop}
+                        // round arrives as a NEW structured clone through
+                        // chrome.runtime messaging / the FF JSON relay), which
+                        // made the original identity check dead code; clearing
+                        // unconditionally would still wipe a PARALLEL pagination.
                         // NOTE: never clear PVI.res BEFORE the call above — the
                         // {loop} contract reads it back on the next page, and
                         // clearing per call truncates every paginated album to
                         // its last page.
-                        if (PVI.res_owner === d.params.rule) {
+                        if (PVI.res_owner === d.params.rule.id) {
                             PVI.res = undefined;
                             PVI.res_owner = undefined;
                         }
@@ -4473,8 +4477,10 @@
                         // so the accumulator MUST survive until the chain ends.
                         // Record which rule owns it — only that rule may drop it
                         // (an unrelated rule's exception must not wipe an
-                        // in-flight pagination).
-                        PVI.res_owner = d.params.rule;
+                        // in-flight pagination). Stored as the rule ID — a
+                        // primitive that survives structured clone — not as the
+                        // rule object (see the catch above).
+                        PVI.res_owner = d.params.rule.id;
                     }
                 if (Array.isArray(d.m))
                     if (d.m.length) {

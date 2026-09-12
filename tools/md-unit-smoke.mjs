@@ -44,6 +44,25 @@ function cutFnFrom(source, name) {
     return source.slice(start, end + 2);
 }
 
+// Brace-balanced extraction: required for helpers that live inside an IIFE
+// (options/download-progress.js has no column-0 closers, so cutFnFrom would run
+// to the end of the file there). The extracted helpers are pure (no DOM, no
+// chrome), so a plain brace-depth scan is enough.
+function cutFnBalanced(source, name) {
+    const start = source.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `function ${name} not found`);
+    let depth = 0;
+    for (let j = source.indexOf('{', start); j < source.length; j++) {
+        const ch = source[j];
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+            depth--;
+            if (depth === 0) return source.slice(start, j + 1);
+        }
+    }
+    throw new Error(`unbalanced braces while extracting ${name}`);
+}
+
 const code = [
     cutConst('MIME_TO_EXT'),
     cutConst('EXT_ALIASES'),
@@ -187,8 +206,13 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
                 }
             }
         };
+        // The helper logs through `manifest.name` (a service-init global), exactly
+        // like the rest of the module — model it so the leaked-scope ReferenceError
+        // of 2026-09-12 cannot come back.
         const prev = globalThis.chrome;
+        const prevManifest = globalThis.manifest;
         globalThis.chrome = mockChrome;
+        globalThis.manifest = { name: 'test' };
         try {
             const fn = new Function(
                 `${cutFnFor(swSrc)('mdSwallow')}\n${cutFnFor(swSrc)('mdRemoveFileThenErase')}\nreturn mdRemoveFileThenErase;`
@@ -197,6 +221,8 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
         } finally {
             if (prev === undefined) delete globalThis.chrome;
             else globalThis.chrome = prev;
+            if (prevManifest === undefined) delete globalThis.manifest;
+            else globalThis.manifest = prevManifest;
         }
         return calls;
     };
@@ -204,10 +230,13 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     const fixDok = runFixD((runtime, cb) => cb());
     assert.equal(fixDok.removeFile, 1, `${tree}: Fix D — removeFile invoked`);
     assert.equal(fixDok.erase, 1, `${tree}: Fix D — erase runs when removeFile succeeds`);
-    // (b) removeFile FAILS (runtime.lastError inside the callback — the
-    // 2026-09-09 live shape: a 5xx interruption leaves no partial file, so
-    // there is nothing to delete). The old promise chain skipped the erase
-    // exactly here; the callback helper must still erase exactly once.
+    // (b) removeFile FAILS (runtime.lastError inside the callback). The
+    // 2026-09-09 live shape; the corrected cause (2026-09-12, Chromium
+    // downloads API contract) is that an INTERRUPTED item is never 'complete',
+    // so removeFile is not even applicable — the error is expected, the message
+    // is "Download must be complete". The old promise chain skipped the erase
+    // exactly here; the callback helper must still erase exactly once, and it
+    // must consume lastError so Chrome does not log "Unchecked runtime.lastError".
     const fixDfail = runFixD((runtime, cb) => {
         runtime.lastError = { message: 'No file to delete' };
         cb();
@@ -553,6 +582,219 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             'offscreen tier: md-dnr exposes the live-rule lookup');
         assert.ok(/mdDnrActive\[req\.host\] === true/.test(dnrSrc),
             'offscreen tier: the lookup reflects real install state');
+
+        // --- 2026-09-12 third-party review round: BT-01 / NF-2 / NF-7 / NF-8 ---
+        // BT-01 (NF-1): the PVI.res owner guard must compare the rule ID. Object
+        // identity can NEVER match across {loop} rounds — every round arrives as
+        // a NEW structured clone (chrome.runtime messaging / the FF JSON relay)
+        // — so `=== d.params.rule` was dead code and a dead chain's accumulator
+        // poisoned the next paginated album (e-hentai /g/).
+        for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+            const cSrc = readFileSync(join(repoRoot, `${tree}/content/content.js`), 'utf8');
+            assert.ok(cSrc.includes('if (PVI.res_owner === d.params.rule.id) {'),
+                `BT-01: ${tree} must guard the accumulator by the rule ID`);
+            assert.ok(cSrc.includes('PVI.res_owner = d.params.rule.id;'),
+                `BT-01: ${tree} must store the owner as the rule ID`);
+            assert.ok(!cSrc.includes('PVI.res_owner = d.params.rule;'),
+                `BT-01: ${tree} must not store the owner as the rule OBJECT (dead comparison)`);
+        }
+        // The fix lives in the ENGINE part of onMessage, outside the five
+        // mirrored marker sections — content-block.js must NOT mirror it.
+        assert.ok(!readFileSync(join(repoRoot, 'src-mv3-overlay/mass-download/content-block.js'), 'utf8')
+            .includes('res_owner'),
+            'BT-01: guard is outside the markers; content-block.js must not mirror it');
+
+        // NF-2: the one-verdict guard must exist in BOTH trees (FF lacked it and
+        // the branch runs inside the async downloads.search callback, so two
+        // deltas could advance the item twice).
+        assert.ok(/_interruptHandled/.test(src), 'NF-2: Chrome keeps the one-verdict guard');
+        assert.ok(/_interruptHandled/.test(ffCoreSrc), 'NF-2: FF must carry the same guard');
+        assert.ok(/existingTask\._interruptHandled = true;/.test(ffCoreSrc),
+            'NF-2: FF must set the guard before advancing the candidate chain');
+
+        // NF-7: an in-flight offscreen fetch must survive the idle close, and a
+        // stalled request must be aborted by a watchdog that re-arms on progress
+        // (a TOTAL timeout would silently downgrade large media to a derivative).
+        assert.ok(/if \(liveObjectUrls > 0 \|\| inFlight > 0\)/.test(offJs),
+            'NF-7: idle close must not fire while a fetch is in flight');
+        assert.ok(/STALL_TIMEOUT_MS = 60000/.test(offJs) && /controller\.signal/.test(offJs),
+            'NF-7: the offscreen request carries an abort signal with a stall watchdog');
+        assert.ok((offJs.match(/armStall\(controller\)/g) || []).length >= 2,
+            'NF-7: the stall watchdog re-arms on progress (not a total deadline)');
+
+        // NF-8 (Errors.txt): no downloads-API callback may ignore lastError
+        // (Chrome logs "Unchecked runtime.lastError"), and removeFile must not be
+        // asked for the file of an item that cannot have one — an interrupted
+        // item is never 'complete' (Chromium downloads API contract), so the old
+        // unconditional call could only produce "Download must be complete".
+        for (const [label, text] of [['Chrome core', src], ['FF core', ffCoreSrc]]) {
+            assert.ok(!/downloads\.(cancel|erase|removeFile)\([^)]*,\s*\(\)\s*=>\s*\{\s*\}\)/.test(text),
+                `NF-8: ${label} must not leave a downloads-API callback ignoring lastError`);
+            assert.ok(/chrome\.runtime\.lastError/.test(cutFnFrom(text, 'mdRemoveFileThenErase')),
+                `NF-8: ${label} removeFile callback must read lastError`);
+        }
+        assert.ok(/if \(results\[0\]\.state === 'complete'\) mdRemoveFileThenErase/.test(src),
+            'NF-8: removeFile only for a COMPLETE item, erase only otherwise');
+        assert.ok(/chrome\.runtime\.lastError/.test(chromeServiceSrc),
+            'NF-8: the popup-save cancel/erase pair must consume lastError too');
+
+        // --- 2026-09-12: session-state loss (worker marker + tab detection) ---
+        // A mass-download session lives in SW memory ONLY. Live evidence of the
+        // failure locked here (log/imagus-mass-download-log-2026-09-11T18-20-54
+        // .txt, the user's "Empty log"): the answering worker reported
+        // "Session start: -", found=0 and "total shown=0" while the progress tab
+        // still displayed 406 found / 100 rows — the worker had been respawned,
+        // so every row the user saw stuck at "pending" could never progress.
+        // The marker makes that state provable from a single log: a worker whose
+        // workerStart is newer than the session start never owned the session.
+        const chromeServiceSrc2 = readFileSync(
+            join(repoRoot, 'src-mv3-overlay/background/service.js'), 'utf8');
+        for (const [label, coreText, svcText] of [
+            ['Chrome', src, chromeServiceSrc2],
+            ['FF', ffCoreSrc, ffServiceSrc],
+        ]) {
+            assert.ok(/var workerStartMs = Date\.now\(\);/.test(coreText),
+                `session loss: ${label} must stamp this worker's start time`);
+            assert.ok(/function mdRecordWorkerStart\(/.test(coreText)
+                && /chrome\.storage\.session\.set\(\{ mdWorkerStarts: workerStarts \}\)/.test(coreText),
+                `session loss: ${label} must persist the worker start history in storage.session`);
+            assert.ok(/^mdRecordWorkerStart\(\);$/m.test(coreText),
+                `session loss: ${label} must record the start at evaluation time`);
+            // Evaluation order: FF runs this file BEFORE background/service.js,
+            // which owns `var manifest` — an unguarded manifest.name in code that
+            // runs at evaluation time throws inside the promise chain and is
+            // swallowed by the .catch, silently losing the start history.
+            assert.ok(!/console\.info\(manifest\.name \+ ': mass-download worker/.test(coreText),
+                `session loss: ${label} must not read manifest at evaluation time`);
+            assert.ok(/function mdWorkerLabel\(/.test(coreText)
+                && /typeof manifest !== 'undefined'/.test(coreText),
+                `session loss: ${label} must guard the manifest lookup`);
+            assert.ok(coreText.indexOf("chrome.storage.session.set({ mdWorkerStarts: workerStarts })") <
+                coreText.indexOf('console.info(mdWorkerLabel()'),
+                `session loss: ${label} must persist before it logs (log failure cannot skip the write)`);
+            assert.ok(/if \(!task \|\| task\._slotReleased\) return;/.test(coreText),
+                `session loss: ${label} slot guard intact (marker work must not disturb it)`);
+            assert.ok(/worker: workerMarker\(\)/.test(coreText),
+                `session loss: ${label} getDownloadStatus must ship the worker marker`);
+            assert.ok(/sessionStart: sessionStartTime,/.test(coreText),
+                `session loss: ${label} getDownloadStatus must ship the session start`);
+            assert.ok(/worker: workerMarker\(\)/.test(svcText),
+                `session loss: ${label} getDownloadLog must ship the worker marker`);
+            assert.ok(/sessionStart: sessionStartTime/.test(cutFnFrom(coreText, 'handleRegisterProgressTab')),
+                `session loss: ${label} registerProgressTab must ship the session start`);
+            // Exactly one live mirror: removals awaited before the create, and a
+            // registering page takes over from a stale tracked tab. Otherwise the
+            // SW keeps pushing to one tab while a second one (visibly empty) sits
+            // next to it — live report 2026-09-12.
+            assert.ok(/await Promise\.all\(staleIds\.map\(id => chrome\.tabs\.remove\(id\)\.catch\(\(\) => \{\}\)\)\)/.test(coreText),
+                `progress tab: ${label} must await the removals before creating a replacement`);
+            assert.ok(/if \(tabId != null && downloadProgressTabId != null && downloadProgressTabId !== tabId\)/.test(coreText),
+                `progress tab: ${label} a registering page must supersede a stale tracked tab`);
+        }
+        // Tab side: the classifier is the decision-maker for the banner and for
+        // the Save Log marker, so it is extracted and exercised for both trees.
+        const tabSources = {};
+        for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+            tabSources[tree] = readFileSync(
+                join(repoRoot, `${tree}/options/download-progress.js`), 'utf8');
+            const tabText = tabSources[tree];
+            assert.ok(/setInterval\(workerWatchdog, 5000\)/.test(tabText),
+                `session loss: ${tree} must probe the worker on a timer`);
+            assert.ok(/if \(stateLost\) return;/.test(cutFnBalanced(tabText, 'workerWatchdog')),
+                `session loss: ${tree} probe must stop once the loss has been reported`);
+            // The probe must not bail out on a background tab — that is exactly
+            // the case that matters (the user watches the source page while the
+            // session dies). Only the reported state short-circuits it.
+            assert.ok(!/document\.visibilityState !== 'visible'\) return;/.test(cutFnBalanced(tabText, 'workerWatchdog')),
+                `session loss: ${tree} probe must work from a background tab (no visibility gate)`);
+            assert.ok(/clearStateLost\(\);/.test(cutFnBalanced(tabText, 'handleMessage')),
+                `session loss: ${tree} a live push must drop the banner again`);
+            assert.ok(/clearStateLost\(\);/.test(cutFnBalanced(tabText, 'clearAll')),
+                `session loss: ${tree} Clear All must drop the banner with the rows`);
+            assert.ok(/stateLost: verdict === 'lost'/.test(tabText),
+                `session loss: ${tree} Save Log must carry the lost-state verdict`);
+            assert.ok(/classifyWorkerState\(response, Object\.values\(downloadItems\), lastSeenSessionStart\)/.test(tabText),
+                `session loss: ${tree} Save Log must classify the rows the page shows`);
+            assert.ok(/classifyWorkerState\(resp, Object\.values\(downloadItems\), lastSeenSessionStart\)/.test(tabText),
+                `session loss: ${tree} the probe must classify the rows the page shows`);
+            assert.ok(/lastPushAt = Date\.now\(\);/.test(cutFnBalanced(tabText, 'handleMessage')),
+                `session loss: ${tree} every SW push must reset the silence clock`);
+        }
+        assert.equal(
+            cutFnBalanced(tabSources['src-mv3-overlay-firefox'], 'classifyWorkerState').replace(/\r\n/g, '\n'),
+            cutFnBalanced(tabSources['src-mv3-overlay'], 'classifyWorkerState').replace(/\r\n/g, '\n'),
+            'session loss: the classifier must be a copy, not a fork (both trees)');
+        const tabText = tabSources['src-mv3-overlay'];
+        const nonTerminalDecl = /const NON_TERMINAL = \{[^\n]*\};/.exec(tabText);
+        assert.ok(nonTerminalDecl, 'session loss: NON_TERMINAL status table declared');
+        const clsFactory = new Function([
+            nonTerminalDecl[0],
+            cutFnBalanced(tabText, 'countNonTerminal'),
+            cutFnBalanced(tabText, 'classifyWorkerState'),
+            'return { countNonTerminal, classifyWorkerState };',
+        ].join('\n'));
+        const { countNonTerminal, classifyWorkerState } = clsFactory();
+        const pendingRows = [{ status: 'pending' }, { status: 'downloading' }, { status: 'scanning' }];
+        const doneRows = [{ status: 'completed' }, { status: 'failed' }, { status: 'skipped' }];
+        assert.equal(countNonTerminal(pendingRows), 3);
+        assert.equal(countNonTerminal(doneRows), 0);
+        assert.equal(countNonTerminal([]), 0);
+        assert.equal(countNonTerminal(undefined), 0);
+        assert.equal(classifyWorkerState([], [], null), 'ok');
+        // The decisive case: rows on screen, worker that never opened a session.
+        assert.equal(classifyWorkerState({ items: {}, sessionStart: null }, pendingRows, null), 'lost');
+        assert.equal(classifyWorkerState({ items: {}, sessionStart: null }, pendingRows, 123), 'lost');
+        // Second proof: the answering worker is younger than the session.
+        assert.equal(classifyWorkerState(
+            { items: { a: 1 }, sessionStart: 1000, worker: { start: 2000, gen: 2 } }, pendingRows, 1000), 'lost');
+        // A live, owned session must never raise the banner.
+        assert.equal(classifyWorkerState(
+            { items: { a: 1 }, sessionStart: 2000, worker: { start: 1000, gen: 1 } }, pendingRows, 2000), 'ok');
+        // A different session start is a new scan, not a loss.
+        assert.equal(classifyWorkerState(
+            { items: { a: 1 }, sessionStart: 3000, worker: { start: 1000, gen: 1 } }, pendingRows, 2000), 'newsession');
+        // Nothing in flight -> never a banner (fresh tab, finished session).
+        assert.equal(classifyWorkerState({ items: {}, sessionStart: null }, doneRows, null), 'ok');
+        assert.equal(classifyWorkerState({ items: {}, sessionStart: null }, pendingRows.slice(0, 0), null), 'ok');
+
+        // --- 2026-09-12: gradient download watchdog ---
+        // rule34 live dump: rows frozen at "Downloading 0% / size -" while the
+        // rest of the queue stayed pending, because one dead download holds one
+        // of only `maxConcurrentDownloads` slots for the full hard timeout.
+        // STALL_MS must therefore be strictly shorter than WATCHDOG_MS, re-arm
+        // on every onChanged delta (a slow but live transfer is never cut) and
+        // free the slot only after the browser calls (no second verdict).
+        for (const [label, coreText] of [['Chrome', src], ['FF', ffCoreSrc]]) {
+            const stall = /const STALL_MS = (\d+) \* 1000;/.exec(coreText);
+            const hard = /const WATCHDOG_MS = (\d+) \* 60 \* 1000;/.exec(coreText);
+            assert.ok(stall, `stall watchdog: ${label} must declare STALL_MS`);
+            assert.ok(hard, `stall watchdog: ${label} must keep the hard timeout net`);
+            assert.ok(Number(stall[1]) * 1000 < Number(hard[1]) * 60 * 1000,
+                `stall watchdog: ${label} stall window must be shorter than the hard net`);
+            assert.ok(/armStallWatchdog\(task, downloadId\);/.test(coreText),
+                `stall watchdog: ${label} the download callback must arm it`);
+            assert.ok(/task\._downloadId = downloadId;/.test(coreText),
+                `stall watchdog: ${label} must set _downloadId before arming (cancel target)`);
+            assert.ok(/if \(existingTask\._stallTimer\) armStallWatchdog\(existingTask, delta\.id\);/.test(coreText),
+                `stall watchdog: ${label} every onChanged delta must re-arm it`);
+            // Re-arm must sit BEFORE the async downloads.search: the timer has to
+            // be pushed back for every delta, not only for deltas whose search
+            // returns a row.
+            assert.ok(coreText.indexOf('armStallWatchdog(existingTask, delta.id)') <
+                coreText.indexOf('chrome.downloads.search({ id: delta.id }'),
+                `stall watchdog: ${label} the re-arm must precede the search callback`);
+            const arm = cutFnFrom(coreText, 'armStallWatchdog');
+            assert.ok(/clearTimeout\(task\._stallTimer\);/.test(arm),
+                `stall watchdog: ${label} arming twice must not leak a timer`);
+            assert.ok(/chrome\.downloads\.cancel/.test(arm) && /chrome\.downloads\.erase/.test(arm),
+                `stall watchdog: ${label} must cancel + erase the dead download`);
+            assert.ok(arm.indexOf('chrome.downloads.cancel') < arm.indexOf('releaseDownloadSlot(task)'),
+                `stall watchdog: ${label} must free the slot only after the browser calls`);
+            assert.ok(/if \(chrome\.runtime\.lastError\)/.test(arm),
+                `stall watchdog: ${label} cancel callback must consume lastError`);
+            assert.ok(/clearTimeout\(task\._stallTimer\);/.test(cutFnFrom(coreText, 'releaseDownloadSlot')),
+                `stall watchdog: ${label} releaseDownloadSlot must clear the stall timer`);
+        }
     }
 }
 

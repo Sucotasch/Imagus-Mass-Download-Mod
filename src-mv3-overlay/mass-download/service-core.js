@@ -43,11 +43,14 @@ async function getOrCreateProgressTab(initiatorTabId) {
         } catch (e) {
             console.warn(manifest.name + ': Could not query existing progress tabs', e);
         }
-        ids.forEach(id => {
-            if (id == null) return;
-            console.info(manifest.name + ': Closing progress tab (ID: ' + id + ')');
-            chrome.tabs.remove(id).catch(() => {});
-        });
+        // Await the removals BEFORE creating the replacement. Fire-and-forget
+        // used to race the create, so two progress tabs could end up open — and
+        // since the SW only pushes to the LAST registered id, the other one sits
+        // there visibly empty (reported live 2026-09-12: "окно прогресса
+        // дублируется, обе вкладки пустые").
+        const staleIds = [...ids].filter(id => id != null);
+        staleIds.forEach(id => console.info(manifest.name + ': Closing progress tab (ID: ' + id + ')'));
+        await Promise.all(staleIds.map(id => chrome.tabs.remove(id).catch(() => {})));
         downloadProgressTabId = null;
 
         let createOptions = { url: progressUrl, active: false };
@@ -306,13 +309,26 @@ function handleOpenDownloadProgress(msg, sender) {
 }
 
 function handleRegisterProgressTab(msg, sender) {
-    downloadProgressTabId = sender.tab?.id;
+    const tabId = sender.tab?.id;
+    // One live mirror per session: the page registering now takes over from a
+    // tab that is still tracked. A stale tab stopped receiving pushes when it
+    // was superseded (or when the worker restarted) — it keeps showing frozen
+    // rows next to the live one, so close it instead of leaving two windows.
+    if (tabId != null && downloadProgressTabId != null && downloadProgressTabId !== tabId) {
+        const stale = downloadProgressTabId;
+        console.info(manifest.name + ': Progress tab ' + tabId + ' registered — closing stale tab ' + stale);
+        chrome.tabs.remove(stale).catch(() => {});
+    }
+    downloadProgressTabId = tabId;
     console.info(manifest.name + ': Progress tab registered with ID:', downloadProgressTabId);
     sendToProgressTab({
         cmd: 'updateStatus',
         status: scanInProgress ? 'Scanning...' : '',
         items: serializeAllProgress(),
-        stats: downloadStats
+        stats: downloadStats,
+        // Session-loss detection: the tab records this from its very first
+        // snapshot (see classifyWorkerState in options/download-progress.js).
+        sessionStart: sessionStartTime
     });
 }
 
@@ -382,7 +398,12 @@ function handleStopScanning() {
     for (let url in downloadProgress) {
         if (downloadProgress[url].status === 'downloading' && downloadProgress[url].downloadId) {
             const task = downloadProgress[url].task;
-            chrome.downloads.cancel(downloadProgress[url].downloadId, () => {});
+            chrome.downloads.cancel(downloadProgress[url].downloadId, () => {
+                // NF-8: the item may have finished between the cancel request and
+                // the callback — consume the error so it is not reported as an
+                // unchecked runtime.lastError.
+                if (chrome.runtime.lastError) { /* nothing to cancel */ }
+            });
             updateDownloadProgress(url, 'canceled', 0, 'Download canceled', downloadProgress[url].downloadId, task);
             releaseDownloadSlot(task);
         }
@@ -400,12 +421,73 @@ function handleStopScanning() {
     setTimeout(checkAllQueuesEmpty, 500);
 }
 
+// --- Worker identity / session-ownership marker ------------------------------
+// A mass-download session lives ENTIRELY in this worker's memory (queues,
+// downloadProgress, stats). A terminated worker therefore loses the session,
+// and the progress tab — push-driven, no polling loop — kept displaying the
+// stale rows forever while Save Log answered from a freshly respawned worker
+// with an empty stub. Live evidence (2026-09-11): log/imagus-mass-download-log-
+// 2026-09-11T18-20-54.txt reported "Session start: -" with found=0 and
+// "total shown=0" while the tab still displayed 406 found / 100 rows — the
+// answering worker had never opened a session, so its state was gone.
+//
+// The marker makes that situation self-describing for the tab and the log:
+//   workerStartMs — in-memory: when THIS worker instance evaluated its script.
+//   workerStarts  — chrome.storage.session: worker start times of the current
+//                   browser session (survives worker restarts, dies with the
+//                   browser). Its length is the worker generation number.
+// A worker answering a status/log request whose workerStartMs is NEWER than
+// sessionStartTime did not open that session itself, so its queues are gone.
+var workerStartMs = Date.now();
+var workerStarts = [];
+
+// The log prefix cannot assume `manifest`: in the Firefox event page this file
+// is evaluated BEFORE background/service.js, which is where `var manifest` lives
+// (manifest background.scripts order: init -> core -> dnr -> service). A bare
+// manifest.name here would throw inside the promise chain and be swallowed by
+// the .catch below — silently losing the whole start history. typeof-guard it.
+function mdWorkerLabel() {
+    try { return (typeof manifest !== 'undefined' && manifest && manifest.name) || 'Imagus'; }
+    catch (e) { return 'Imagus'; }
+}
+
+function mdRecordWorkerStart() {
+    try {
+        chrome.storage.session.get('mdWorkerStarts').then(function (r) {
+            const prev = r && Array.isArray(r.mdWorkerStarts) ? r.mdWorkerStarts : [];
+            workerStarts = prev.concat([workerStartMs]).slice(-24);
+            const gen = workerStarts.length;
+            // Persist FIRST, log afterwards: a failure in the log line must never
+            // skip the write (the marker is the actual diagnostic payload).
+            return chrome.storage.session.set({ mdWorkerStarts: workerStarts }).then(function () {
+                console.info(mdWorkerLabel() + ': mass-download worker gen ' + gen
+                    + ' started ' + new Date(workerStartMs).toISOString()
+                    + (prev.length ? ' — previous worker gen ' + prev.length + ' terminated (in-memory queues lost)' : ''));
+            });
+        }).catch(function () { /* diagnostics only — never fatal */ });
+    } catch (e) { /* storage.session unavailable: keep the in-memory marker */ }
+}
+mdRecordWorkerStart();
+
+// Shipped with getDownloadStatus / getDownloadLog (see the header note above).
+function workerMarker() {
+    return { start: workerStartMs, gen: workerStarts.length || null };
+}
+
 function handleGetDownloadStatus(msg, sendResponse) {
     // Audit N-24: explicit null-check (same pattern as N-01); 0 is not
     // reachable through the UI (min 10) but the `||` form silently replaced
     // any falsy value with 100.
     const maxRecords = cachedPrefs.da?.maxProgressRecords != null ? cachedPrefs.da.maxProgressRecords : 100;
-    sendResponse({ items: serializeAllProgress(), stats: downloadStats, maxRecords: maxRecords });
+    // sessionStart + worker: the progress tab and the Save Log use them to tell
+    // an owned session from a respawned worker whose state is gone (see above).
+    sendResponse({
+        items: serializeAllProgress(),
+        stats: downloadStats,
+        maxRecords: maxRecords,
+        sessionStart: sessionStartTime,
+        worker: workerMarker()
+    });
 }
 
 // --- Download Slot Management ---
@@ -435,6 +517,10 @@ function releaseDownloadSlot(task) {
     if (task._watchdog) {
         clearTimeout(task._watchdog);
         task._watchdog = null;
+    }
+    if (task._stallTimer) {
+        clearTimeout(task._stallTimer);
+        task._stallTimer = null;
     }
     if (task._downloadId != null) {
         downloadIdToTask.delete(task._downloadId);
@@ -1447,6 +1533,37 @@ async function processFilterQueue() {
     }
 }
 
+// --- Gradient download watchdog ---------------------------------------------
+// The hard WATCHDOG_MS timeout inside processDownloadQueue (5 min) is a
+// last-resort net. A download that receives NOTHING (hotlink-blocked CDN
+// holding the connection open, rate limiter stalling the stream) used to keep
+// one of only `maxConcurrentDownloads` slots busy for the full 5 minutes, so
+// the queue stalled in five-minute waves — the 2026-09-12 rule34 dump showed
+// rows frozen at "Downloading 0%" with the whole rest of the queue pending.
+// STALL_MS fires only when chrome.downloads.onChanged never reported anything
+// for that download; every delta re-arms it (see the onChanged head), so a
+// slow-but-alive transfer — including streams without Content-Length, which
+// only ever report bytesReceived deltas — is never cut short.
+const STALL_MS = 60 * 1000;
+
+function armStallWatchdog(task, downloadId) {
+    if (task._stallTimer) clearTimeout(task._stallTimer);
+    task._stallTimer = setTimeout(function () {
+        task._stallTimer = null;
+        updateDownloadProgress(task.url, 'failed', 0, 'No data from server (stalled)', downloadId, task);
+        chrome.downloads.cancel(downloadId, function () {
+            if (chrome.runtime.lastError) { /* already finished */ }
+        });
+        mdSwallow(chrome.downloads.erase({ id: downloadId }));
+        // Slot released LAST: releaseDownloadSlot drops the downloadIdToTask
+        // entry first, so the USER_CANCELED interrupt produced by this cancel
+        // finds no task and cannot run a second verdict (advance / offscreen)
+        // on a row that is already terminal.
+        releaseDownloadSlot(task);
+    }, STALL_MS);
+    return task._stallTimer;
+}
+
 function processDownloadQueue() {
     let maxConcurrentDownloads = Number(cachedPrefs.da?.maxConcurrentDownloads) || 3;
     if (!Number.isFinite(maxConcurrentDownloads) || maxConcurrentDownloads < 1) maxConcurrentDownloads = 3;
@@ -1542,11 +1659,17 @@ function processDownloadQueue() {
                 task._downloadId = downloadId;
                 downloadIdToTask.set(downloadId, task);
                 updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
+                // Gradient watchdog (see armStallWatchdog): 60 s of complete
+                // silence frees the slot long before the 5-minute hard net.
+                armStallWatchdog(task, downloadId);
                 const WATCHDOG_MS = 5 * 60 * 1000;
                 const watchdog = setTimeout(() => {
                     // Audit N-16: callback consumes chrome.runtime.lastError when
                     // the download already reached a terminal state.
-                    chrome.downloads.cancel(downloadId, () => {});
+                    chrome.downloads.cancel(downloadId, () => {
+                        // NF-8: already finished/erased is the normal case here.
+                        if (chrome.runtime.lastError) { /* nothing to cancel */ }
+                    });
                     updateDownloadProgress(task.url, 'failed', 0, 'Download timed out', downloadId, task);
                     releaseDownloadSlot(task);
                 }, WATCHDOG_MS);
@@ -1713,15 +1836,33 @@ function mdSwallow(promiseLike) {
 
 // Fix D (2026-09-09 live test, v2026.8.20.6): SERVER_FAILED stubs survived
 // Fix A in Chrome's history. Root cause: the promise chain
-// (removeFile).then(erase) SKIPS erase when removeFile rejects — on a 5xx
-// interruption Chrome usually has no partial file on disk, removeFile
-// rejects ("file not found"), and mdSwallow silently ate the skip. The
-// callback form below runs the erase exactly once in BOTH outcomes: errors
-// arrive as chrome.runtime.lastError INSIDE the callback, never as a
-// skipped callback. Erase still runs strictly AFTER removeFile (erase
-// drops the history record removeFile needs).
+// (removeFile).then(erase) SKIPS erase when removeFile rejects, and
+// mdSwallow silently ate the skip. The callback form below runs the erase
+// exactly once in BOTH outcomes: errors arrive as chrome.runtime.lastError
+// INSIDE the callback, never as a skipped callback. Erase still runs
+// strictly AFTER removeFile (erase drops the history record removeFile needs).
+//
+// NF-8 (2026-09-12 review of Errors.txt): the OLD comment claimed the failure
+// was "no partial file on disk". Chromium's own API contract says otherwise
+// (chrome/common/extensions/api/downloads.webidl): removeFile = "Remove the
+// downloaded file if it exists and the DownloadItem is complete; otherwise
+// return an error through runtime.lastError", erase = "Erase matching
+// DownloadItem from history WITHOUT deleting the downloaded file". An
+// interrupted (SERVER_FAILED) item is therefore NEVER removable — the call
+// could only ever produce an "Unchecked runtime.lastError: Download must be
+// complete" warning in the browser console. The caller now asks for the file
+// only when the item really is complete; the callback still consumes
+// lastError so a failed removal is never reported as an unchecked error.
+// Consequence to know about: a partially downloaded .crdownload of an
+// interrupted item CANNOT be deleted through this API (erase keeps the file) —
+// platform limitation, not something this code can fix.
 function mdRemoveFileThenErase(id) {
     chrome.downloads.removeFile(id, function () {
+        if (chrome.runtime.lastError) {
+            // Item gone / not complete / file already removed: expected, and the
+            // erase below is what the user-visible cleanup actually needs.
+            console.debug(manifest.name + ': removeFile skipped: ' + chrome.runtime.lastError.message);
+        }
         mdSwallow(chrome.downloads.erase({ id: id }));
     });
 }
@@ -1730,7 +1871,15 @@ chrome.downloads.onChanged.addListener(function (delta) {
     const existingTask = downloadIdToTask.get(delta.id);
     if (!existingTask) return;
 
+    // Gradient watchdog: any delta for this download proves it is alive —
+    // re-arm its stall timer (releaseDownloadSlot cleared it once terminal).
+    if (existingTask._stallTimer) armStallWatchdog(existingTask, delta.id);
+
     chrome.downloads.search({ id: delta.id }, function (results) {
+        // NF-8: consume runtime.lastError (Chrome logs "Unchecked
+        // runtime.lastError" for a callback that never reads it). A failed
+        // search yields no results, so the existing no-results path stays.
+        if (chrome.runtime.lastError) { /* handled by the no-results path */ }
         if (!results || !results[0]) return;
         const url = existingTask.url;
 
@@ -1790,11 +1939,16 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 // needs). The attempt chain lives in the progress tab / log.
                 const dlErr = results[0].error || '';
                 if (dlErr === 'SERVER_FAILED') {
-                    // Fix D: callback helper — the erase must run even when
-                    // removeFile rejects (no partial file on disk). The
+                    // Fix D: the erase must run even when removeFile cannot. The
                     // 2026-09-09 live test left 11 SERVER_FAILED stubs exactly
                     // because the old promise chain skipped the erase.
-                    mdRemoveFileThenErase(delta.id);
+                    // NF-8: only a COMPLETE item has a removable file; an
+                    // interrupted 5xx item is never complete, so asking for the
+                    // file there produced a guaranteed (and noisy)
+                    // "Download must be complete" error without ever deleting
+                    // anything. Same erase either way.
+                    if (results[0].state === 'complete') mdRemoveFileThenErase(delta.id);
+                    else mdSwallow(chrome.downloads.erase({ id: delta.id }));
                 } else if (dlErr === 'SERVER_BAD_CONTENT' || dlErr === 'SERVER_FORBIDDEN'
                     || dlErr === 'SERVER_UNAUTHORIZED') {
                     mdSwallow(chrome.downloads.erase({ id: delta.id }));

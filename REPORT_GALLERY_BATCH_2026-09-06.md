@@ -2314,4 +2314,216 @@ blob-загрузке закрывала документ и обрушивал�
 (в FF-архиве лежат для байт-симметрии деревьев, но не загружаются: в FF-манифесте нет permission
 `offscreen`, а FF-путь несёт Referer сам через `downloads.download({headers})`).
 
+## 32. Стороннее ревью v2026.8.20.10 и исправления 2026-09-12 (BT-01 / NF-2 / NF-7 / NF-8)
+
+Сторонний документ `Audit/REVIEW_BT_AND_V2026.8.20.10_2026-09-12.md` проверен против реального кода;
+мои возражения вписаны в него аннотациями `[ПРОВЕРКА 2026-09-12]`, отдельный отчёт —
+`Audit/REVIEW_BT_AND_V2026.8.20.10_RESPONSE_2026-09-12.md`, гейты — `.unlazy/review-verify-2026-09-12/`.
+Продуктовый код на момент ревью не менялся (подтверждено `git status`), пять проектных верификаторов
+и `scripts/verify-syntax.mjs` были зелёными.
+
+### 32.1. Что подтвердилось, что нет
+
+* **NF-1 / BT-01 — подтверждено исполнением.** Репро вырезает ветку `resolved` из `content.js`
+  дословно и гоняет два круга `{loop}` через реальный клон сообщения: на прежнем коде
+  `PVI.res = [["/s/page1"],["/s/page2"]]` (аккумулятор мёртвой цепочки не очищался).
+  Уточнение к ревью: гвард был мёртв **во всех** путях, а не «кроме одного». Ошибка ревью —
+  указание зеркалировать правку в `content-block.js` (участок вне пяти маркерных секций).
+* **BT-02 — предложенный `xhr.timeout` ОТКЛОНЁН как вредный.** WHATWG XHR + MDN: `timeout` для
+  синхронного XHR в Window бросает `InvalidAccessError` — правило E-Hentai `/g/` упало бы
+  детерминированно на каждом наведении. Берётся только `try/catch` (решение за владельцем, §D-1 плана).
+* **NF-2 (FF без `_interruptHandled`) — подтверждено**, механизм уточнён: ветка `interrupted` живёт
+  внутри async-колбэка `chrome.downloads.search`, поэтому две дельты подряд обе доходили до `advance`.
+* **§5 ревью: ссылка неверна** — 1531 это download-путь (`mdSwallow`), GET-ветка фильтра гвардится
+  `await`-ом в 1318.
+* **BT-03…BT-10, Fix E-3, BT-11/BT-12 — подтверждены** по коду (BT-12: ссылка ревью на `FF:1326` точна).
+
+### 32.2. Новое: NF-7 (offscreen idle-close) и NF-8 (`Errors.txt`)
+
+* **NF-7 (P2).** `liveObjectUrls++` делается только после полного чтения тела, а `armIdleClose()`
+  вызывается лишь при Fetch/Revoke — тело, читаемое дольше 30 с, выглядело «простоем», документ
+  закрывался посреди запроса, и элемент откатывался на меньший кандидат (`master1200` вместо
+  оригинала). Воспроизведено на настоящем `armIdleClose` с виртуальными таймерами.
+* **NF-8 (P3, из `Errors.txt`).** `Unchecked runtime.lastError: Download must be complete` — это
+  `mdRemoveFileThenErase` в ветке `SERVER_FAILED`. По Chromium IDL (`downloads.webidl`): `removeFile`
+  требует `complete` (иначе ошибка через `runtime.lastError`), а `erase` удаляет только запись
+  истории («without deleting the downloaded file»). Прерванный элемент никогда не `complete` — вызов
+  был заведомо безуспешным и давал предупреждение. К обрыву загрузок отношения не имеет.
+
+### 32.3. Сделано (ИСПОЛНЕНО)
+
+| # | Файлы | Суть |
+|---|---|---|
+| FIX-1 (BT-01) | `content/content.js` ×2 | гвард аккумулятора по `d.params.rule.id` (2 строки + комментарии) |
+| FIX-2 (NF-2) | FF `mass-download/service-core.js` | зеркало `_interruptHandled` (один вердикт на загрузку) |
+| FIX-3 (NF-7) | `offscreen/offscreen.js` ×2 (байт-идентичны) | `inFlight` в `armIdleClose` + stall-таймаут 60 с с `AbortController`, перевзводимый на каждом чтении |
+| FIX-4 (NF-8) | `service-core.js` ×2, `background/service.js` ×2, `tools/md-unit-smoke.mjs` | `removeFile` только для `complete`, во всех колбэках читается `runtime.lastError`, исправлены комментарии Fix D |
+
+Локи в `tools/md-unit-smoke.mjs`: сравнение владельца по ID в обоих деревьях (и запрет сравнения
+по объекту), `content-block.js` без `res_owner`, `_interruptHandled` в обоих деревьях, `inFlight` +
+`STALL_TIMEOUT_MS` + перевзвод watchdog’а, «нет колбэков `downloads.*`, игнорирующих `lastError`»,
+`removeFile` только для `complete`. Плюс в харнессе smoke-теста добавлен `manifest` — без него новый
+debug-лог в `mdRemoveFileThenErase` падал с `ReferenceError` (нашли своим же прогоном).
+
+**Верификация:** `md-unit-smoke`, `md-marker-check` 5/5×2, `md-ff-delta` (3 файла), `_chk_defaults`,
+`scripts/verify-syntax.mjs`, `node --check` по 9 изменённым файлам — зелёные; три гейт-леджера
+(`repro-bt01` 19 гейтов с детектором отката, `repro-offscreen-idle` 15, `verify-static` 41 = 75) — все
+`PASS`. Осталось живое: пагинация E-Hentai `/g/`, Firefox pixiv (регресс FIX-2), pixiv на медленном
+канале (NF-7), rule34 с 5xx (NF-8: в консоли SW не должно быть «Unchecked runtime.lastError»).
+
 **Побочно: rule34 больше не воспроизводится.** `log/Rule34 imagus-mass-download-log-2026-09-11T20-07-34.txt`: `downloaded=42` (было 21), строк `pending` — **0** (было 19 «навсегда»), лог сохранился непустым (`Session start: 2026-09-11 20:06:29`). Единственное изменение этого класса в сборке — гвард `_interruptHandled` (§30.1): без него `state`- и `error`-дельты давали **двойной `advance`** по цепочке одного элемента. Причинность **не доказана** (симптом не воспроизводится = нечего проверять), но при рецидиве смотреть первым делом сюда; в логе этого прогона 62 строки `FAILED` — это откаты по мёртвым кандидатам (норма, FIX-2), а не залипание.
+
+---
+
+## §30.7. Рецидив «pending навсегда + пустой лог»: причина — потеря состояния service worker (2026-09-12)
+
+### Поправка к §30.6
+
+Фраза «rule34 больше не воспроизводится» относилась к конкретному прогону `2026-09-11T20-07-34`,
+который уложился в 65 с и сохранился целиком (`downloaded=42`, строк `pending` — 0). Для того запуска
+вывод верен, **как общий — неверен**: 2026-09-12 пользователь приложил свежий дамп страницы прогресса,
+где симптом вернулся. Ниже — что именно доказывают эти данные.
+
+### Данные пользователя
+
+Счётчики страницы: `Found 406 / Prefiltered 320 / Skipped 2 / To Download 98 / Completed 11 /
+Failed 56 / Canceled 0`; ~31 строка не в терминальном статусе, из них 3–4 — `Downloading` с размером `-`
+и `0%`. Лог сохраняется **пустым**, данные со страницы живут «до refresh».
+
+Пересчёт чисел (важно для чтения отчёта): `To Download` — это **не очередь**, а `items.length - skipped`
+локального зеркала страницы (`options/download-progress.js:175`), т.е. 98 = 100 строк (потолок
+`maxProgressRecords`) минус 2 skipped. `Found / Prefiltered` приходят из SW. Реальное состояние на момент
+снятия: 11 completed, 56 failed, ~31 в работе.
+
+### Доказательство: воркер перезапустился, состояние потеряно
+
+`log/Empty log imagus-mass-download-log-2026-09-11T18-20-54.txt` (тот же симптом, снят ранее):
+
+```
+Session start: -
+Stats (live counters): found=0 prefiltered=0 skipped=0 downloaded=0
+Items by status:  (total shown=0)
+```
+
+`sessionStartTime` выставляется **только** в `handleOpenDownloadProgress()` (`service-core.js:281`), а
+заголовок страницы с 406/100 строками мог быть отрисован лишь пушами SW. `Session start: -` ⇒ ответивший
+воркер **никогда не открывал эту сессию** ⇒ он был перезапущен, а очереди, статистика и прогресс живут
+только в памяти (`service-init.js`). Кнопка Save Log сама поднимает свежий воркер (`runtime.sendMessage`)
+— отсюда «пустой лог».
+
+Почему это выглядит как вечная заморозка: страница прогресса **push-only** (в
+`options/download-progress.js` не было ни одного `setInterval`), поэтому после смерти воркера она навсегда
+показывает последний снапшот. Keep-alive при этом не восстанавливает сессию, а **заметает след**:
+`chrome.alarms.onAlarm` очищает `md-session-keepalive`, если `sessionHasWork()` ложен, а на холодном старте
+все счётчики пусты ⇒ условие ложное, и единственная зацепка о сессии стирает сама себя.
+
+### Арифметика шторма на rule34 (тот же лог, 20:07)
+
+`log/Rule34 imagus-mass-download-log-2026-09-11T20-07-34.txt`: 100 строк, из них 62 FAILED, и у **всех 62**
+причина выбора кандидата — без валидации: `breaker-open (unvalidated)` ×47,
+`heuristic (validation failed)` ×15. В цепочках попыток **91 из 95** записей — HTTP 403: `wimg.rule34.xxx`
+не отдаёт SW ни HEAD, ни GET. Разных файлов (по hash) на 62 строки — 39 при 8 кандидатах в группе: мод
+**угадывает расширение** (`.jpg`-вариант `.png`-файла = гарантированный 403), а единственный работающий
+валидатор — сама загрузка браузером (`chrome.downloads` умеет Referer, SW-fetch — нет). Отсюда сотни
+запросов к одному CDN за минуты — наиболее вероятная причина rate-limit'а и висящих соединений.
+
+Строки `Downloading 0%` с размером `-` — это запущенные загрузки, по которым не пришло ни одного
+`onChanged`; каждая держала один из **3** слотов до жёсткого 5-минутного таймаута, то есть очередь
+стоит волнами по 5 минут. **Это другой механизм, не потеря состояния** (воркер при этом жив), и лечится
+он отдельно — FIX-6 ниже.
+
+### Консоль: 40 строк «The message port closed…» — самоинфликт, не признак бага
+
+`common/app.js:109` передаёт `Port.listener` как **колбэк ответа** (`chrome.runtime
+.sendMessage(message, callback || Port.listener)`), а в content-скрипте `Port.listen(PVI.onMessage)`
+установлен (`content/content.js:4668`). Все масс-даунлоад-команды (`downloadMass`, `updateStatus`,
+`updateFilterStats`, `reportSkippedItem`, `resolveAndDownloadGroups`, `openDownloadProgress`, `referer*`,
+`stopScanning`) в SW намеренно не отвечают (`break` без `sendResponse`), а `content.js` **ни разу не читает
+`chrome.runtime.lastError`** (grep: 0 совпадений) ⇒ Chrome печатает «Unchecked runtime.lastError» на каждое
+такое сообщение. То есть «в логе расширения ошибок нет» — недостоверный сигнал: настоящие ошибки тонут в
+этом шуме. Побочно `PVI.onMessage` получает **ответы** как команды (пока безвредно, но это скрытая мина).
+В заход 2026-09-12 не правилось (выбран другой приоритет) — см. D-5.
+
+### FIX-5 (реализовано): маркер воркера + детект потери состояния
+
+| Что | Где |
+|---|---|
+| `workerStartMs` / `workerStarts` (`storage.session`, история стартов) + `workerMarker()` + `console.info 'worker gen N started'` | `mass-download/service-core.js` ×2 |
+| `sessionStart` + `worker` в ответах | `getDownloadStatus` (core ×2), `getDownloadLog` (service.js ×2), `registerProgressTab` (core ×2) |
+| Чистые `countNonTerminal` / `classifyWorkerState` + баннер `⚠ Background was restarted…` + `setInterval(workerWatchdog, 5000)` + маркер в Save Log | `options/download-progress.js` ×2 (байт-идентичны) |
+
+Правило классификации (без DOM и chrome, покрыто юнит-тестами): непустые нетерминальные строки на
+странице + ответ, у которого `sessionStart === null` (или `worker.start > sessionStart`) ⇒ `'lost'`;
+другой `sessionStart` при известном прежнем ⇒ `'newsession'`; иначе `'ok'`. Проба отправляется только
+при простое ≥20 с и наличии незавершённых строк, то есть при живой сессии почти не работает, а при
+мёртвой — поднимает воркер и сразу получает ответ «состояние пусто».
+
+### FIX-6 (реализовано): градиентный watchdog загрузки
+
+`armStallWatchdog()`: 60 с **полной тишины** (ни одного `onChanged` по этой загрузке) ⇒ строка `failed
+'No data from server (stalled)'`, `cancel` + `erase`, затем освобождение слота. Любая дельта
+перевзводит таймер (вызов стоит в голове `onChanged`, до асинхронного `downloads.search`), поэтому
+медленная, но живая передача — в том числе без `Content-Length` — не режется. Жёсткий
+`WATCHDOG_MS` (5 мин) остался как последняя сетка.
+
+### Верификация захода
+
+- `tools/md-unit-smoke.mjs`: новые локи — маркер в обоих деревьях и в обоих ответах, `sessionStart` в
+  `registerProgressTab`, таймер пробы и сброс `lastPushAt` в `handleMessage`, побайтовое равенство
+  классификатора в деревьях, 11 поведенческих проверок самого классификатора, «`STALL_MS` < `WATCHDOG_MS`»,
+  порядок `cancel → erase → release`, перевзвод до `downloads.search`.
+- `.unlazy/review-verify-2026-09-12/repro-stall-watchdog.mjs` (новый): реальный `armStallWatchdog` из
+  обоих деревьев на виртуальных таймерах — **24/24 гейта**: тишина ровно до `STALL_MS`, порядок вызовов,
+  один релиз слота, очистка таймера, «110 с с дельтами = жив», «три арма подряд = один вердикт».
+- `md-marker-check` 5/5×2, `md-ff-delta` (3 канонических файла), `_chk_defaults` ×2,
+  `scripts/verify-syntax.mjs`, `node --check` ×6 — зелёные.
+
+### Найдено попутно (не мной внесено)
+
+`scripts/verify-security.mjs` падает на `firefox service must import mass-download`: он ищет строку
+`mass-download/service-core.js` в FF `background/service.js`, которой там нет и **не было на HEAD**
+(`git show HEAD:… | grep -c` = 0) — FF подключает модули через `manifest.background.scripts`. Верификатор
+устарел и потому не проверяет FF вообще: провал «вечный», его никто не замечает. Правится отдельно (D-8).
+
+---
+
+## §30.8. Живой прогон 2026-09-12T16:17 — маркер сработал (и что это меняет)
+
+`log/Chrome Pending imagus-mass-download-log-2026-09-12T16-17-02.txt`:
+
+```
+Session start: -
+Worker: 2026-09-12 16:16:16 (gen 2)
+
+!! SESSION STATE LOST — the worker that answered this request (2026-09-12 16:16:16) never opened the session
+Stats (live counters): found=0 prefiltered=0 skipped=0 downloaded=0
+Items by status:  (total shown=0)
+```
+
+То есть FIX-5 записал потерю состояния **в живом прогоне**, а не только в теории: ответивший воркер
+(gen 2, старт 16:16:16) сессии не открывал, его состояние пусто. `gen 2` означает ровно **один**
+незапланированный старт воркера в этой сессии браузера.
+
+**Важно понимать:** FIX-5 не спасает от обрыва, он его делает видимым и локализуемым. Загрузки,
+которые уже были в очереди в умершем воркере, никуда не поедут — для этого нужен FIX-7 (снапшот
+очередей в `storage.session`), и он остаётся главным невыполненным пунктом.
+
+### Два дефекта, найденных по этому же отчёту, — исправлены
+
+1. **Дублирование окна прогресса.** `getOrCreateProgressTab` удалял старые вкладки fire-and-forget
+   (`chrome.tabs.remove(id).catch(...)` без `await`), т.е. создание новой вкладки гонялось с удалением
+   старой; кроме того воркер, переживший рестарт, не знал о старой вкладке (`downloadProgressTabId`
+   теряется), а пуши идут только в последний зарегистрированный id — второй таб висел пустым.
+   Исправлено в обоих деревьях: удаления ждутся (`await Promise.all(...)`) и `handleRegisterProgressTab`
+   закрывает устаревший отслеживаемый таб, когда регистрируется новый («одно живое зеркало»).
+2. **Жизненный цикл баннера.** Проба больше не зависит от `document.visibilityState` (фоновая вкладка
+   — как раз целевой случай, а Chrome всё равно троттлит её таймеры), а живой снапшот (`items` или
+   более новый `sessionStart`) и `Clear All` снимают баннер — иначе после одного рестарта он висел бы
+   вечно. Локи на всё это добавлены в `md-unit-smoke.mjs`.
+
+### Что нужно от владельца для поиска причины смерти воркера
+
+Консоль service worker: `chrome://extensions` → Imagus Reborn MD → «service worker» → строки
+`Imagus…: mass-download worker gen N started <ISO>` — по интервалам между ними сразу видно, сколько
+воркер жил последний раз: ~30 с без событий = idle-таймер, ~5 мин = лимит на одну операцию,
+мгновенный повторный старт = перезагрузка расширения/браузера.

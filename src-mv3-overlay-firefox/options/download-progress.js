@@ -20,11 +20,97 @@
     let downloadItems = {};
     let maxProgressRecords = 100;
 
+    // --- Session-loss detection --------------------------------------------
+    // The SW owns the mass-download session in memory only (queues, stats,
+    // progress). If the worker is terminated and respawned, that state is gone
+    // while this page keeps the last pushed snapshot on screen — which looked
+    // exactly like a download that stalled forever, and Save Log answered with
+    // an empty stub (live evidence 2026-09-11: "Session start: -", found=0,
+    // total shown=0 while the tab showed 406 found / 100 rows). The page now
+    // learns the worker's start time from every status/log response and probes
+    // the worker once the display has been silent for a while, so a lost
+    // session becomes an explicit banner instead of a silent freeze.
+    let lastSeenSessionStart = null;
+    let stateLost = false;
+    let lastPushAt = Date.now();
+    const SILENCE_MS = 20000;   // no SW push for this long -> probe the worker
+    const NON_TERMINAL = { pending: 1, scanning: 1, downloading: 1 };
+
+    // Pure (no DOM, no chrome) — mirrored by tools/md-unit-smoke.mjs.
+    function countNonTerminal(rows) {
+        if (!Array.isArray(rows)) return 0;
+        let n = 0;
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i] && NON_TERMINAL[rows[i].status]) n++;
+        }
+        return n;
+    }
+
+    // Pure classifier (no DOM, no chrome): what does a status/log response say
+    // about the session this page is displaying?
+    //   'lost'       — the answering worker never opened this session: its
+    //                  in-memory queues are gone and the rows below are stale.
+    //   'newsession' — the response carries a different session start: the rows
+    //                  on screen belong to an earlier scan (and replace them).
+    //   'ok'         — nothing to report.
+    function classifyWorkerState(resp, rows, prevSessionStart) {
+        if (!resp || !Array.isArray(rows)) return 'ok';
+        if (countNonTerminal(rows) === 0) return 'ok';
+        const ss = resp.sessionStart || null;
+        if (ss !== null && prevSessionStart !== null && ss !== prevSessionStart) return 'newsession';
+        if (ss === null) return 'lost';
+        const ws = resp.worker && resp.worker.start ? resp.worker.start : null;
+        if (ws !== null && ws > ss) return 'lost';
+        return 'ok';
+    }
+
+    function showStateLost() {
+        if (stateLost) return;
+        stateLost = true;
+        const el = document.getElementById('scanStatus');
+        if (el) {
+            el.textContent = '⚠ Background was restarted — session state lost (queues live in memory only). '
+                + 'Rows below are stale: start the scan again from the page, then Clear All.';
+            el.style.color = '#b02a37';
+        }
+    }
+
+    function clearStateLost() {
+        if (!stateLost) return;
+        stateLost = false;
+        const el = document.getElementById('scanStatus');
+        if (el) {
+            el.textContent = '';
+            el.style.color = '#495057';
+        }
+    }
+
+    // Probe the worker only while the display is silent: a live session pushes
+    // constantly, so this costs one message per SILENCE_MS — and, being a real
+    // event, it also keeps the worker from idling out mid-session.
+    function workerWatchdog() {
+        // Deliberately NOT gated on document.visibilityState: a background tab is
+        // exactly the case that matters (the user is working on the source page
+        // while the session dies behind them), and Chrome throttles background
+        // timers anyway — the guard only delayed detection.
+        if (stateLost) return;
+        if (countNonTerminal(Object.values(downloadItems)) === 0) return;
+        if (Date.now() - lastPushAt < SILENCE_MS) return;
+        chrome.runtime.sendMessage({ cmd: 'getDownloadStatus' }, function (resp) {
+            if (chrome.runtime.lastError || !resp) return;   // no worker at all
+            const verdict = classifyWorkerState(resp, Object.values(downloadItems), lastSeenSessionStart);
+            if (resp.sessionStart) lastSeenSessionStart = resp.sessionStart;
+            if (verdict === 'newsession') clearStateLost();
+            else if (verdict === 'lost') showStateLost();
+        });
+    }
+
     // The service worker pushes every state change here via runtime broadcasts
     // (sendToProgressTab) — tabs.sendMessage never reaches an extension page.
-    // The page renders only on those pushes plus a single status poll at init,
-    // so it stays an exact mirror of the SW state with no polling loop and no
-    // re-rendering of unchanged data (which caused flicker / broke selection).
+    // RENDERING stays push-only (plus a full mirror on Refresh and one status
+    // poll at init) so rows never flicker and selection survives — which is why
+    // the liveness probe above deliberately does NOT mirror its answer into the
+    // table: it only classifies the session state.
 
     // Handle status response from background script (one-shot refresh / safety net)
     function handleStatusResponse(response) {
@@ -45,6 +131,8 @@
         if (response.maxRecords) {
             maxProgressRecords = response.maxRecords;
         }
+        // Session identity of the worker that answered (see classifyWorkerState).
+        if (response.sessionStart) lastSeenSessionStart = response.sessionStart;
         if (changed) updateDisplay();
     }
 
@@ -73,10 +161,21 @@
         // safety net in case that broadcast is missed.
         chrome.runtime.sendMessage({ cmd: 'registerProgressTab' });
         refreshDisplay();
+        // Liveness probe for the SW-worker/session-loss detection above.
+        setInterval(workerWatchdog, 5000);
     }
 
     // Handle messages from background script
     function handleMessage(request, sender, sendResponse) {
+        lastPushAt = Date.now();
+        // A live session is reporting again: drop a previous state-lost banner
+        // (rows arriving or a newer session start both mean we are not looking at
+        // the corpse of the old session any more).
+        if ((request.items && Object.keys(request.items).length > 0)
+            || (request.sessionStart && request.sessionStart > (lastSeenSessionStart || 0))) {
+            if (request.sessionStart) lastSeenSessionStart = request.sessionStart;
+            clearStateLost();
+        }
         if (request.cmd === 'ping') {
             // Respond to ping for tab validation
             sendResponse({ pong: true });
@@ -316,6 +415,7 @@
     function clearAll() {
         chrome.runtime.sendMessage({ cmd: 'clearAllDownloads' }).catch(() => {});
         downloadItems = {};
+        clearStateLost();
         updateDisplay();
     }
 
@@ -351,7 +451,7 @@
         return d.toISOString().replace('T', ' ').slice(0, 19);
     }
 
-    function formatLog(data) {
+    function formatLog(data, opts) {
         const items = data.log || [];
         const stats = data.stats || {};
         const settings = data.settings || {};
@@ -360,6 +460,18 @@
         lines.push('Version: ' + (data.version || '?'));
         lines.push('Saved: ' + fmtTs(Date.now()));
         lines.push('Session start: ' + fmtTs(data.sessionStart));
+        lines.push('Worker: ' + (data.worker && data.worker.start
+            ? fmtTs(data.worker.start) + ' (gen ' + (data.worker.gen || '?') + ')' : '-'));
+        if (opts && opts.stateLost) {
+            lines.push('');
+            lines.push('!! SESSION STATE LOST — the worker that answered this request (' + fmtTs(data.worker && data.worker.start)
+                + ') never opened the session');
+            lines.push('   recorded above: its in-memory queues, stats and progress died when the previous worker');
+            lines.push('   instance was terminated. The item list below is therefore what the fresh worker');
+            lines.push('   still knows (usually empty) — the progress page keeps showing the rows of the');
+            lines.push('   terminated session, which is why they look stuck at "pending".');
+            lines.push('');
+        }
         lines.push('');
         lines.push('Settings:');
         for (const k in settings) {
@@ -416,7 +528,11 @@
                 if (scanStatusEl) scanStatusEl.textContent = 'Save Log failed: no data from service worker';
                 return;
             }
-            const text = formatLog(response);
+            // Save Log is also the diagnostic of last resort: record whether the
+            // worker answering still owns the session that produced the rows.
+            const verdict = classifyWorkerState(response, Object.values(downloadItems), lastSeenSessionStart);
+            if (verdict === 'lost') showStateLost();
+            const text = formatLog(response, { stateLost: verdict === 'lost' });
             const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');

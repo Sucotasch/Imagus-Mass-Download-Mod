@@ -31,7 +31,9 @@
 // session does not keep an extra document alive for the service worker — but
 // never while an object URL is still unrevoked, because window.close() tears
 // down this document's blob registry and would cut an active download that is
-// still reading one (see armIdleClose).
+// still reading one — and never while a fetch is in flight, because that would
+// cut the transfer itself (see armIdleClose). Both are bounded: a stalled
+// request is aborted by STALL_TIMEOUT_MS, live URLs by HARD_LIFETIME_MS.
 
 (function () {
     // A DIFFERENT bound from the SW's MAX_FALLBACK_SIZE / the content script's
@@ -47,6 +49,12 @@
     // cap and the Content-Length pre-check refuses an oversize body unread.
     var MAX_OFFSCREEN_FETCH = 32 * 1024 * 1024;
     var IDLE_CLOSE_MS = 30000;
+    // NF-7 (2026-09-12 review): a fetch that stops delivering bytes is aborted
+    // after this long. It is a STALL watchdog, not a total budget — the timer is
+    // re-armed before every read, so a slow-but-moving 32 MiB transfer still
+    // completes. A total timeout here would reintroduce exactly the quality loss
+    // the 32 MiB cap was raised to remove (falling back to a smaller derivative).
+    var STALL_TIMEOUT_MS = 60000;
     // Escape hatch: a fetch re-arms the idle timer, so a busy session never
     // reaches this. It only fires when the SW died (or was killed mid-session)
     // without sending the revoke, leaving URLs this document can never learn
@@ -56,12 +64,19 @@
     var idleTimer = null;
     var liveObjectUrls = 0;
     var idleWithBlobsSince = 0;
+    var inFlight = 0;      // fetches currently streaming into a Blob
 
     function armIdleClose() {
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(function () {
             idleTimer = null;
-            if (liveObjectUrls > 0) {
+            // NF-7: an in-flight fetch is NOT idle. Closing here used to kill a
+            // body transfer slower than IDLE_CLOSE_MS, because liveObjectUrls is
+            // only incremented once the WHOLE body has been read — the SW then
+            // saw its port close, fell back to the next candidate and saved a
+            // smaller derivative of the same media. inFlight is bounded by
+            // STALL_TIMEOUT_MS, so this can never pin the document forever.
+            if (liveObjectUrls > 0 || inFlight > 0) {
                 if (!idleWithBlobsSince) idleWithBlobsSince = Date.now();
                 if (Date.now() - idleWithBlobsSince < HARD_LIFETIME_MS) {
                     armIdleClose();
@@ -74,12 +89,32 @@
         }, IDLE_CLOSE_MS);
     }
 
+    // Arm/re-arm the stall watchdog of ONE request. Called before the initial
+    // request and before every read, so only a REAL stall (no bytes for
+    // STALL_TIMEOUT_MS) trips it. The timer hangs off the request's own
+    // controller (not a module-global), so two concurrent tier fetches — the SW
+    // can have up to maxConcurrentDownloads of them — cannot clear each other's
+    // watchdog.
+    function armStall(controller) {
+        if (controller._mdStallTimer) clearTimeout(controller._mdStallTimer);
+        controller._mdStallTimer = setTimeout(function () {
+            controller._mdStallTimer = null;
+            try { controller.abort(); } catch (e) { /* already aborted */ }
+        }, STALL_TIMEOUT_MS);
+    }
+
+    function clearStall(controller) {
+        if (controller._mdStallTimer) clearTimeout(controller._mdStallTimer);
+        controller._mdStallTimer = null;
+    }
+
     // Read the body with a running cap. Deliberately NOT a single whole-body
     // read into a Blob: that buffers the entire response before any size check,
     // so a chunked response (no Content-Length) could defeat the cap — the same
     // reasoning as readBodyCapped in the SW and readCapped in the content script.
-    async function fetchBlob(url) {
-        var resp = await fetch(url, { credentials: 'include' });
+    async function fetchBlob(url, controller) {
+        armStall(controller);
+        var resp = await fetch(url, { credentials: 'include', signal: controller.signal });
         if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status, status: resp.status };
         var type = resp.headers.get('Content-Type') || '';
         // Declared-size pre-check: refuse WITHOUT reading a single byte when the
@@ -97,6 +132,7 @@
         var chunks = [];
         var received = 0;
         for (;;) {
+            armStall(controller); // progress re-arms: a stall, not a deadline
             var step = await reader.read();
             if (step.done) break;
             received += step.value.byteLength;
@@ -138,13 +174,23 @@
         if (msg.cmd !== 'mdOffscreenFetch') return false;
 
         idleWithBlobsSince = 0; // live traffic: the hard deadline restarts
+        inFlight++;             // NF-7: the idle close must not cut this request
         armIdleClose();
-        fetchBlob(msg.url).then(function (res) {
+        var controller = new AbortController();
+        fetchBlob(msg.url, controller).then(function (res) {
+            inFlight--;
+            clearStall(controller);
             sendResponse(res);
         }).catch(function (e) {
-            // A network/CORS failure surfaces here — report it as data, never as
-            // a throw, so the SW can fall back to its normal candidate chain.
-            sendResponse({ ok: false, error: (e && e.message) ? e.message : String(e) });
+            // A network/CORS/stall failure surfaces here — report it as data,
+            // never as a throw, so the SW can fall back to its candidate chain.
+            inFlight--;
+            clearStall(controller);
+            var aborted = !!e && (e.name === 'AbortError' || /abort/i.test(e.message || ''));
+            var text;
+            if (aborted) text = 'Stalled: no data for ' + Math.round(STALL_TIMEOUT_MS / 1000) + 's';
+            else text = (e && e.message) ? e.message : String(e);
+            sendResponse({ ok: false, error: text });
         });
         return true; // async sendResponse
     });
