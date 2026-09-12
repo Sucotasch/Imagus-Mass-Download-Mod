@@ -915,6 +915,25 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
                 `D-9: ${label} only page-originated messages count as liveness (the tab polls and would mask a dead page)`);
             assert.ok(/pageSilentMs: mdPageSilentMs\(\)/.test(svcText),
                 `D-9: ${label} Save Log must carry the page-silence figure`);
+            // The page is the only source of the closing `done` status. A failed
+            // message to it used to null the initiator id unconditionally — which
+            // both killed every later retry and left the session open forever
+            // waiting for a page that was alive all along.
+            assert.ok(!/processedCount: foundUrls \}\)\.catch\(\(\) => \{ downloadInitiatorTabId = null; \}\)/.test(coreText),
+                `D-9: ${label} a failed group notification must not blind-null the initiator tab`);
+            assert.ok(/\.catch\(\(\) => \{ mdCheckInitiatorGone\(\); \}\)/.test(coreText),
+                `D-9: ${label} a failed group notification must ask whether the tab is really gone`);
+            const gone = cutFnFrom(coreText, 'mdCheckInitiatorGone');
+            assert.ok(/chrome\.tabs\.get\(tabId\)/.test(gone),
+                `D-9: ${label} the check must ask Chrome whether the tab still exists`);
+            assert.ok(/keeping the session and its retries/.test(gone),
+                `D-9: ${label} an answering-existence tab must keep its id and its retries`);
+            assert.ok(/downloadInitiatorTabId = null;\s*\n\s*contentScanDone = true;/.test(gone),
+                `D-9: ${label} a gone page must conclude the scan (no page can report \`done\` again)`);
+            assert.ok(/completionNotified = true;/.test(gone),
+                `D-9: ${label} a gone page must not announce "all downloads completed" over stranded rows`);
+            assert.ok(!/updateDownloadProgress\(/.test(gone),
+                `D-9: ${label} the gone-page path must not fail rows (browser downloads need no page)`);
         }
         for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
             assert.ok(/Recovered: session resumed after a background restart/.test(tabSources[tree]),

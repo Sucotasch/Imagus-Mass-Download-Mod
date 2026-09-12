@@ -643,6 +643,51 @@ function mdContentSilenceLimitMs() {
     return Math.max(MD_CONTENT_SILENCE_MIN_MS, perItem * 3);
 }
 
+// Is the scanned page still there? Only ever called after a message to the
+// initiator tab FAILED, so the answer decides between two very different cases:
+//
+//   * tab exists  → the failure was transient (a busy/frozen renderer that will
+//     answer later). Keep the id: the page still owes the closing `done` status,
+//     and nulling here — which is what the code used to do — silently disabled
+//     every later retry AND left the session open forever waiting for a page
+//     that is perfectly alive (the "pending, nothing in flight, no explanation"
+//     shape, with no way for the user to guess why).
+//   * tab gone    → closed or navigated away mid-scan, i.e. the user ignored the
+//     on-page warning "Do not leave this page until scanning is complete!".
+//     Nothing will ever report `done`, so conclude the scan HERE instead of
+//     keeping a session that cannot progress: the queues (pure
+//     chrome.downloads work, which needs no page) drain normally and the session
+//     ends by itself.
+//
+// The one capability that genuinely dies with the page is the referer-retry
+// fetch (Chrome's worker cannot attach the Referer nor create object URLs), so
+// rows that need it fail visibly with 'Referer retry unavailable' and stay
+// retryable instead of hanging.
+function mdCheckInitiatorGone() {
+    const tabId = downloadInitiatorTabId;
+    if (tabId == null) return;
+    let p;
+    try { p = chrome.tabs.get(tabId); } catch (e) { return; }
+    Promise.resolve(p).then(function () {
+        console.info(mdWorkerLabel() + ': initiator tab ' + tabId
+            + ' did not answer but still exists — keeping the session and its retries');
+    }).catch(function () {
+        console.warn(mdWorkerLabel() + ': initiator tab ' + tabId
+            + ' is gone (closed or navigated) — the page can no longer report, closing the scan');
+        downloadInitiatorTabId = null;
+        contentScanDone = true;
+        // Do not announce "all downloads completed" for rows that are still
+        // unfinished: they can only be finished by a Retry from the progress tab.
+        let stranded = false;
+        for (const url in downloadProgress) {
+            const st = downloadProgress[url].status;
+            if (st === 'pending' || st === 'scanning' || st === 'downloading') { stranded = true; break; }
+        }
+        if (stranded) completionNotified = true;
+        setTimeout(checkAllQueuesEmpty, 100);
+    });
+}
+
 function mdBuildSnapshot() {
     const rows = [];
     for (const url in downloadProgress) {
@@ -2907,7 +2952,8 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
         });
     }
     if (downloadInitiatorTabId) {
-        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls }).catch(() => { downloadInitiatorTabId = null; });
+        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls })
+            .catch(() => { mdCheckInitiatorGone(); });
     }
     setTimeout(checkAllQueuesEmpty, 1000);
 }
