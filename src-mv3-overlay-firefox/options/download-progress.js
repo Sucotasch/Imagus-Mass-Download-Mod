@@ -7,6 +7,7 @@
     const completedFilesEl = document.getElementById('completedFiles');
     const failedFilesEl = document.getElementById('failedFiles');
     const canceledFilesEl = document.getElementById('canceledFiles');
+    const listNoteEl = document.getElementById('listNote');
     const statsFoundEl = document.getElementById('stats-found');
     const statsPrefilteredEl = document.getElementById('stats-prefiltered');
     const statsSkippedEl = document.getElementById('stats-skipped');
@@ -145,6 +146,7 @@
         }
         if (response.maxRecords) {
             maxProgressRecords = response.maxRecords;
+            updateListNote();
         }
         // Session identity of the worker that answered (see classifyWorkerState).
         if (response.sessionStart) lastSeenSessionStart = response.sessionStart;
@@ -263,18 +265,36 @@
         // row shows what actually saved.
         if (data.filename) downloadItems[id].fileName = data.filename;
 
-        // Cap records to prevent unbounded growth
+        // Cap records to prevent unbounded growth.
+        // 2026-09-12: this MUST use the same rule as the service worker
+        // (mdEvictOldestRows in mass-download/service-core.js). The old
+        // `completed: 0` order deleted the rows that PROVE a file downloaded
+        // before deleting any failure — that is the "17 completed while 30 were
+        // downloaded" contradiction. A finished row goes before a live one; the
+        // oldest goes first inside each group. Keep the status set identical to
+        // the SW's (the smoke test compares the two spellings).
+        const finished = { completed: 1, skipped: 1, failed: 1, canceled: 1 };
         const keys = Object.keys(downloadItems);
         if (keys.length > maxProgressRecords) {
             const sorted = keys.sort((a, b) => {
                 const sa = downloadItems[a], sb = downloadItems[b];
-                const order = { completed: 0, skipped: 1, failed: 2, canceled: 3, scanning: 4, downloading: 5, pending: 6 };
-                const da = order[sa.status] ?? 7, db = order[sb.status] ?? 7;
-                return da - db || (sa.timestamp || 0) - (sb.timestamp || 0);
+                const fa = finished[sa.status] ? 0 : 1;
+                const fb = finished[sb.status] ? 0 : 1;
+                return fa - fb || (sa.timestamp || 0) - (sb.timestamp || 0);
             });
-            const toRemove = sorted.slice(0, keys.length - maxProgressRecords);
-            toRemove.forEach(k => delete downloadItems[k]);
+            sorted.slice(0, keys.length - maxProgressRecords).forEach(k => delete downloadItems[k]);
         }
+    }
+
+    // The table is a ROLLING WINDOW (da.maxProgressRecords), not the whole
+    // session. Saying so is the difference between "the page lies" and "the page
+    // shows the last N records" — the counters for the scan itself are in the
+    // Saved Log (downloaded=, skipped=).
+    function updateListNote() {
+        if (!listNoteEl) return;
+        listNoteEl.textContent = 'Showing the last ' + maxProgressRecords
+            + ' records — the list is capped, and the oldest finished rows drop off first.'
+            + ' The scan totals (downloaded=, skipped=) are in the Saved Log.';
     }
 
     // Calculate and display summary stats from the items table
@@ -285,8 +305,10 @@
         const failed = items.filter(item => item.status === 'failed').length;
         const canceled = items.filter(item => item.status === 'canceled').length;
 
-        // "To Download" total should not include skipped files
-        totalFilesEl.textContent = items.length - skipped;
+        // 2026-09-12: this used to read items.length - skipped under the label
+        // "To Download", which mixed three terminal statuses into a number that
+        // looked like a queue. It is the number of rows in the list — say that.
+        totalFilesEl.textContent = items.length;
         completedFilesEl.textContent = completed;
         failedFilesEl.textContent = failed;
         canceledFilesEl.textContent = canceled;
@@ -507,13 +529,22 @@
         lines.push('');
         const byStatus = {};
         items.forEach(it => { byStatus[it.status] = (byStatus[it.status] || 0) + 1; });
-        lines.push('Stats (live counters): found=' + (stats.found || 0)
+        // 2026-09-12: the two lines answer different questions and used to look
+        // contradictory — "downloaded=30" next to "completed=17" reads as a bug
+        // unless the list is named as a capped window. Spell it out: the scan
+        // totals come from the live counters, the rows below are the last N.
+        lines.push('Stats (scan totals, live counters): found=' + (stats.found || 0)
             + ' prefiltered=' + (stats.prefiltered || 0)
             + ' skipped=' + (stats.skipped || 0)
             + ' downloaded=' + (stats.downloaded || 0));
-        lines.push('Items by status: '
-            + Object.keys(byStatus).map(s => s + '=' + byStatus[s]).join(', ')
-            + ' (total shown=' + items.length + ')');
+        lines.push('Rows in this log: ' + items.length + ' of the scan\'s own rows'
+            + ' (list capped at da.maxProgressRecords=' + maxProgressRecords
+            + '; a finished row is dropped before a live one, oldest first)'
+            + ' — by status: '
+            + (Object.keys(byStatus).map(s => s + '=' + byStatus[s]).join(', ') || 'none')
+            + (items.length < (stats.downloaded || 0) + (stats.skipped || 0)
+                ? ' | NOTE: fewer rows than completed downloads — the rest dropped off the capped list'
+                : ''));
         lines.push('');
         lines.push('Items:');
         items.forEach((it, i) => {

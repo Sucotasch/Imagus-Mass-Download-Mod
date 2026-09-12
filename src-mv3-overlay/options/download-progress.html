@@ -207,11 +207,11 @@
       </div>
       <div class="stat-item">
         <div class="stat-value" id="totalFiles">0</div>
-        <div class="stat-label">To Download</div>
+        <div class="stat-label">Rows in List</div>
       </div>
       <div class="stat-item">
         <div class="stat-value" id="completedFiles">0</div>
-        <div class="stat-label">Completed</div>
+        <div class="stat-label">Completed in List</div>
       </div>
       <div class="stat-item">
         <div class="stat-value" id="failedFiles">0</div>
@@ -222,6 +222,11 @@
         <div class="stat-label">Canceled</div>
       </div>
     </div>
+    <!-- 2026-09-12: the grid counts the ROWS SHOWN, the list is a rolling
+         window (da.maxProgressRecords), and the scan totals live in the Saved
+         Log. Without this line "17 completed" next to seventy failures reads as
+         a broken page instead of a capped list. -->
+    <p id="listNote" style="text-align: center; font-size: 0.9em; color: #6c757d; margin: 8px 0 0;"></p>
 
     <div class="controls">
       <div>

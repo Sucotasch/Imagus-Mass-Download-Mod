@@ -1401,6 +1401,37 @@ function serializeAllProgress() {
     return items;
 }
 
+// Row-table cap (`da.maxProgressRecords`).
+//
+// 2026-09-12 — the eviction ORDER was a data-correctness bug, not a memory
+// detail. It sorted `completed: 0` FIRST, so the oldest COMPLETED rows were
+// deleted before any failed one; the table turned into a biased sample of
+// failures and contradicted the scan counters. The log archive proves it: while
+// a run stayed under the cap the two agreed exactly (34/34, 45/45, 33/33,
+// 29/29), and every time it hit the cap they diverged (117 downloaded vs 90
+// completed rows, 77 vs 44, 30 vs 17). That divergence is the "17 completed
+// although 37 files are on disk" report — the rows that PROVE a download had
+// happened were the first ones thrown away.
+//
+// New rule: a finished row is dropped before a live one (a live row's updates
+// must keep landing on an existing row), and the OLDEST is dropped first inside
+// each group — a plain rolling window, so no status is systematically deleted.
+// The progress tab mirrors this rule (its own local cap) — keep them in sync.
+// The status sets must stay textually identical in both files: the smoke test
+// compares the two spellings.
+function mdEvictOldestRows(table, maxRecords) {
+    const keys = Object.keys(table);
+    if (keys.length <= maxRecords) return;
+    const finished = { completed: 1, skipped: 1, failed: 1, canceled: 1 };
+    const sorted = keys.sort((a, b) => {
+        const sa = table[a], sb = table[b];
+        const fa = finished[sa.status] ? 0 : 1;
+        const fb = finished[sb.status] ? 0 : 1;
+        return fa - fb || (sa.timestamp || 0) - (sb.timestamp || 0);
+    });
+    sorted.slice(0, keys.length - maxRecords).forEach(k => delete table[k]);
+}
+
 function updateDownloadProgress(url, status, progress, error, downloadId, task) {
     // P2: rows that die in the filter phase never reach
     // processDownloadQueue, so task.filename was never derived and the
@@ -1430,17 +1461,7 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
 
     // Audit N-24: same explicit null-check as handleGetDownloadStatus.
     const maxRecords = cachedPrefs.da?.maxProgressRecords != null ? cachedPrefs.da.maxProgressRecords : 100;
-    const keys = Object.keys(downloadProgress);
-    if (keys.length > maxRecords) {
-        const sorted = keys.sort((a, b) => {
-            const sa = downloadProgress[a], sb = downloadProgress[b];
-            const order = { completed: 0, skipped: 1, failed: 2, canceled: 3, scanning: 4, downloading: 5, pending: 6 };
-            const da = order[sa.status] ?? 7, db = order[sb.status] ?? 7;
-            return da - db || (sa.timestamp || 0) - (sb.timestamp || 0);
-        });
-        const toRemove = sorted.slice(0, keys.length - maxRecords);
-        toRemove.forEach(k => delete downloadProgress[k]);
-    }
+    mdEvictOldestRows(downloadProgress, maxRecords);
     // FIX-7: every row transition is a persisted state change (debounced).
     mdSchedulePersist();
 }

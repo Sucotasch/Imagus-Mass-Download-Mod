@@ -1103,6 +1103,43 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
     }
 
     // The blocks this batch added must stay byte-identical across the trees.
+    // --- Progress window: the eviction order must not lie -------------------
+    // 2026-09-12: the cap evicted `completed` rows FIRST — the status order it
+    // sorted by started at `completed: 0` — so the table became a biased sample
+    // of failures and contradicted the scan counters ("17 completed" beside
+    // downloaded=30). The log archive shows the same divergence every time a run
+    // hit the cap (117 downloaded vs 90 rows, 77 vs 44, 30 vs 17) and exact
+    // agreement every time it did not (34/34, 45/45, 33/33, 29/29). Behaviour is
+    // verified by execution in .unlazy/…/repro-row-window.mjs; these locks keep
+    // the rule and the wording that explains it.
+    for (const tree of batchTrees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+        // Comments are stripped: the removed order is documented in place.
+        const coreCode = core.replace(/^\s*\/\/.*$/gm, '');
+        const tabCode = tab.replace(/^\s*\/\/.*$/gm, '');
+        const FINISHED = 'const finished = { completed: 1, skipped: 1, failed: 1, canceled: 1 };';
+        assert.ok(cutFnFrom(core, 'mdEvictOldestRows').includes(FINISHED),
+            `ROWS: ${tree} — the eviction helper must use the shared finished-status set`);
+        assert.ok(tabCode.includes(FINISHED),
+            `ROWS: ${tree} — the tab runs its own cap on its own copy and must use the SAME rule as the worker`);
+        assert.ok(!/completed: 0/.test(coreCode) && !/completed: 0/.test(tabCode),
+            `ROWS REGRESSION: ${tree} — the completed-first eviction order must not return`);
+        assert.ok(/fa - fb \|\| \(sa\.timestamp \|\| 0\) - \(sb\.timestamp \|\| 0\)/.test(cutFnFrom(core, 'mdEvictOldestRows')),
+            `ROWS: ${tree} — a finished row goes before a live one, oldest first`);
+        // A capped window must SAY that it is a window, or its counts read as bugs.
+        assert.ok(/Rows in this log: /.test(tabCode) && /da\.maxProgressRecords/.test(tabCode),
+            `ROWS: ${tree} — the Saved Log must name the row cap next to the scan totals`);
+        assert.ok(/getElementById\('listNote'\)/.test(tabCode),
+            `ROWS: ${tree} — the tab must explain the rolling window on screen`);
+        const tabHtml = readNorm(tree, 'options/download-progress.html');
+        assert.ok(/id="listNote"/.test(tabHtml), `ROWS: ${tree} — the note element must exist in the page`);
+        assert.ok(/Rows in List/.test(tabHtml),
+            `ROWS: ${tree} — the window count must not be labelled "To Download"`);
+        assert.ok(/Completed in List/.test(tabHtml),
+            `ROWS: ${tree} — the completed count must say it describes the list`);
+    }
+
     const cutSpan = (text, a, b) => text.slice(text.indexOf(a), text.indexOf(b, text.indexOf(a)));
     const [cCore, fCore] = batchTrees.map(t => readNorm(t, 'mass-download/service-core.js'));
     assert.strictEqual(
@@ -1114,7 +1151,7 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
     const [cInit, fInit] = batchTrees.map(t => readNorm(t, 'mass-download/service-init.js'));
     assert.strictEqual(cInit, fInit, 'D-7: mass-download/service-init.js must stay byte-identical in both trees');
 
-    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert) hold in both trees');
+    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert + progress-window rule) hold in both trees');
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');
