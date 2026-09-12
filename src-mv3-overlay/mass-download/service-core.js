@@ -11,7 +11,7 @@
 // Variables (from service-init.js):
 //   - filterQueue, downloadQueue, activeFilters, activeDownloads, scanInProgress, contentScanDone
 //   - downloadProgress, downloadStats, downloadProgressTabId, downloadInitiatorTabId
-//   - globalProcessedUrls, urlValidationStats, activeControllers
+//   - globalProcessedUrls, globalProcessedMediaHashes, activeControllers
 
 // --- Progress Tab Management ---
 
@@ -269,10 +269,10 @@ function resetMassDownloadSession() {
     downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
     userCanceled = false;
     completionNotified = false;
-    urlValidationStats.totalValidations = 0;
-    urlValidationStats.successfulValidations = 0;
-    urlValidationStats.recentFailures = [];
-    urlValidationStats.circuitBreakerOpen = false;
+    // Audit N-12: a tripped circuit breaker must not leak from the previous
+    // session into this one. D-7: the state is per host now, so the reset is
+    // one call over the whole map.
+    mdBreakerReset();
     filterQueue = [];
     downloadQueue = [];
     contentScanDone = false;
@@ -854,6 +854,7 @@ function mdApplySnapshot(snap) {
                 if (found.fileSize) item.task.fileSize = found.fileSize;
                 updateDownloadProgress(item.task.url, 'completed', 100, null, item.downloadId, item.task);
                 downloadStats.downloaded++;
+                mdRememberDownloaded(item.task.url); // D-10
                 releaseDownloadSlot(item.task);
                 return;
             }
@@ -1060,11 +1061,11 @@ function handleClearAll() {
     globalProcessedUrls.clear();
     downloadIdToTask.clear();
     // Reset validation state too (Audit N-12): a tripped circuit breaker must
-    // not leak from the cleared session into the next one.
-    urlValidationStats.totalValidations = 0;
-    urlValidationStats.successfulValidations = 0;
-    urlValidationStats.recentFailures = [];
-    urlValidationStats.circuitBreakerOpen = false;
+    // not leak from the cleared session into the next one (D-7: per-host map).
+    mdBreakerReset();
+    // "Clear All" = clean slate, so the D-10 memory goes with the rows it
+    // protects: the next scan is free to download everything again.
+    mdClearSessionDownloads();
 }
 
 function handleRetryDownload(msg, sender) {
@@ -1817,7 +1818,116 @@ function triggerRefererDownload(task) {
     return Promise.resolve();
 }
 
+// ---------------------------------------------------------------------------
+// D-10 (2026-09-12) — "already downloaded in this browser session".
+//
+// handleOpenDownloadProgress calls resetMassDownloadSession(), which clears the
+// per-scan dedup sets on purpose. The side effect was that a SECOND pass over
+// the same page (the normal lazy-load workflow: scroll, press the hotkey again
+// to pick up what just appeared) re-downloaded every file it already had, and
+// Chrome's conflictAction 'uniquify' dropped "name (1).jpg" copies next to the
+// originals. The set below remembers what THIS BROWSER SESSION has already
+// finished, independently of the per-scan sets, and survives both worker death
+// (chrome.storage.session) and session resets. It disappears when the browser
+// session ends or the extension is reloaded, which is exactly the scope the
+// name promises.
+//
+// Deliberately a VISIBLE outcome, never a silent drop: within one scan the row
+// already reads 'completed' and is left alone, otherwise the row names the
+// reason. Explicit Retry is unaffected — it bypasses dedup entirely.
+// ---------------------------------------------------------------------------
+const MD_DOWNLOADS_KEY = 'mdSessionDownloads';
+const MD_DOWNLOADS_VERSION = 1;
+const MD_DOWNLOADS_MAX_KEYS = 4000;
+const MD_DOWNLOADS_DEBOUNCE_MS = 2000;
+const MD_SKIP_ALREADY_DOWNLOADED = 'Already downloaded (this session)';
+var sessionDownloadedKeys = new Set();
+var mdDownloadsTimer = null;
+var mdDownloadsBusy = false;
+var mdDownloadsPromise = null;
+var mdDownloadsGen = 0;
+var mdDownloadsAwaited = false;
+
+// Loaded lazily and awaited by the filter queue, so the very first scan after a
+// worker restart cannot re-download something this session already has.
+function mdSessionDownloadsReady() {
+    if (mdDownloadsPromise) return mdDownloadsPromise;
+    const gen = mdDownloadsGen;
+    mdDownloadsPromise = new Promise(function (resolve) {
+        let p;
+        try { p = chrome.storage.session.get(MD_DOWNLOADS_KEY); } catch (e) { resolve(); return; }
+        p.then(function (r) {
+            // A Clear All while this read was in flight must not resurrect the
+            // set it just emptied.
+            if (gen !== mdDownloadsGen) { resolve(); return; }
+            const rec = r && r[MD_DOWNLOADS_KEY];
+            if (rec && rec.v === MD_DOWNLOADS_VERSION && Array.isArray(rec.keys)) {
+                rec.keys.forEach(function (k) { if (typeof k === 'string' && k) sessionDownloadedKeys.add(k); });
+            }
+            resolve();
+        }).catch(function () { resolve(); });
+    });
+    return mdDownloadsPromise;
+}
+
+function mdScheduleDownloadsPersist() {
+    if (mdDownloadsTimer) return;
+    mdDownloadsTimer = setTimeout(function () {
+        mdDownloadsTimer = null;
+        mdFlushSessionDownloads();
+    }, MD_DOWNLOADS_DEBOUNCE_MS);
+}
+
+function mdFlushSessionDownloads() {
+    if (mdDownloadsBusy) { mdScheduleDownloadsPersist(); return; }
+    mdDownloadsBusy = true;
+    const done = function () { mdDownloadsBusy = false; };
+    try {
+        chrome.storage.session.set({
+            [MD_DOWNLOADS_KEY]: { v: MD_DOWNLOADS_VERSION, keys: Array.from(sessionDownloadedKeys) }
+        }).catch(function () {}).then(done);
+    } catch (e) {
+        done();
+    }
+}
+
+function mdRememberDownloaded(url) {
+    const key = fileKey(url);
+    if (!key || sessionDownloadedKeys.has(key)) return;
+    sessionDownloadedKeys.add(key);
+    // FIFO cap: a Set iterates in insertion order, so the oldest keys go first.
+    if (sessionDownloadedKeys.size > MD_DOWNLOADS_MAX_KEYS) {
+        const it = sessionDownloadedKeys.values();
+        while (sessionDownloadedKeys.size > MD_DOWNLOADS_MAX_KEYS) sessionDownloadedKeys.delete(it.next().value);
+    }
+    mdScheduleDownloadsPersist();
+}
+
+// "Clear All" means a clean slate: after it, a scan may download everything
+// again. Also cancels an in-flight load (see the generation guard above).
+function mdClearSessionDownloads() {
+    mdDownloadsTimer = null;
+    mdDownloadsGen++;
+    mdDownloadsPromise = null;
+    sessionDownloadedKeys.clear();
+    try { chrome.storage.session.remove(MD_DOWNLOADS_KEY).catch(function () {}); } catch (e) { /* storage unavailable */ }
+}
+
+// Single decision point for the filter-stage dedup (pure: three reads, no
+// writes) — the caller mutates the sets and the progress table.
+function mdDedupSkipReason(dupKey, hashKey) {
+    if (globalProcessedUrls.has(dupKey)) return 'Duplicate (same file)';
+    if (hashKey && globalProcessedMediaHashes.has(hashKey)) return 'Duplicate (same file on another host)';
+    if (sessionDownloadedKeys.has(dupKey)) return MD_SKIP_ALREADY_DOWNLOADED;
+    return null;
+}
+
 async function processFilterQueue() {
+    // D-10: wait for the session memory exactly once, before any dedup verdict.
+    if (!mdDownloadsAwaited) {
+        mdDownloadsAwaited = true;
+        await mdSessionDownloadsReady();
+    }
     let maxConcurrentFilters = Number(cachedPrefs.da?.maxConcurrentFilters) || 5;
     if (!Number.isFinite(maxConcurrentFilters) || maxConcurrentFilters < 1) maxConcurrentFilters = 5;
 
@@ -1838,13 +1948,19 @@ async function processFilterQueue() {
             // (live rows [001]+[021] downloaded the same 4.45 MB mp4 twice).
             // mediaHashKey '' (not hash-shaped) never blocks anything.
             const hashKey = mediaHashKey(task.url);
-            if (globalProcessedUrls.has(dupKey)
-                || (hashKey && globalProcessedMediaHashes.has(hashKey))) {
+            const skipReason = mdDedupSkipReason(dupKey, hashKey);
+            if (skipReason) {
                 downloadStats.skipped++;
-                updateDownloadProgress(task.url, 'skipped', 0,
-                    globalProcessedUrls.has(dupKey)
-                        ? 'Duplicate (same file)'
-                        : 'Duplicate (same file on another host)', null, task);
+                const row = downloadProgress[task.url];
+                // D-10: when this session already downloaded the file, an earlier
+                // scan's 'completed' row IS the visible answer — rewriting it as
+                // 'skipped' would erase the recorded size/MIME. Every other skip
+                // reason overwrites the row exactly as before.
+                const keepCompletedRow = skipReason === MD_SKIP_ALREADY_DOWNLOADED
+                    && row && row.status === 'completed';
+                if (!keepCompletedRow) {
+                    updateDownloadProgress(task.url, 'skipped', 0, skipReason, null, task);
+                }
                 continue;
             }
             globalProcessedUrls.add(dupKey);
@@ -1893,8 +2009,17 @@ async function processFilterQueue() {
             // (Fetch spec) and the browser silently drops it. The hotlink gate
             // is lifted by the DNR session rule in md-dnr.js (mdDnrEnsureForTask
             // above); do not remove md-dnr.js as "redundant".
+            // D-6 (2026-09-12): without `credentials`, a request from the
+            // extension origin to another host is `same-origin` by the Fetch
+            // default — cookies are NOT attached, so every host that serves
+            // media only to a logged-in session answered 403 to EVERY
+            // validation and the whole class of sites (fetlife) could not be
+            // filtered at all. The extension already holds host permissions for
+            // these URLs and fetches them anyway; this only lets the request
+            // carry the cookies that host would see on an ordinary page load.
             let response = await fetch(task.url, {
                 method: 'HEAD',
+                credentials: 'include',
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
@@ -1967,7 +2092,9 @@ async function processFilterQueue() {
                     try { await mdDnrEnsureForTask(task); } catch (_) { /* best-effort */ }
                     // BT-03: see the HEAD fetch above — no Referer header here
                     // (silently dropped); the DNR rule does the work.
+                    // D-6: same credentialed request as the HEAD above.
                     response = await fetch(task.url, {
+                        credentials: 'include',
                         signal: innerController.signal
                     });
                 } finally {
@@ -2485,6 +2612,7 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 if (results[0].fileSize) existingTask.fileSize = results[0].fileSize;
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
+                mdRememberDownloaded(url); // D-10
                 sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
                 releaseDownloadSlot(existingTask);
             } else if (delta.state.current === 'interrupted') {
@@ -2700,6 +2828,81 @@ function calculateUrlHeuristicScore(url) {
     return score;
 }
 
+// D-7 (2026-09-12): the validation circuit breaker used to be GLOBAL — a
+// 403/404 storm against ONE host tripped it for the entire session, so for the
+// next 30 s every OTHER host's candidates were also accepted unvalidated (live
+// rule34 storm: 91 of 95 attempts answered 403). Breaker state is keyed by host
+// now, so a host's failures can only ever silence that same host. Timestamps
+// instead of timers: an entry nobody touches again expires on its next lookup,
+// and the map is pruned on write so page-controlled host names cannot grow it
+// without bound.
+const MD_BREAKER_FAILURES = 8;
+const MD_BREAKER_COOLDOWN_MS = 30000;
+const MD_BREAKER_MAX_HOSTS = 64;
+var breakerByHost = new Map();
+
+function mdBreakerHost(url) {
+    try {
+        return new URL(ensureAbsoluteUrl(url)).host;
+    } catch (e) {
+        return '';
+    }
+}
+
+// Pure read: it must NOT touch a streak that is still accumulating. The probe
+// runs once per candidate group and failures are recorded AFTER it, so clearing
+// the streak on every probe would cap the host at one failure forever and the
+// breaker would never trip. The slate is wiped only when a cooldown is served.
+function mdBreakerIsOpen(host) {
+    if (!host) return false;
+    const st = breakerByHost.get(host);
+    if (!st || !st.openUntil) return false;
+    if (Date.now() < st.openUntil) return true;
+    st.openUntil = 0;
+    st.failures = [];
+    return false;
+}
+
+function mdBreakerRecordFailure(host) {
+    if (!host) return;
+    let st = breakerByHost.get(host);
+    if (!st) {
+        st = { failures: [], openUntil: 0 };
+        breakerByHost.set(host, st);
+        if (breakerByHost.size > MD_BREAKER_MAX_HOSTS) mdBreakerPrune();
+    }
+    st.failures.push(Date.now());
+    if (st.failures.length >= MD_BREAKER_FAILURES) {
+        st.failures = [];
+        st.openUntil = Date.now() + MD_BREAKER_COOLDOWN_MS;
+        console.warn(manifest.name + ': validation circuit breaker open for ' + host
+            + ' (unvalidated picks for ' + Math.round(MD_BREAKER_COOLDOWN_MS / 1000)
+            + 's); other hosts keep validating normally');
+    }
+}
+
+// A host that just validated successfully is not storming (the old code decayed
+// its global failure list on success; this keeps that intent, per host).
+function mdBreakerRecordSuccess(host) {
+    if (!host) return;
+    const st = breakerByHost.get(host);
+    if (st) st.failures = [];
+}
+
+function mdBreakerPrune() {
+    const now = Date.now();
+    for (const [h, st] of breakerByHost) {
+        if (!st.openUntil || now >= st.openUntil) breakerByHost.delete(h);
+    }
+    while (breakerByHost.size > MD_BREAKER_MAX_HOSTS) {
+        breakerByHost.delete(breakerByHost.keys().next().value);
+    }
+}
+
+function mdBreakerReset() {
+    breakerByHost.clear();
+}
+
 async function validateSingleUrlContent(url, referer, timeout = 3000) {
     const absUrl = ensureAbsoluteUrl(url);
     const controller = new AbortController();
@@ -2712,7 +2915,11 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
         // BT-03: no Referer header (forbidden name, silently dropped) — the
         // DNR session rule in md-dnr.js is the mechanism. `referer` stays in
         // this function's signature for its callers, but is not sent.
+        // D-6: group-candidate validation goes through the same credentialed
+        // path as the single-URL filter, or a session-gated host would 403
+        // here while passing there (and vice versa).
         const response = await fetch(absUrl, {
+            credentials: 'include',
             signal: controller.signal
         });
         if (!response.ok) return { url: absUrl, isValid: false, reason: `HTTP ${response.status}` };
@@ -2762,12 +2969,15 @@ async function findBestUrlWithValidation(urlArray, referer) {
             const aHd = a.c.isHd ? 1 : 0, bHd = b.c.isHd ? 1 : 0;
             return hiRes ? (bHd - aHd) : (aHd - bHd);
         });
-    const recentFailureRate = urlValidationStats.recentFailures.length / 10;
-    if (urlValidationStats.circuitBreakerOpen || recentFailureRate > 0.7) {
+    // D-7: per host, not global — only the host that actually stormed skips
+    // validation; a candidate group is one element's URL chain, so its members
+    // share the host in practice.
+    const breakerHost = mdBreakerHost((candidates[0] || {}).url);
+    if (mdBreakerIsOpen(breakerHost)) {
         const ordered = scored.map(s => s.c);
         // FIX-3: breaker short-circuit — the winner is heuristic-only and
         // UNVALIDATED (this is how rule34 .htm garbage got picked).
-        return { best: ordered[0] || null, ordered, pickReason: 'breaker-open (unvalidated)' };
+        return { best: ordered[0] || null, ordered, pickReason: 'breaker-open (unvalidated, ' + breakerHost + ')' };
     }
     const candidatesToValidate = scored.slice(0, Math.min(5, scored.length));
     // Audit N-03: Promise.allSettled never rejects and validateSingleUrlContent
@@ -2776,11 +2986,8 @@ async function findBestUrlWithValidation(urlArray, referer) {
     // now lives on the main path.
     const results = await Promise.allSettled(candidatesToValidate.map(({ c }) => validateSingleUrlContent(c.url, referer, 1500)));
     const validUrls = results.filter(r => r.status === 'fulfilled' && r.value.isValid).map(r => r.value).sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0));
-    urlValidationStats.totalValidations++;
     if (validUrls.length > 0) {
-        urlValidationStats.successfulValidations++;
-        urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-5);
-        urlValidationStats.circuitBreakerOpen = false;
+        mdBreakerRecordSuccess(breakerHost);
         const validKeys = new Set(validUrls.map(v => candidateKey(v.url)));
         const ordered = [
             ...validUrls.map(v => ({ url: v.url, isHd: !!isHdByKey.get(candidateKey(v.url)) })),
@@ -2789,12 +2996,8 @@ async function findBestUrlWithValidation(urlArray, referer) {
         const best = ordered[0] || null;
         return { best, ordered, pickReason: 'validated ' + validUrls.length + ' of ' + candidatesToValidate.length };
     }
-    urlValidationStats.recentFailures.push(Date.now());
-    urlValidationStats.recentFailures = urlValidationStats.recentFailures.slice(-10);
-    if (urlValidationStats.recentFailures.length >= 8) {
-        urlValidationStats.circuitBreakerOpen = true;
-        setTimeout(() => { urlValidationStats.circuitBreakerOpen = false; }, 30000);
-    }
+    // D-7: accounted against the host whose candidates failed.
+    mdBreakerRecordFailure(breakerHost);
     const ordered = scored.map(s => s.c);
     return { best: ordered[0] || null, ordered, pickReason: 'heuristic (validation failed)' };
 }

@@ -106,11 +106,26 @@ const Port = {
         if (typeof chrome === 'undefined' || !chrome.runtime) {
             return Promise.reject(new Error('Extension context invalidated'));
         }
-        if (Port.listener || callback) {
-            return chrome.runtime.sendMessage(message, callback || Port.listener);
-        } else {
+        const handler = callback || Port.listener;
+        if (!handler) {
             return chrome.runtime.sendMessage(message);
         }
+        // D-5 (2026-09-12): every fire-and-forget command (downloadMass,
+        // updateStatus, updateFilterStats, reportSkippedItem, stopScanning, …)
+        // has no responder, so Chrome reports "Unchecked runtime.lastError: The
+        // message port closed before a response was received" for each one —
+        // noise that buries real errors in the extension console and in the
+        // Saved Log. The wrapper is the same callback with ONE difference: it
+        // reads runtime.lastError inside the callback (which is what suppresses
+        // that report) and then forwards the response unchanged, so
+        // request/response commands (resolve, cfg_get, get_file, getDownloadLog)
+        // keep working exactly as before. Nothing else changes: Port.listener is
+        // still resolved at call time, and the callback still receives the
+        // single response argument it received from Chrome directly.
+        return chrome.runtime.sendMessage(message, function (response) {
+            try { void chrome.runtime.lastError; } catch (e) { /* nothing to read */ }
+            return handler(response);
+        });
     },
 };
 

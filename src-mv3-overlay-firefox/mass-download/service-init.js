@@ -69,12 +69,11 @@ var globalProcessedUrls = new Set();
 // lifecycle; its single add point lives in processFilterQueue right next to
 // the fileKey add (plus the advance claim in advanceToNextCandidate).
 var globalProcessedMediaHashes = new Set();
-var urlValidationStats = {
-    totalValidations: 0,
-    successfulValidations: 0,
-    recentFailures: [],
-    circuitBreakerOpen: false
-};
+// D-7 (2026-09-12): the global urlValidationStats breaker object lived here.
+// It was replaced by the per-host breaker state in service-core.js
+// (breakerByHost + mdBreakerReset), because a single host's 403 storm used to
+// silence validation for every other host in the session. Nothing else ever
+// read those counters.
 
 // Track active fetch controllers to prevent memory leaks and enable request cancellation
 const activeControllers = new Map();

@@ -10,7 +10,7 @@
 // which makes the slices stable.
 
 import assert from 'assert';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -956,6 +956,190 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         assert.ok(!/mdOffscreenFetchBounded/.test(ffCoreSrc),
             'FIX-9: FF has no offscreen tier — the helper must not be mirrored there');
     }
+}
+
+// ===========================================================================
+// 2026-09-12 batch — D-1, D-5, D-6, D-7, D-8, D-10 (decisions taken after
+// REVIEW_BT_AND_V). These are the DURABLE locks; the interactive/behavioural
+// verification of the same fixes (real functions cut out and executed against
+// fake storage and DOM) lives in .unlazy/review-verify-2026-09-12/ and is not
+// part of the repo. Every lock below states WHY it exists, because a future
+// "cleanup" that removes one of these mechanics is exactly what they guard.
+// ===========================================================================
+{
+    const batchTrees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    // N-20: line endings are not uniform across the repo — normalize before
+    // matching multi-line text so a CRLF file cannot make a lock "fail".
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+
+    // --- D-8: the firefox branch of verify-security.mjs ---------------------
+    // It asserted the CHROME wiring (importScripts) against the FF tree, which
+    // made it red on every single run since the overlay port — a permanently
+    // red gate that verified nothing. NOTE: scripts/ is a LOCAL, untracked
+    // tool directory, so the lock only runs where the file exists (it must not
+    // turn the whole smoke run into an ENOENT on a fresh clone).
+    const secPath = join(repoRoot, 'scripts/verify-security.mjs');
+    if (existsSync(secPath)) {
+        const sec = readFileSync(secPath, 'utf8');
+        assert.ok(!/assert\(ffSvc\.includes\('mass-download\/service-core\.js'\)/.test(sec),
+            'D-8: the firefox branch must stop asserting the chrome importScripts string');
+        assert.ok(/!ffSvc\.includes\('importScripts\('/.test(sec),
+            'D-8: firefox must be asserted to NOT call importScripts (event page has none)');
+        assert.ok(/ffIdx\('mass-download\/service-init\.js'\) < ffIdx\('mass-download\/service-core\.js'\)/.test(sec),
+            'D-8: the firefox module ORDER must be asserted, not just presence');
+    } else {
+        console.log('md-unit-smoke: D-8 lock skipped (scripts/verify-security.mjs is a local, untracked tool)');
+    }
+
+    // --- D-5: the lastError noise wrapper -----------------------------------
+    for (const tree of batchTrees) {
+        const app = readNorm(tree, 'common/app.js');
+        assert.ok(/const handler = callback \|\| Port\.listener;/.test(app),
+            `D-5: ${tree} — the response callback must still be resolved at call time`);
+        assert.ok(/chrome\.runtime\.sendMessage\(message, function \(response\) \{/.test(app),
+            `D-5: ${tree} — send must wrap the response callback`);
+        assert.ok(/void chrome\.runtime\.lastError;/.test(app),
+            `D-5: ${tree} — reading lastError INSIDE the callback is what silences the false "message port closed" reports`);
+        assert.ok(/return handler\(response\);/.test(app),
+            `D-5: ${tree} — the response must be forwarded unchanged`);
+        // The wrapper must not be "simplified" into dropping the callback:
+        // upstream answers `resolve` through sendResponse (context.postMessage),
+        // so that callback IS the resolve channel.
+        const svcFile = readNorm(tree, 'background/service.js');
+        assert.ok(/postMessage: sendResponse/.test(svcFile),
+            `D-5: ${tree} — resolve answers arrive via sendResponse; the listener callback must stay wired`);
+    }
+
+    // --- D-6: credentialed filter requests ----------------------------------
+    for (const tree of batchTrees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        assert.ok(/let response = await fetch\(task\.url, \{\n\s+method: 'HEAD',\n\s+credentials: 'include',/.test(core),
+            `D-6: ${tree} — the HEAD validation must send cookies`);
+        assert.ok(/response = await fetch\(task\.url, \{\n\s+credentials: 'include',/.test(core),
+            `D-6: ${tree} — the GET fallback must send cookies`);
+        assert.ok(/const response = await fetch\(absUrl, \{\n\s+credentials: 'include',/.test(core),
+            `D-6: ${tree} — group-candidate validation must send cookies too`);
+    }
+
+    // --- D-7: the breaker is PER HOST --------------------------------------
+    for (const tree of batchTrees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        assert.ok(!/urlValidationStats/.test(core),
+            `D-7: ${tree} — the global breaker object must be gone (it had no reader left)`);
+        // Whole-line comments are stripped: the removal is DOCUMENTED in place,
+        // and the lock is about the declaration, not about the note.
+        const initCode = readNorm(tree, 'mass-download/service-init.js').replace(/^\s*\/\/.*$/gm, '');
+        assert.ok(!/urlValidationStats/.test(initCode),
+            `D-7: ${tree} — service-init must not declare it either`);
+        const findBest = cutFnFrom(core, 'findBestUrlWithValidation');
+        assert.ok(/const breakerHost = mdBreakerHost\(\(candidates\[0\] \|\| \{\}\)\.url\);/.test(findBest),
+            `D-7: ${tree} — the breaker probe must be scoped to the candidate host`);
+        assert.ok(/if \(mdBreakerIsOpen\(breakerHost\)\)/.test(findBest),
+            `D-7: ${tree} — the short-circuit must ask about that host only`);
+        assert.ok(/mdBreakerRecordFailure\(breakerHost\);/.test(findBest),
+            `D-7: ${tree} — failures must be charged to that host`);
+        assert.ok(/mdBreakerRecordSuccess\(breakerHost\);/.test(findBest),
+            `D-7: ${tree} — a validated group must clear that host's streak`);
+        // Regression lock: the probe is a READ. Clearing the streak on every
+        // probe capped a host at ONE accumulated failure, so the breaker could
+        // never trip (caught by the executable harness before commit).
+        const probe = cutFnFrom(core, 'mdBreakerIsOpen');
+        assert.ok(/if \(!st \|\| !st\.openUntil\) return false;/.test(probe),
+            `D-7: ${tree} — probing a host without an open cooldown must return immediately`);
+        assert.ok(/if \(Date\.now\(\) < st\.openUntil\) return true;\n\s+st\.openUntil = 0;/.test(probe),
+            `D-7: ${tree} — the streak may be wiped only when a cooldown has been served`);
+        assert.ok(/MD_BREAKER_MAX_HOSTS/.test(core) && /if \(breakerByHost\.size > MD_BREAKER_MAX_HOSTS\) mdBreakerPrune\(\);/.test(core),
+            `D-7: ${tree} — page-controlled host names must not grow the breaker map without bound`);
+        assert.ok(/mdBreakerReset\(\);/.test(cutFnFrom(core, 'resetMassDownloadSession')),
+            `D-7: ${tree} — a new session must reset the breaker (Audit N-12 intent)`);
+        assert.ok(/mdBreakerReset\(\);/.test(cutFnFrom(core, 'handleClearAll')),
+            `D-7: ${tree} — Clear All must reset the breaker`);
+    }
+
+    // --- D-10: session-scoped "already downloaded" memory -------------------
+    for (const tree of batchTrees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        assert.ok(/MD_DOWNLOADS_KEY = 'mdSessionDownloads'/.test(core),
+            `D-10: ${tree} — the memory must live in its own storage.session key`);
+        assert.ok(/MD_SKIP_ALREADY_DOWNLOADED = 'Already downloaded \(this session\)'/.test(core),
+            `D-10: ${tree} — the skipped row must name the reason (never a silent drop)`);
+        const pfq = cutFnFrom(core, 'processFilterQueue');
+        assert.ok(/const skipReason = mdDedupSkipReason\(dupKey, hashKey\);/.test(pfq),
+            `D-10: ${tree} — the filter stage must go through the single decision point`);
+        assert.ok(/await mdSessionDownloadsReady\(\)/.test(pfq),
+            `D-10: ${tree} — the memory must be loaded before the first verdict (else the first scan after a restart re-downloads)`);
+        assert.ok(/keepCompletedRow/.test(pfq),
+            `D-10: ${tree} — an existing 'completed' row must not be downgraded to 'skipped'`);
+        const remember = cutFnFrom(core, 'mdRememberDownloaded');
+        assert.ok(/sessionDownloadedKeys\.add\(key\)/.test(remember) && /MD_DOWNLOADS_MAX_KEYS/.test(remember),
+            `D-10: ${tree} — remembering must be capped (FIFO), or the stored set grows with the session`);
+        const rememberCalls = (core.match(/mdRememberDownloaded\(/g) || []).length;
+        assert.strictEqual(rememberCalls, 3,
+            `D-10: ${tree} — exactly two completion call sites (adopt + onChanged) plus the definition, found ${rememberCalls}`);
+        // REGRESSION: clearing the memory in the per-scan reset would undo the
+        // whole fix; it is cleared by Clear All and by a reload instead.
+        assert.ok(!/mdClearSessionDownloads/.test(cutFnFrom(core, 'resetMassDownloadSession')),
+            `D-10: ${tree} — resetMassDownloadSession must NOT clear the session memory (that is the point of the fix)`);
+        assert.ok(/mdClearSessionDownloads\(\);/.test(cutFnFrom(core, 'handleClearAll')),
+            `D-10: ${tree} — Clear All = clean slate, so it clears the memory`);
+        const svcFile = readNorm(tree, 'background/service.js');
+        assert.ok(/mdDropSessionSnapshot\(\);\n[\s\S]{0,240}mdClearSessionDownloads\(\);/.test(svcFile),
+            `D-10: ${tree} — a reload/update drops the memory too (fresh session, nothing skipped)`);
+
+        // Behavioural: the decision point is pure, so it can be executed here.
+        const dedupFactory = new Function(`
+            const globalProcessedUrls = new Set(['in-scan']);
+            const globalProcessedMediaHashes = new Set(['hashkey']);
+            const sessionDownloadedKeys = new Set(['downloaded']);
+            const MD_SKIP_ALREADY_DOWNLOADED = 'Already downloaded (this session)';
+            ${cutFnFrom(core, 'mdDedupSkipReason')}
+            return mdDedupSkipReason;
+        `);
+        const dedup = dedupFactory();
+        assert.strictEqual(dedup('in-scan', ''), 'Duplicate (same file)', `D-10: ${tree} in-scan duplicate reason`);
+        assert.strictEqual(dedup('other', 'hashkey'), 'Duplicate (same file on another host)', `D-10: ${tree} cross-host reason`);
+        assert.strictEqual(dedup('downloaded', ''), 'Already downloaded (this session)', `D-10: ${tree} session-memory reason`);
+        assert.strictEqual(dedup('fresh', ''), null, `D-10: ${tree} an unseen file must still be filtered`);
+    }
+
+    // --- D-1: the e-hentai pagination guard ---------------------------------
+    for (const tree of batchTrees) {
+        const svcFile = readNorm(tree, 'background/service.js');
+        assert.ok(/MD_SIEVE_RES_MARK = '\/\* D-1 hardened \*\/'/.test(svcFile),
+            `D-1: ${tree} — the hardening marker must exist (it makes the patch idempotent)`);
+        assert.ok(/'E-Hentai\|Exhentai-x-q-p': \[/.test(svcFile),
+            `D-1: ${tree} — the patch table must target the e-hentai gallery rule`);
+        const cs = cutFnFrom(svcFile, 'cacheSieve');
+        assert.ok(/rule\.res = hardenSieveRes\(ruleName, rule\.res\);/.test(cs),
+            `D-1: ${tree} — the guard must be applied where the body is cached — that text is what req_res hands to the page`);
+        const hs = cutFnFrom(svcFile, 'hardenSieveRes');
+        assert.ok(/indexOf\(MD_SIEVE_RES_MARK\) !== -1/.test(hs),
+            `D-1: ${tree} — applying it twice must be a no-op`);
+        assert.ok(/console\.warn\(/.test(hs) && /return res;/.test(hs),
+            `D-1: ${tree} — if upstream reformats the rule it must warn and return the ORIGINAL text, never ship a half-patch`);
+        const sieve = JSON.parse(readNorm(tree, 'data/sieve.json'));
+        assert.ok(!/D-1 hardened/.test(sieve['E-Hentai|Exhentai-x-q-p'].res),
+            `D-1: ${tree} — the STORED rule stays upstream text: hardening at cache time cannot conflict with a weekly sieve update`);
+    }
+
+    // The blocks this batch added must stay byte-identical across the trees.
+    const cutSpan = (text, a, b) => text.slice(text.indexOf(a), text.indexOf(b, text.indexOf(a)));
+    const [cCore, fCore] = batchTrees.map(t => readNorm(t, 'mass-download/service-core.js'));
+    assert.strictEqual(
+        cutSpan(cCore, 'const MD_BREAKER_FAILURES', 'async function validateSingleUrlContent'),
+        cutSpan(fCore, 'const MD_BREAKER_FAILURES', 'async function validateSingleUrlContent'),
+        'D-7: the breaker block must be byte-identical in both trees');
+    assert.strictEqual(
+        cutSpan(cCore, 'const MD_DOWNLOADS_KEY', 'async function processFilterQueue'),
+        cutSpan(fCore, 'const MD_DOWNLOADS_KEY', 'async function processFilterQueue'),
+        'D-10: the session-memory block must be byte-identical in both trees');
+    const [cApp, fApp] = batchTrees.map(t => readNorm(t, 'common/app.js'));
+    assert.strictEqual(cApp, fApp, 'D-5: common/app.js must stay byte-identical in both trees');
+    const [cInit, fInit] = batchTrees.map(t => readNorm(t, 'mass-download/service-init.js'));
+    assert.strictEqual(cInit, fInit, 'D-7: mass-download/service-init.js must stay byte-identical in both trees');
+
+    console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8, D-10) hold in both trees');
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

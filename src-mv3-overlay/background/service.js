@@ -212,6 +212,56 @@ function isSafeRegex(pattern) {
     return !dangerousPatterns.some(p => p.test(pattern));
 }
 
+// ---------------------------------------------------------------------------
+// D-1 (2026-09-12) — E-Hentai|Exhentai gallery pagination hardening.
+//
+// The bundled rule for e-hentai /g/ walks up to 50 gallery pages with a
+// SYNCHRONOUS XHR (xhr.open('GET', link, false)). One failing page throws out of
+// res() and the exception aborts that element's whole resolve chain. A timeout
+// is NOT an option: assigning xhr.timeout on a sync request throws
+// InvalidAccessError by specification, so the request would fail harder, not
+// softer.
+//
+// The guard is applied HERE — at the single point where the rule text becomes
+// executable (the body is handed to the page as req_res and compiled there) —
+// instead of as a duplicate `_`-prefixed rule with the upstream one switched
+// off. Three consequences, all wanted: the rule list the user sees is unchanged;
+// a weekly sieve update cannot undo the guard; there is exactly one E-Hentai
+// rule to keep working. The patch is anchored on exact upstream text, so if
+// upstream ever reformats the rule the anchors stop matching, nothing is
+// patched, and a warning names the rule instead of shipping broken JS.
+// ---------------------------------------------------------------------------
+const MD_SIEVE_RES_MARK = '/* D-1 hardened */';
+const MD_SIEVE_RES_PATCHES = {
+    'E-Hentai|Exhentai-x-q-p': [
+        [
+            "function processLink(link) {\n  const xhr = new XMLHttpRequest();\n  xhr.open('GET', link, false);\n  xhr.send();",
+            "function processLink(link) {\n  " + MD_SIEVE_RES_MARK + "\n  try {\n  const xhr = new XMLHttpRequest();\n  xhr.open('GET', link, false);\n  xhr.send();"
+        ],
+        [
+            "  if (matches) {\n  res.push([matches[1]]);\n  }\n}",
+            "  if (matches) {\n  res.push([matches[1]]);\n  }\n  } catch (e) { return; }\n}"
+        ]
+    ]
+};
+
+function hardenSieveRes(ruleName, res) {
+    const patches = MD_SIEVE_RES_PATCHES[ruleName];
+    if (!patches || typeof res !== 'string') return res;
+    if (res.indexOf(MD_SIEVE_RES_MARK) !== -1) return res; // already hardened
+    let patched = res;
+    for (const p of patches) {
+        if (patched.indexOf(p[0]) === -1) {
+            console.warn(manifest.name + ': sieve hardening (D-1) NOT applied to ' + ruleName
+                + ' — the rule text changed upstream; re-check the sync-XHR guard in data/sieve.json');
+            return res;
+        }
+        patched = patched.replace(p[0], p[1]);
+    }
+    console.info(manifest.name + ': sieve rule "' + ruleName + '" hardened (D-1): a failed gallery page no longer aborts the album');
+    return patched;
+}
+
 function cacheSieve(newSieve) {
     if (typeof newSieve === "string") newSieve = JSON.parse(newSieve);
     else newSieve = JSON.parse(JSON.stringify(newSieve));
@@ -235,6 +285,7 @@ function cacheSieve(newSieve) {
 
             if (rule.res)
                 if (/^:\n/.test(rule.res)) {
+                    rule.res = hardenSieveRes(ruleName, rule.res); // D-1
                     cachedSieveRes[cachedSieve.length] = rule.res.slice(2);
                     rule.res = 1;
                 } else {
@@ -1101,6 +1152,10 @@ chrome.runtime.onInstalled.addListener(function (e) {
     // a crash. (Chrome also clears storage.session on reload/update; this covers
     // Firefox, where session storage is only cleared when the browser stops.)
     mdDropSessionSnapshot();
+    // D-10: the same reasoning for the "already downloaded in this session"
+    // memory — a reload/update starts a fresh session, so the next scan is not
+    // silently skipping files in the name of the previous one.
+    mdClearSessionDownloads();
     if (e.reason === "update") {
         registerContentScripts();
     } else if (e.reason === "install") {
