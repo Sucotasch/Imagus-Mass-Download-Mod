@@ -499,13 +499,6 @@
             lines.push('   terminated session, which is why they look stuck at "pending".');
             lines.push('');
         }
-        // D-9: an OPEN session whose page went quiet (closed, navigated away or
-        // frozen tab) is named here, so a log with pending rows and a live worker
-        // says WHY instead of leaving it to interpretation.
-        if (data.pageSilentMs != null) {
-            lines.push('Page silent: ' + Math.round(data.pageSilentMs / 1000) + 's while nothing was in flight'
-                + ' (session kept, waiting for the page)');
-        }
         lines.push('');
         lines.push('Settings:');
         for (const k in settings) {

@@ -892,29 +892,34 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
                 `FIX-7: ${label} a drained session must drop the snapshot`);
             assert.ok(/mdDropSessionSnapshot\(\);/.test(cutFnFrom(coreText, 'handleStopScanning')),
                 `FIX-7: ${label} an explicit stop discards the recoverable session`);
-            // --- D-9 (2026-09-12): "queue empty, page gone" is named, not guessed ---
-            // An open session whose page never reports `done` (closed, navigated
-            // away, frozen tab) used to be indistinguishable from a working scan:
-            // pending rows, live worker, keep-alive alarm every 30 s.
-            assert.ok(/contentScanDone \|\| !mdNoWorkInFlight\(\)\) return null;/.test(cutFnFrom(coreText, 'mdPageSilentMs')),
-                `D-9: ${label} the silence report must require an open scan, no contentScanDone AND nothing in flight`);
-            assert.ok(/mdContentSeenAt = Date.now\(\);\s*\n\s*mdContentStallWarned = false;/.test(cutFnFrom(coreText, 'mdNoteContentSeen')),
-                `D-9: ${label} a page message resets both the clock and the one-shot flag`);
-            assert.ok(/Math\.max\(MD_CONTENT_SILENCE_MIN_MS, perItem \* 3\)/.test(cutFnFrom(coreText, 'mdContentSilenceLimitMs')),
-                `D-9: ${label} the limit must scale with resolutionTimeout (no false positive on a slow scan)`);
-            assert.ok(/contentSeenAt: mdContentSeenAt,/.test(cutFnFrom(coreText, 'mdBuildSnapshot')),
-                `D-9: ${label} page liveness must ride along in the snapshot (a page that went quiet stays quiet after a restart)`);
-            const warnAt = coreText.indexOf('mdContentStallWarned = true;');
-            assert.ok(warnAt > 0, `D-9: ${label} the alarm must raise the warning once per silence window`);
-            const warnBlock = coreText.slice(warnAt, warnAt + 700);
-            assert.ok(/sendToProgressTab\(/.test(warnBlock),
-                `D-9: ${label} the warning must be shown in the progress tab`);
-            assert.ok(!/updateDownloadProgress\(|scanInProgress = false/.test(warnBlock),
-                `D-9: ${label} the warning is informational: it must not fail rows nor end the session (a frozen tab can recover)`);
-            assert.ok(/MD_PAGE_MSG_CMDS\[msg\.cmd\]\) mdNoteContentSeen\(\);/.test(svcText),
-                `D-9: ${label} only page-originated messages count as liveness (the tab polls and would mask a dead page)`);
-            assert.ok(/pageSilentMs: mdPageSilentMs\(\)/.test(svcText),
-                `D-9: ${label} Save Log must carry the page-silence figure`);
+            // --- D-9 (2026-09-12): "queue empty, page gone" — asked, not guessed ---
+            // An open session whose page never reports `done` was indistinguishable
+            // from a working scan: pending rows, live worker, keep-alive alarm every
+            // 30 s. The first version inferred it from a timer; nobody can justify
+            // that threshold (hidden tabs legitimately throttle), so it was replaced
+            // by ASKING Chrome whether the page still exists.
+            assert.ok(/mdProbeInitiatorTab\(\);/.test(coreText.slice(coreText.indexOf('chrome.alarms.onAlarm.addListener'))),
+                `D-9: ${label} the keep-alive alarm must probe the page (the only periodic tick while a session is open)`);
+            const probe = cutFnFrom(coreText, 'mdProbeInitiatorTab');
+            assert.ok(/if \(!scanInProgress \|\| contentScanDone \|\| !mdNoWorkInFlight\(\)\) return;/.test(probe),
+                `D-9: ${label} the probe must act only on an open scan with nothing in flight and no \`done\` yet`);
+            assert.ok(/if \(downloadInitiatorTabId == null\) \{ mdConcludeAbandonedScan\(\); return; \}/.test(probe),
+                `D-9: ${label} no initiator at all means nothing can ever report — conclude it`);
+            assert.ok(/chrome\.tabs\.get\(downloadInitiatorTabId\)/.test(probe),
+                `D-9: ${label} the decision must come from Chrome (does the tab exist), not from a timer`);
+            const conclude = cutFnFrom(coreText, 'mdConcludeAbandonedScan');
+            assert.ok(/contentScanDone = true;/.test(conclude),
+                `D-9: ${label} a gone page must conclude the scan so the session can end`);
+            assert.ok(/completionNotified = true;/.test(conclude) && !/updateDownloadProgress\(/.test(conclude),
+                `D-9: ${label} a gone page must not fail rows nor claim completion over stranded ones`);
+            assert.ok(/setTimeout\(checkAllQueuesEmpty, 100\)/.test(conclude),
+                `D-9: ${label} the conclusion must hand over to the normal drain path`);
+            assert.ok(/mdConcludeAbandonedScan\(\); \}\);/.test(coreText),
+                `D-9: ${label} the failed-message path must share the same conclusion`);
+            // Regression lock for the rejected design: no silence timer, no liveness
+            // bookkeeping in handleMessage, no log field — asking is the whole fix.
+            assert.ok(!/MD_CONTENT_SILENCE_MIN_MS|mdContentSeenAt|mdPageSilentMs|mdNoteContentSeen|MD_PAGE_MSG_CMDS/.test(coreText + svcText),
+                `D-9: ${label} must stay threshold-free (no inferred silence window anywhere)`);
             // The page is the only source of the closing `done` status. A failed
             // message to it used to null the initiator id unconditionally — which
             // both killed every later retry and left the session open forever
@@ -927,13 +932,9 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             assert.ok(/chrome\.tabs\.get\(tabId\)/.test(gone),
                 `D-9: ${label} the check must ask Chrome whether the tab still exists`);
             assert.ok(/keeping the session and its retries/.test(gone),
-                `D-9: ${label} an answering-existence tab must keep its id and its retries`);
-            assert.ok(/downloadInitiatorTabId = null;\s*\n\s*contentScanDone = true;/.test(gone),
-                `D-9: ${label} a gone page must conclude the scan (no page can report \`done\` again)`);
-            assert.ok(/completionNotified = true;/.test(gone),
-                `D-9: ${label} a gone page must not announce "all downloads completed" over stranded rows`);
-            assert.ok(!/updateDownloadProgress\(/.test(gone),
-                `D-9: ${label} the gone-page path must not fail rows (browser downloads need no page)`);
+                `D-9: ${label} an existing tab must keep its id and its retries`);
+            assert.ok(/\.catch\(function \(\) \{ mdConcludeAbandonedScan\(\); \}\)/.test(gone),
+                `D-9: ${label} the message path and the alarm path must share ONE conclusion function`);
         }
         for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
             assert.ok(/Recovered: session resumed after a background restart/.test(tabSources[tree]),
