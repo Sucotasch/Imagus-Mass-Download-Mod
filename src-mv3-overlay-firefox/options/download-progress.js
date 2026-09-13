@@ -685,14 +685,20 @@
         const starts = (worker && Array.isArray(worker.starts)) ? worker.starts : null;
         if (!starts || starts.length === 0) return [];
         const ends = (worker && Array.isArray(worker.ends)) ? worker.ends : [];
+        // 2026-09-14: the arrays MUST be index-aligned, and the first GEN-2 build
+        // was not (a plain concat gave each start two slots): the live 22:56 log
+        // printed the single recorded reason on gen 3 while it belonged to gen 1.
+        // A token on the wrong generation is worse than no token, so a misaligned
+        // pair prints NO tokens at all.
+        const aligned = ends.length === starts.length;
         const lines = ['', 'Worker generations this browser session: ' + starts.length];
         let sawEnd = false;
         for (let i = 0; i < starts.length; i++) {
             const next = starts[i + 1];
             // The LAST generation is the one answering this Save Log, so it has no
             // successor and no end yet.
-            const why = ends[i] ? ', ended: ' + ends[i] : '';
-            if (ends[i]) sawEnd = true;
+            const why = (aligned && ends[i]) ? ', ended: ' + ends[i] : '';
+            if (aligned && ends[i]) sawEnd = true;
             lines.push('  gen ' + (i + 1) + ': ' + fmtTs(starts[i])
                 + (next ? ' (lived ' + Math.round((next - starts[i]) / 1000) + 's' + why + ')'
                     : ' (this worker, still live)'));
@@ -706,7 +712,10 @@
         lines.push('  worker waits for the next event). The FACT is `ended:` — suspend = Chrome asked it');
         lines.push('  to stop and it answered (idle/timeout); error: … = it threw; abrupt = it left no');
         lines.push('  word (hard kill, or a crash whose write never completed).');
-        if (!sawEnd) {
+        if (ends.length && !aligned) {
+            lines.push('  !! ' + ends.length + ' end reason(s) for ' + starts.length + ' generation(s): the two lists are');
+            lines.push('     NOT aligned, so no reason is shown (a token on the wrong generation is a lie).');
+        } else if (!sawEnd) {
             lines.push('  No end reason recorded for any generation: this build predates GEN-2, or every');
             lines.push('  generation so far is still the current one.');
         }

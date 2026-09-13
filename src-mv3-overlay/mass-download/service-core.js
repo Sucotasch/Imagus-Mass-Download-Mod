@@ -620,6 +620,34 @@ function mdGenEndLabel(prevStart, rec) {
     return 'abrupt';
 }
 
+// Pure: build the ends array PARALLEL to the new starts array. One slot per
+// start, in order — ends[i] answers for starts[i].
+//
+// This is a fix for a bug that shipped in GEN-2 and the very next live log
+// caught (2026-09-13 22:56): a plain `prevEnds.concat([prevReason, null])` handed
+// every start TWO slots, so the arrays drifted apart (10 slots for 5 starts) and
+// the ONE recorded reason was printed on gen 3 while it belonged to gen 1, with
+// the other reasons made unreachable. Off-by-one in a diagnostic is worse than
+// no diagnostic: it puts a fact on the wrong generation.
+//
+// Building from the STARTS length (not from the stored array) also means a
+// missing/garbage stored entry can never shift the rest onto other generations.
+function mdNextGenerationEnds(prev, prevEnds, prevReason) {
+    const starts = Array.isArray(prev) ? prev : [];
+    const known = Array.isArray(prevEnds) ? prevEnds : [];
+    const out = [];
+    // Every generation except the new one already has a slot (filled with null
+    // when it started, since nobody knew its end yet).
+    for (let i = 0; i < starts.length - 1; i++) {
+        out.push(typeof known[i] === 'string' ? known[i] : null);
+    }
+    // The previous generation's end is known NOW — that is why this runs at start.
+    if (starts.length) out.push(prevReason);
+    // ...and the new generation's own end is unknown until it ends.
+    out.push(null);
+    return out.slice(-24);
+}
+
 function mdRecordWorkerStart() {
     try {
         chrome.storage.session.get(['mdWorkerStarts', 'mdGenerationEnds', MD_GEN_END_KEY]).then(function (r) {
@@ -631,7 +659,7 @@ function mdRecordWorkerStart() {
             workerStarts = prev.concat([workerStartMs]).slice(-24);
             // Parallel array: prevReason answers for the previous generation, the
             // new generation's own end is unknown until it ends.
-            workerStartEnds = prevEnds.concat([prevReason, null]).slice(-24);
+            workerStartEnds = mdNextGenerationEnds(prev, prevEnds, prevReason);
             const gen = workerStarts.length;
             // The distance to the next start is the lifetime ONLY while events keep
             // arriving; a dead worker waits for the next event, so this is an upper

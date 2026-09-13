@@ -1736,8 +1736,17 @@ return mdPendingLogLines;`)();
         // marker ships it.
         assert.ok(/mdGenEndLabel\(prevStart, r && r\[MD_GEN_END_KEY\] \? r\[MD_GEN_END_KEY\] : null\)/.test(cutFnFrom(core, 'mdRecordWorkerStart')),
             `GEN-2: ${tree} — the next start must attribute the previous end`);
-        assert.ok(/workerStartEnds = prevEnds\.concat\(\[prevReason, null\]\)\.slice\(-24\)/.test(cutFnFrom(core, 'mdRecordWorkerStart')),
-            `GEN-2: ${tree} — the reasons array must stay PARALLEL to the starts array (aligned, capped the same way)`);
+        assert.ok(/function mdNextGenerationEnds\(prev, prevEnds, prevReason\)/.test(core)
+            && /workerStartEnds = mdNextGenerationEnds\(prev, prevEnds, prevReason\)/.test(cutFnFrom(core, 'mdRecordWorkerStart')),
+            `GEN-2: ${tree} — the reasons array must stay PARALLEL to the starts array (and that rule must be a pure, testable function)`);
+        // The misalignment SHIPPED once: a plain `prevEnds.concat([prevReason, null])`
+        // gave every start two slots, and the live 22:56 log printed the only
+        // recorded reason on gen 3 while it belonged to gen 1.
+        assert.ok(!/prevEnds\.concat\(\[prevReason, null\]\)/.test(cutFnFrom(core, 'mdRecordWorkerStart')),
+            `GEN-2 REGRESSION: ${tree} — the off-by-one concat must not come back (it puts a fact on the wrong generation)`);
+        assert.ok(/const aligned = ends\.length === starts\.length;/.test(cutFnBalanced(tab, 'mdWorkerStartLines'))
+            && /\(aligned && ends\[i\]\) \? ', ended: '/.test(cutFnBalanced(tab, 'mdWorkerStartLines')),
+            `GEN-2: ${tree} — a misaligned pair must print NO tokens (a token on the wrong generation is a lie)`);
         assert.ok(/ends: workerStartEnds\.slice\(\),/.test(cutFnFrom(core, 'workerMarker')),
             `GEN-2: ${tree} — the worker marker must ship the end reasons (the log is what we read)`);
         // Renderer: the token per generation, and the CORRECTED reading note — the
@@ -1773,6 +1782,24 @@ return mdPendingLogLines;`)();
         assert.strictEqual(label(1000, { reason: 'suspend' }), 'abrupt',
             `GEN-2: ${tree} — a record without a timestamp cannot be placed in time`);
 
+        // --- EXECUTION: the parallel-array rule -------------------------------
+        // Parity is the whole point: one slot per start, in order.
+        const nextEnds = new Function(`${cutFnFrom(core, 'mdNextGenerationEnds')}\nreturn mdNextGenerationEnds;`)();
+        assert.deepStrictEqual(nextEnds([], [], null), [null],
+            `GEN-2: ${tree} — the first start of a browser session adds one slot, not two`);
+        assert.deepStrictEqual(nextEnds([1], [null], 'suspend'), ['suspend', null],
+            `GEN-2: ${tree} — the previous generation's slot is FILLED at the next start, not appended after`);
+        assert.deepStrictEqual(nextEnds([1, 2], ['suspend', null], 'abrupt'), ['suspend', 'abrupt', null],
+            `GEN-2: ${tree} — ends[i] must answer for starts[i], one to one`);
+        assert.deepStrictEqual(nextEnds([1, 2], [], 'error: x'), [null, 'error: x', null],
+            `GEN-2: ${tree} — a missing stored entry must not shift the rest onto other generations`);
+        assert.deepStrictEqual(nextEnds([1, 2], [null, 5], 'suspend'), [null, 'suspend', null],
+            `GEN-2: ${tree} — a non-string stored entry is not a reason`);
+        assert.strictEqual(nextEnds([1, 2], ['a', null], 'b').length, 3,
+            `GEN-2: ${tree} — parity is an invariant, not a coincidence`);
+        assert.strictEqual(nextEnds(new Array(30).fill(1), new Array(30).fill('suspend'), 'suspend').length, 24,
+            `GEN-2: ${tree} — the array is capped like the starts array`);
+
         // --- EXECUTION: the live 22:40 list (9 generations, 3s..257s) ---------
         const render = new Function(`${cutFnBalanced(tab, 'fmtTs')}
 ${cutFnBalanced(tab, 'mdWorkerStartLines')}
@@ -1794,6 +1821,14 @@ return mdWorkerStartLines;`)();
         // itself mentions `ended:` in prose and must not satisfy this lock.
         assert.ok(!/, ended: /.test(noEnds) && /No end reason recorded/.test(noEnds),
             `GEN-2: ${tree} — an old worker (no ends) must produce no invented tokens and say so`);
+        // The 22:56 log's OWN shape: 5 starts, 10 slots, one reason. It printed
+        // that reason on gen 3 (belonging to gen 1). Now it must print nothing.
+        const misaligned = render({
+            start: 1, gen: 5, starts
+            : [1, 2, 3, 4, 5], ends: [null, null, 'abrupt', null, 'suspend', null, 'error: b', null, null, null]
+        }).join('\n');
+        assert.ok(!/, ended: /.test(misaligned) && /are\s*\n?\s*NOT aligned|NOT aligned/.test(misaligned),
+            `GEN-2: ${tree} — a misaligned list must print no tokens and say why (the live 22:56 bug)`);
     }
 
     console.log('md-unit-smoke: generation-end (GEN-2) locks hold in both trees');

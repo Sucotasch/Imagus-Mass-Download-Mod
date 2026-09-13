@@ -186,8 +186,14 @@ instrumentation is lying, not that a host is slow:
   `this worker, still live` (no fake lifetime). This is the only place the reason for a restart survives —
   the worker console line does not reach a saved file (live 21:52: `interrupted worker 21:50:20` →
   `gen 8 21:50:40`, i.e. ≤20 s, shorter than BOTH our timers; live 22:40: 9 generations in 8 minutes).
-  Owners: `mdRecordWorkerStart`/`mdGenEndLabel`/`mdWriteGenerationEnd` (service-core.js, both trees — the
-  `onSuspend` write MUST precede the async `mdFlushSession()`), `mdWorkerStartLines` (download-progress.js).
+  Owners: `mdRecordWorkerStart`/`mdGenEndLabel`/`mdNextGenerationEnds`/`mdWriteGenerationEnd` (service-core.js,
+  both trees — the `onSuspend` write MUST precede the async `mdFlushSession()`), `mdWorkerStartLines`
+  (download-progress.js). **The two arrays must stay index-aligned: one `ends` slot per `starts` entry.** The
+  first GEN-2 build appended two slots per start, and the live 22:56 log printed the only recorded reason on
+  gen 3 while it belonged to gen 1 — a fact on the wrong generation is worse than none. Do not go back to
+  `prevEnds.concat([prevReason, null])`; building from the starts length in `mdNextGenerationEnds` is what
+  keeps a missing/garbage stored entry from shifting the rest. The renderer prints NO tokens when the lengths
+  disagree.
 - **Spans may CROSS generations:** a stamp the interrupted generation made is kept (it rides the session
   snapshot), so `downloads` / `after-scan tail` can exceed `session` — correct, and now said out loud in
   the block (`DIAG-4`).
