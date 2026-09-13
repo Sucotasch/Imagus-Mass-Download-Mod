@@ -193,7 +193,14 @@ instrumentation is lying, not that a host is slow:
   gen 3 while it belonged to gen 1 — a fact on the wrong generation is worse than none. Do not go back to
   `prevEnds.concat([prevReason, null])`; building from the starts length in `mdNextGenerationEnds` is what
   keeps a missing/garbage stored entry from shifting the rest. The renderer prints NO tokens when the lengths
-  disagree.
+  disagree. **When EVERY generation reads `abrupt` (live 23:08: five in a row), that IS the answer:** the end
+  of a generation is not observable from inside it — Chrome either never calls `onSuspend` on that kind of
+  termination or the async write dies with the worker. The complement is GEN-3: the session snapshot carries
+  `activeAt` (written while the worker is still alive), the recovering worker ships
+  `activeGapMs = workerStartMs − activeAt`, and the `Recovered:` line prints it. Read it ONE-SIDED: ≤5 s
+  proves the worker was working right up to the end (an idle kill is excluded); a larger value is an upper
+  bound only (both the death and the unknown wait for the next event live inside it), so calling it "idle"
+  is forbidden — locked by a REGRESSION assertion.
 - **Spans may CROSS generations:** a stamp the interrupted generation made is kept (it rides the session
   snapshot), so `downloads` / `after-scan tail` can exceed `session` — correct, and now said out loud in
   the block (`DIAG-4`).

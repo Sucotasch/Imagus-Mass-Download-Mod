@@ -1834,4 +1834,67 @@ return mdWorkerStartLines;`)();
     console.log('md-unit-smoke: generation-end (GEN-2) locks hold in both trees');
 }
 
+// ===========================================================================
+// 2026-09-14 — GEN-3: the end of a generation is not observable from inside it.
+// The live 23:08 log had FIVE generations in a row end 'abrupt' (no onSuspend, no
+// error, or an async write cut off), so asking the dying worker cannot work. The
+// answer has to come from a fact recorded WHILE it was alive: the snapshot it
+// already writes carries the moment it was written, and the recovering worker
+// turns that into "how long before my start was it last seen doing something".
+// Read ONE-SIDED — only a small value proves anything.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    const tabTexts = {};
+
+    for (const tree of trees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+        tabTexts[tree] = tab;
+
+        assert.ok(/activeAt: Date\.now\(\),/.test(cutFnFrom(core, 'mdBuildSnapshot')),
+            `GEN-3: ${tree} — the snapshot must carry the moment it was written (the last known sign of life)`);
+        assert.ok(/activeGapMs: snap\.activeAt \? Math\.max\(0, workerStartMs - snap\.activeAt\) : null,/.test(cutFnFrom(core, 'mdApplySnapshot')),
+            `GEN-3: ${tree} — the recovering worker must turn it into a gap, and must tolerate an older snapshot (no field)`);
+        assert.ok(/function mdActivityGapText\(gapMs\)/.test(tab)
+            && /mdActivityGapText\(rc\.activeGapMs\)/.test(tab),
+            `GEN-3: ${tree} — the Saved Log must print it (a builder nobody calls is dead code)`);
+        // The rendering is deliberately one-sided: a small gap disproves an idle
+        // kill, a large one proves nothing. Over-claiming here would recreate
+        // exactly the defect this whole line of work exists to remove.
+        assert.ok(/NOT an idle kill/.test(cutFnBalanced(tab, 'mdActivityGapText'))
+            && /upper bound only/.test(cutFnBalanced(tab, 'mdActivityGapText')),
+            `GEN-3: ${tree} — the text must say which side proves what`);
+        assert.ok(!/proves.*idle kill|means it was idle/i.test(cutFnBalanced(tab, 'mdActivityGapText')),
+            `GEN-3 REGRESSION: ${tree} — a long gap must never be presented as an idle kill`);
+
+        // --- EXECUTION -------------------------------------------------------
+        const gapText = new Function(`${cutFnBalanced(tab, 'mdActivityGapText')}\nreturn mdActivityGapText;`)();
+        assert.ok(/NOT an idle kill/.test(gapText(2000)),
+            `GEN-3: ${tree} — activity 2s before the replacement disproves an idle kill`);
+        assert.ok(/NOT an idle kill/.test(gapText(0)),
+            `GEN-3: ${tree} — a replacement right on top of activity is the same case`);
+        assert.ok(/upper bound only/.test(gapText(60000)) && !/NOT an idle kill/.test(gapText(60000)),
+            `GEN-3: ${tree} — a long gap is inconclusive, and must read that way`);
+        assert.ok(!/idle kill/.test(gapText(30000)),
+            `GEN-3: ${tree} — the boundary case must NOT claim an idle kill either`);
+        // A snapshot from an older build has no `activeAt`, and an old worker
+        // ships no `activeGapMs`: the line must vanish, not print "null".
+        assert.strictEqual(gapText(null), '');
+        assert.strictEqual(gapText(undefined), '');
+        assert.strictEqual(gapText(NaN), '');
+        assert.strictEqual(gapText(-5), '');
+        assert.strictEqual(gapText('nonsense'), '');
+    }
+
+    assert.strictEqual(
+        cutFnBalanced(tabTexts['src-mv3-overlay-firefox'], 'mdActivityGapText').replace(/\r\n/g, '\n'),
+        cutFnBalanced(tabTexts['src-mv3-overlay'], 'mdActivityGapText').replace(/\r\n/g, '\n'),
+        'GEN-3: the gap renderer must be a copy, not a fork (both trees)');
+
+    console.log('md-unit-smoke: last-activity (GEN-3) locks hold in both trees');
+}
+
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

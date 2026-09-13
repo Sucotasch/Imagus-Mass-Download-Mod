@@ -745,6 +745,31 @@
         return lines;
     }
 
+    // --- GEN-3: was the dead generation working up to the end? ---------------
+    // The live 23:08 log had FIVE generations in a row end 'abrupt': none of them
+    // managed to leave an end record, so the end of a generation is not
+    // observable from inside it. The recovering worker instead ships the age of
+    // the last snapshot the dead one managed to write (`activeGapMs`) — a fact
+    // recorded while it was still alive, and therefore one that survives by
+    // construction.
+    //
+    // Read it strictly ONE-SIDED: the window includes the dead time between the
+    // death and whatever event woke the next worker (a killed worker waits), so
+    // only a SMALL value proves anything — it proves the worker was doing work
+    // right before it was replaced, i.e. it was not idle. A large value is not a
+    // stall and not an idle kill: it is "we cannot tell from this number".
+    // Pure (no DOM, no chrome) so the harnesses EXECUTE it.
+    function mdActivityGapText(gapMs) {
+        if (gapMs == null || !isFinite(gapMs) || gapMs < 0) return '';
+        const s = Math.round(gapMs / 1000);
+        if (s <= 5) {
+            return 'last recorded activity ' + s + 's before that replacement — it was working'
+                + ' right up to the end, so this was NOT an idle kill';
+        }
+        return 'last recorded activity ' + s + 's before that replacement — an upper bound only:'
+            + ' a killed worker waits for the next event, so a long gap is not proof of idleness';
+    }
+
     function formatLog(data, opts) {
         const items = data.log || [];
         const stats = data.stats || {};
@@ -768,6 +793,10 @@
                 + (rc.droppedVolatile || 0) + ' needing a manual Retry (page-fetch/temporary URL lost)'
                 + '; interrupted session start ' + fmtTs(rc.sessionStart)
                 + ', interrupted worker ' + fmtTs(rc.workerStart));
+            // GEN-3: the one fact the dead generation could not report about
+            // itself (see mdActivityGapText).
+            const gapText = mdActivityGapText(rc.activeGapMs);
+            if (gapText) lines.push('  ' + gapText);
         }
         if (opts && opts.stateLost) {
             lines.push('');

@@ -1052,6 +1052,14 @@ function mdBuildSnapshot() {
     return {
         v: MD_SNAPSHOT_VERSION,
         workerStart: workerStartMs,
+        // GEN-3 (2026-09-14): when this snapshot was written = the last moment
+        // this generation is KNOWN to have been alive and doing something.
+        // Written from OUTSIDE the death path on purpose: the live 23:08 log had
+        // FIVE generations in a row end 'abrupt', i.e. none of them managed to
+        // leave an end record at all (no onSuspend, no error, or an async write
+        // cut off mid-flight). A dying worker cannot be asked; a live one that is
+        // already persisting its state can answer for free with one number.
+        activeAt: Date.now(),
         sessionId: sessionId,
         sessionStart: sessionStartTime,
         scanInProgress: scanInProgress,
@@ -1273,6 +1281,14 @@ function mdApplySnapshot(snap) {
     mdRecoveredInfo = {
         sessionStart: snap.sessionStart || null,
         workerStart: snap.workerStart || null,
+        // GEN-3: how long before THIS worker started was the previous generation
+        // last seen alive. It is an UPPER bound on "time from last activity to
+        // death": the dead time between the death and the event that woke this
+        // worker is included. Small values are decisive (it was working right up
+        // to the end, so not an idle kill); large ones are NOT proof of an idle
+        // kill, because a killed worker waits for an event — the log says so
+        // instead of over-claiming.
+        activeGapMs: snap.activeAt ? Math.max(0, workerStartMs - snap.activeAt) : null,
         rows: restoredRows,
         requeued: requeue.length,
         adopted: 0,
