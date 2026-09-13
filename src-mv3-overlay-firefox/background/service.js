@@ -669,6 +669,12 @@ function handleMessage(message, sender, sendResponse) {
             handleUpdateFilterStats(msg);
             mdAck();
             break;
+        // Scan diagnostics (2026-09-13): the page's walk counters/spans, printed
+        // by the Saved Log next to the worker's own phase spans.
+        case 'scanDiagnostics':
+            handleScanDiagnostics(msg);
+            mdAck();
+            break;
         case 'reportSkippedItem':
             handleReportSkippedItem(msg);
             mdAck();
@@ -687,6 +693,9 @@ function handleMessage(message, sender, sendResponse) {
                 sendResponse({
                     log: Object.values(items),
                     stats: downloadStats,
+                    // Where the time went (phases) and where the items died
+                    // (counters) — null when the session produced no diagnostics.
+                    scanDiagnostics: mdScanDiagnosticsForLog(),
                     version: chrome.runtime.getManifest().version,
                     sessionStart: sessionStartTime,
                     // Worker identity: lets Save Log prove "the worker answering

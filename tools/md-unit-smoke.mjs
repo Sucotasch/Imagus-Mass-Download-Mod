@@ -1296,4 +1296,104 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
     console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert + progress-window rule + supersede rule + resume-after-restart) hold in both trees');
 }
 
+// ===========================================================================
+// 2026-09-13 — SCAN DIAGNOSTICS. Owner's live report (big rule34 listing):
+// "Scanned 320/674 in a flash, then blocks of 20 with long pauses; the panel
+// disappeared while downloads kept running; the progress page is capped".
+// The walk is SERIAL and every element may wait out da.resolutionTimeout, so a
+// run of timeouts IS the pause — but the Saved Log could not tell that from a
+// slow host, and `found=` in it actually counted DOM elements, not files.
+// These locks keep the instrumentation wired in both trees; the rendering and
+// the payload shaping are EXECUTED (not regex-matched) in
+// .unlazy/review-verify-2026-09-12/repro-scan-diagnostics.mjs.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    for (const tree of trees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const content = readNorm(tree, 'content/content.js');
+        const block = readNorm(tree, 'mass-download/content-block.js');
+        const sw = readNorm(tree, 'background/service.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+
+        // --- content half: phases + counters --------------------------------
+        assert.ok(/downloadAllDiag: null,/.test(content),
+            `DIAG: ${tree} — PVI must carry the diagnostics object`);
+        assert.ok(/PVI\._mdDiagInit\(\);/.test(content)
+            && /PVI\.downloadAllDiag\.elements = allElements\.length;/.test(content),
+            `DIAG: ${tree} — the walk must open a fresh record and count the DOM elements`);
+        assert.ok(/PVI\._mdDiagStamp\('tCollectMs'\);/.test(content)
+            && /PVI\._mdDiagStamp\('tPrefilterMs'\);/.test(content)
+            && /tWalkMs = Date\.now\(\) - PVI\.downloadAllDiag\._walkStart;/.test(content),
+            `DIAG: ${tree} — all three phases (collect, prefilter, walk) must be timed`);
+        // The paused counter is the whole point: without it a timeout is
+        // indistinguishable from "no rule matched".
+        assert.ok(/PVI\.downloadAllDiag\.timeouts\+\+;/.test(content),
+            `DIAG: ${tree} — elements that waited out da.resolutionTimeout must be counted`);
+        // Shipped once, from every end of the walk — a cancel included.
+        assert.ok(/PVI\._sendScanDiagnostics\('no-groups'\);/.test(content)
+            && /PVI\._sendScanDiagnostics\('groups-analyzed'\);/.test(content)
+            && /PVI\._sendScanDiagnostics\('canceled'\);/.test(content),
+            `DIAG: ${tree} — every end path (no groups / analyzed / canceled) must ship the numbers`);
+        assert.ok(/cmd: 'scanDiagnostics', diag: payload/.test(content),
+            `DIAG: ${tree} — the payload must be sent as scanDiagnostics`);
+        // The counters the walk already keeps must not be duplicated.
+        assert.ok(/d\.covered = PVI\.downloadAllCoveredCount \|\| 0;/.test(content)
+            && /d\.unresolved = PVI\.downloadAllUnresolved \|\| 0;/.test(content),
+            `DIAG: ${tree} — covered/unresolved must be read from the live counters`);
+        // The record's own bookkeeping (_t, _walkStart, _sent) must never cross
+        // the message boundary: the worker would persist it into the log.
+        assert.ok(/if \(k\.charAt\(0\) === '_' \|\| typeof d\[k\] === 'function'\) continue;/.test(content),
+            `DIAG: ${tree} — the payload must strip the record's private fields`);
+        // null/'/undefined mean "never measured"; Number(null) is 0, so a missing
+        // figure would be printed as a FACT ("timeouts=0") instead of a dash.
+        assert.ok(/const v = \(raw === null \|\| raw === undefined \|\| raw === ''\) \? NaN : Number\(raw\);/.test(core),
+            `DIAG: ${tree} — an unmeasured value must stay unmeasured (null is not zero)`);
+        assert.ok(/if \(!msg \|\| !msg\.diag \|\| typeof msg\.diag !== 'object'\) return;/.test(cutFnFrom(core, 'handleScanDiagnostics')),
+            `DIAG: ${tree} — a malformed payload must be ignored, not merged`);
+
+        // --- worker half: the handler, the merge and the snapshot -----------
+        assert.ok(/function handleScanDiagnostics\(msg\)/.test(core),
+            `DIAG: ${tree} — the worker must own a handler for the page's numbers`);
+        assert.ok(/case 'scanDiagnostics':/.test(sw),
+            `DIAG: ${tree} — a handler nobody dispatches is dead code`);
+        assert.ok(/mdScanDiagnostics = null;/.test(core),
+            `DIAG: ${tree} — a new session must not inherit the previous run's numbers`);
+        assert.ok(/scanDiagnostics: mdScanDiagnostics \|\| null,/.test(cutFnFrom(core, 'mdBuildSnapshot')),
+            `DIAG: ${tree} — the page's half must survive a worker restart (the walk usually ran BEFORE it)`);
+        assert.ok(/mdScanDiagnostics = snap\.scanDiagnostics/.test(cutFnFrom(core, 'mdApplySnapshot')),
+            `DIAG: ${tree} — and must be restored by the recovering worker`);
+        assert.ok(/scanDiagnostics: mdScanDiagnosticsForLog\(\),/.test(sw),
+            `DIAG: ${tree} — getDownloadLog must ship the diagnostics with the log`);
+        // The invisible tail: the page closed its scan (panel gone) long before
+        // the queues drained — that span is exactly what the user could not see.
+        assert.ok(/mdScanPhases\.scanDone = Date\.now\(\);/.test(cutFnFrom(core, 'handleUpdateStatus')),
+            `DIAG: ${tree} — the scan-closed moment must be stamped (it anchors the after-scan tail)`);
+        assert.ok(/mdScanPhases\.drained = Date\.now\(\);/.test(cutFnFrom(core, 'checkAllQueuesEmpty')),
+            `DIAG: ${tree} — the drain must be stamped where the session really ends`);
+        assert.ok(/scanTailMs:/.test(cutFnFrom(core, 'mdScanPhaseReport')),
+            `DIAG: ${tree} — the report must expose the after-scan tail`);
+
+        // --- log half: the block and the label that lied ---------------------
+        assert.ok(/function mdScanDiagLines\(diag\)/.test(tab) && /mdScanDiagLines\(opts && opts\.diagnostics\)/.test(tab),
+            `DIAG: ${tree} — the Saved Log must print the block (and a builder nobody calls is dead code)`);
+        assert.ok(/diagnostics: response\.scanDiagnostics \|\| null/.test(tab),
+            `DIAG: ${tree} — the log payload must be wired into the renderer`);
+        assert.ok(/Stats \(scan totals, live counters\): elements=/.test(tab),
+            `DIAG: ${tree} — stats.found counts DOM ELEMENTS: the label must say so (it read as "821 files")`);
+        assert.ok(!/Stats \(scan totals, live counters\): found=/.test(tab),
+            `DIAG REGRESSION: ${tree} — the misleading found= label must not return`);
+
+        // --- the mirror: content.js == content-block.js ----------------------
+        for (const m of ['HELPERS', 'PROPERTIES', 'MESSAGES', 'METHODS']) {
+            const a = content.slice(content.indexOf(`>>> MASS-DOWNLOAD-${m}`), content.indexOf(`<<< MASS-DOWNLOAD-${m}`));
+            const b = block.slice(block.indexOf(`>>> MASS-DOWNLOAD-${m}`), block.indexOf(`<<< MASS-DOWNLOAD-${m}`));
+            assert.strictEqual(a, b, `DIAG: ${tree} — the ${m} section must stay byte-identical in content-block.js`);
+        }
+    }
+    console.log('md-unit-smoke: scan-diagnostics locks hold in both trees');
+}
+
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

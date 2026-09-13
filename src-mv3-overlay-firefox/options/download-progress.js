@@ -334,6 +334,58 @@
         return note;
     }
 
+    // --- Scan diagnostics (2026-09-13) ------------------------------------
+    // The owner watched a big listing scan jump to "Scanned 320/674" in a flash,
+    // then crawl in blocks of 20 with long pauses, and the Saved Log could not
+    // tell a slow WALK from a slow HOST. These two helpers render the numbers
+    // the run itself produced: the content side's counters/spans and the
+    // worker's own spans (see handleScanDiagnostics / mdScanPhaseReport in
+    // mass-download/service-core.js).
+    // Phase span in seconds ('-' when the run never measured it).
+    function mdSecs(ms) {
+        return (ms == null || !isFinite(ms)) ? '-' : (Math.round(ms / 100) / 10) + 's';
+    }
+
+    // Pure (no DOM, no chrome) so the harness EXECUTES it on the numbers of a
+    // real log instead of regex-matching the text.
+    function mdScanDiagLines(diag) {
+        if (!diag || typeof diag !== 'object') return [];
+        const c = diag.content || null;
+        const sw = diag.sw || null;
+        if (!c && !sw) return [];
+        const num = (v) => (v == null ? '-' : String(v));
+        const lines = ['', 'Scan diagnostics:'];
+        if (c) {
+            lines.push('  walk: elements=' + num(c.elements)
+                + ' prefiltered=' + num(c.prefiltered)
+                + ' candidates=' + num(c.candidates)
+                + ' covered=' + num(c.covered)
+                + ' unresolved=' + num(c.unresolved)
+                + ' timeouts=' + num(c.timeouts)
+                + ' albums=' + num(c.albums)
+                + ' groups=' + num(c.groups)
+                + ' end=' + num(c.endPhase));
+            lines.push('  phases (content): collect=' + mdSecs(c.tCollectMs)
+                + ' prefilter=' + mdSecs(c.tPrefilterMs)
+                + ' walk=' + mdSecs(c.tWalkMs)
+                + ' total=' + mdSecs(c.totalMs));
+            if (c.timeouts) {
+                lines.push('  ' + c.timeouts + ' element(s) waited out da.resolutionTimeout — each of those is a full wait');
+                lines.push('  inside the serial walk, so a run of them is the "long pause" between two status updates.');
+            }
+        }
+        if (sw) {
+            lines.push('  phases (worker gen ' + num(sw.gen) + '): groups=' + mdSecs(sw.groupsMs)
+                + ' downloads=' + mdSecs(sw.downloadMs)
+                + ' after-scan tail=' + mdSecs(sw.scanTailMs)
+                + ' session=' + mdSecs(sw.totalMs)
+                + (sw.drained ? '' : ' (session still running at save time)'));
+            lines.push('  "after-scan tail" = from the page closing its scan (its panel is gone) to the last download:');
+            lines.push('  it is work the user had no on-screen sign of.');
+        }
+        return lines;
+    }
+
     function updateListNote() {
         if (!listNoteEl) return;
         listNoteEl.textContent = mdListNoteText(maxProgressRecords, lastStats);
@@ -584,7 +636,10 @@
         // contradictory — "downloaded=30" next to "completed=17" reads as a bug
         // unless the list is named as a capped window. Spell it out: the scan
         // totals come from the live counters, the rows below are the last N.
-        lines.push('Stats (scan totals, live counters): found=' + (stats.found || 0)
+        // `stats.found` is the number of DOM ELEMENTS handed to the pre-filter,
+        // not files: live 2026-09-13 read it as "821 files found" while the walk
+        // had 674 candidates. The block below carries the walk's own counters.
+        lines.push('Stats (scan totals, live counters): elements=' + (stats.found || 0)
             + ' prefiltered=' + (stats.prefiltered || 0)
             + ' skipped=' + (stats.skipped || 0)
             + ' downloaded=' + (stats.downloaded || 0));
@@ -603,6 +658,7 @@
             lines.push('  so the item is accounted for by its terminal row (completed, or one failed row if no candidate worked).');
             lines.push('  Their own URL and last reason are kept above; the full chain is in the terminal row\'s "attempts" line.');
         }
+        lines.push(...mdScanDiagLines(opts && opts.diagnostics));
         lines.push('');
         lines.push('Items:');
         items.forEach((it, i) => {
@@ -648,7 +704,13 @@
             // worker answering still owns the session that produced the rows.
             const verdict = classifyWorkerState(response, Object.values(downloadItems), lastSeenSessionStart);
             if (verdict === 'lost') showStateLost();
-            const text = formatLog(response, { stateLost: verdict === 'lost' });
+            // The worker ships the scan diagnostics with the log payload (see
+            // getDownloadLog): phases + walk counters. Absent on an older
+            // worker — mdScanDiagLines then prints nothing instead of "null".
+            const text = formatLog(response, {
+                stateLost: verdict === 'lost',
+                diagnostics: response.scanDiagnostics || null
+            });
             const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');

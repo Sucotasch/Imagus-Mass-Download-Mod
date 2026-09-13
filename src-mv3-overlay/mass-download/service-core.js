@@ -290,6 +290,10 @@ function resetMassDownloadSession() {
     sessionStartTime = Date.now();
     activeControllers.forEach(ctrl => ctrl.abort());
     activeControllers.clear();
+    // Scan diagnostics describe the session that produced them — a new session
+    // must not inherit the previous run's counters or phase stamps.
+    mdScanDiagnostics = null;
+    mdScanPhases = Object.create(null);
 }
 
 function handleOpenDownloadProgress(msg, sender) {
@@ -372,8 +376,31 @@ function handleUpdateStatus(msg) {
         // Content finished scanning — do not cancel in-flight filter/download.
         mdResumeAskedAt = 0; // the page answered (it closed the scan itself)
         contentScanDone = true;
+        // Diagnostics: from here on the page has nothing on screen, while the
+        // queues may still hold hundreds of items (see scanTailMs).
+        if (mdScanPhases.scanDone == null) mdScanPhases.scanDone = Date.now();
         setTimeout(checkAllQueuesEmpty, 100);
     }
+}
+
+// The content script's half of the scan diagnostics: counters of the walk and
+// its phase spans. Numbers only, known keys only — the payload comes from a
+// page, and it is diagnostics, never scheduling input.
+function handleScanDiagnostics(msg) {
+    if (!msg || !msg.diag || typeof msg.diag !== 'object') return;
+    const d = msg.diag;
+    const content = { endPhase: typeof d.endPhase === 'string' ? d.endPhase : null };
+    ['elements', 'candidates', 'prefiltered', 'covered', 'unresolved', 'timeouts',
+        'albums', 'groups', 'tCollectMs', 'tPrefilterMs', 'tWalkMs', 'totalMs'].forEach(function (k) {
+        const raw = d[k];
+        // Explicit null/''/undefined mean "never measured" — NOT zero. Printing 0
+        // there would be a fact we do not have (Number(null) is 0!).
+        const v = (raw === null || raw === undefined || raw === '') ? NaN : Number(raw);
+        content[k] = Number.isFinite(v) ? v : null;
+    });
+    mdScanDiagnostics = Object.assign({}, mdScanDiagnostics || {}, { content: content });
+    sendToProgressTab({ cmd: 'updateScanDiagnostics', diagnostics: mdScanDiagnostics });
+    if (scanInProgress) mdSchedulePersist();
 }
 
 function handleUpdateFilterStats(msg) {
@@ -545,6 +572,61 @@ var mdResumeAskedAt = 0;
 // What the recovery moved. Shipped with the worker marker so the Save Log and
 // the progress tab can tell a recovered run from a fresh one.
 var mdRecoveredInfo = null;
+
+// --- Scan diagnostics (2026-09-13) ----------------------------------------
+// A live run must be able to answer WHERE the time went and WHERE the items
+// died. The owner watched "Scanned 320/674 in a flash, then blocks of 20 with
+// long pauses, the banner gone while downloads kept running" and the Saved Log
+// could not separate a slow WALK (content side: one element at a time, each
+// capped by da.resolutionTimeout) from a slow HOST (fetch/validation stalls).
+//
+// Two halves, printed as one block by formatLog (download-progress.js):
+//   content — the walk's counters and its three phase spans, shipped ONCE by
+//             the page (scanDiagnostics message).
+//   sw      — the spans this worker can measure: the group-analysis loop, the
+//             download tail after the page closed its scan ("scanTailMs" — the
+//             time the progress panel was already gone), and the session total.
+// The phases are event-driven (no single loop to time), so every span is a
+// first-to-last activity measurement, never a guess. Diagnostics only: nothing
+// here changes scheduling, queues or concurrency.
+var mdScanDiagnostics = null;
+var mdScanPhases = Object.create(null);
+
+function mdPhaseStamp(name) {
+    if (mdScanPhases[name] == null) mdScanPhases[name] = Date.now();
+}
+
+function mdPhaseMs(name) {
+    const a = mdScanPhases[name], b = mdScanPhases[name + 'End'];
+    return a != null && b != null ? b - a : null;
+}
+
+// The worker half of the Save Log's "Scan diagnostics" block. `drained` marks a
+// session that finished on its own: until then the spans describe the whole
+// time elapsed so far, which is what a mid-session Save Log should say.
+function mdScanPhaseReport() {
+    const end = mdScanPhases.drained || Date.now();
+    return {
+        gen: workerStarts.length || null,
+        groupsMs: mdPhaseMs('groups'),
+        // The download phase has no "end" marker of its own: it ends when the
+        // session drains, and until then its span is the time elapsed (a
+        // mid-session Save Log should say "so far", not "finished").
+        downloadMs: mdScanPhases.download != null ? end - mdScanPhases.download : null,
+        // The invisible tail: the page's scan closed (its panel is gone) at
+        // scanDone, the session drained at `drained` — everything between the
+        // two is time the user had no on-screen sign of (2026-09-13 report).
+        scanTailMs: (mdScanPhases.drained && mdScanPhases.scanDone)
+            ? mdScanPhases.drained - mdScanPhases.scanDone : null,
+        totalMs: sessionStartTime ? end - sessionStartTime : null,
+        drained: !!mdScanPhases.drained
+    };
+}
+
+function mdScanDiagnosticsForLog() {
+    if (!mdScanDiagnostics && Object.keys(mdScanPhases).length === 0) return null;
+    return Object.assign({}, mdScanDiagnostics || {}, { sw: mdScanPhaseReport() });
+}
 
 // Serializable view of a task. Everything the filter/download phases need to
 // resume an item is kept (candidate chain, attempt chain, selection telemetry);
@@ -755,6 +837,12 @@ function mdBuildSnapshot() {
         stats: { found: downloadStats.found, prefiltered: downloadStats.prefiltered, skipped: downloadStats.skipped, downloaded: downloadStats.downloaded },
         initiatorTab: downloadInitiatorTabId != null ? downloadInitiatorTabId : null,
         hostModes: Object.assign(Object.create(null), refererHostModes),
+        // The page's half of the scan diagnostics survives a restart: the walk
+        // usually happens BEFORE the worker dies (2026-09-13: restart 95 s in,
+        // log saved after), and those numbers are the ones worth keeping. The
+        // worker half is recomputed by the instance that answers (see
+        // mdScanPhaseReport — it prints its own generation).
+        scanDiagnostics: mdScanDiagnostics || null,
         rows: rows,
         processedUrls: Array.from(globalProcessedUrls).slice(-MD_SNAPSHOT_MAX_KEYS),
         processedHashes: Array.from(globalProcessedMediaHashes).slice(-MD_SNAPSHOT_MAX_KEYS),
@@ -810,6 +898,8 @@ function mdApplySnapshot(snap) {
     let droppedVolatile = 0;
 
     sessionId = Number(snap.sessionId) || sessionId;
+    mdScanDiagnostics = snap.scanDiagnostics && typeof snap.scanDiagnostics === 'object'
+        ? snap.scanDiagnostics : null;
     const st = snap.stats || {};
     downloadStats = {
         found: Number(st.found) || 0,
@@ -1428,6 +1518,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 function checkAllQueuesEmpty() {
     if (filterQueue.length === 0 && downloadQueue.length === 0 && activeFilters === 0 && activeDownloads === 0 && activeRefererRetries === 0) {
         if (contentScanDone) {
+            // Diagnostics: the session is really finished (not merely between
+            // chunks) — this is the only point where the spans may be closed.
+            if (mdScanPhases.drained == null) mdScanPhases.drained = Date.now();
             scanInProgress = false;
             clearSessionKeepalive();
             // FIX-7: a drained session has nothing to resume — drop the snapshot.
@@ -2238,6 +2331,9 @@ function processDownloadQueue() {
 
     while (activeDownloads < maxConcurrentDownloads && downloadQueue.length > 0) {
         const task = downloadQueue.shift();
+        // Diagnostics: the download span starts at the FIRST real download, not
+        // at the first drain attempt (the queue is polled empty between phases).
+        mdPhaseStamp('download');
         activeDownloads++;
         updateDownloadProgress(task.url, 'downloading', 0, null, null, task);
 
@@ -3105,7 +3201,9 @@ function mergeIntersectingGroups(groups) {
 }
 
 async function processUrlGroupsWithValidation(groups, referer, sender) {
+    mdPhaseStamp('groups');
     if (!groups || groups.length === 0) {
+        mdScanPhases.groupsEnd = Date.now();
         setTimeout(checkAllQueuesEmpty, 500);
         return;
     }
@@ -3161,6 +3259,7 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
             done: false
         });
     }
+    if (mdScanPhases.groupsEnd == null) mdScanPhases.groupsEnd = Date.now();
     if (downloadInitiatorTabId) {
         chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls })
             .catch(() => { mdCheckInitiatorGone(); });

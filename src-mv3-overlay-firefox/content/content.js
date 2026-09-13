@@ -1408,6 +1408,12 @@
         downloadAllFiltered: 0,
         downloadAllCoveredCount: 0,
         downloadAllUnresolved: 0,
+        // Phase counters/timings of the walk, shipped to the worker once (see
+        // _sendScanDiagnostics) and printed in the Saved Log. Without them a
+        // live run cannot answer WHERE the time went: 2026-09-13 the owner saw
+        // "Scanned 320/674 in a flash, then blocks of 20 with long pauses" and
+        // nothing in the log could separate a slow walk from a slow host.
+        downloadAllDiag: null,
         downloadAllUniqueUrls: new Set(),
         downloadAllCoveredElements: new Set(),
         downloadAllSendResponse: null,
@@ -4665,6 +4671,10 @@
                     PVI.downloadAllQueue = [];
                     PVI.ambiguousUrlGroups = [];
                     if (PVI._cleanupMonkeyPatch) PVI._cleanupMonkeyPatch();
+                    // A canceled scan still reports its numbers: the log is the
+                    // diagnostic of last resort, and "how far did it get" is the
+                    // first question after a cancel.
+                    PVI._sendScanDiagnostics('canceled');
                     PVI._updateDownloadAllStatus('Scan canceled by user');
                     setTimeout(PVI._stopKeepAwake, 3000);
                 }
@@ -4856,6 +4866,54 @@
         },
 
 // >>> MASS-DOWNLOAD-METHODS
+        // --- Scan diagnostics (2026-09-13) ------------------------------------
+        // Three content phases are timed (collect: the DOM query; prefilter:
+        // visibility + stop-words + srcOnly probe; walk: the serial resolve
+        // pass) plus the counters that say where candidates died. `timeouts`
+        // counts the elements whose resolve never answered — each of those
+        // costs the FULL da.resolutionTimeout, so a run of them IS the "long
+        // pause" between two status updates.
+        _mdDiagInit: function () {
+            PVI.downloadAllDiag = {
+                elements: 0, candidates: 0, prefiltered: 0,
+                covered: 0, unresolved: 0, timeouts: 0, albums: 0, groups: 0,
+                tCollectMs: null, tPrefilterMs: null, tWalkMs: null,
+                startedAt: Date.now(), _t: Date.now(), _walkStart: 0
+            };
+            return PVI.downloadAllDiag;
+        },
+        // One clock for the phases: each call returns the ms since the previous
+        // stamp and stores it under `key` (null key = just close the segment).
+        _mdDiagStamp: function (key) {
+            const d = PVI.downloadAllDiag;
+            if (!d) return null;
+            const now = Date.now();
+            const ms = now - d._t;
+            d._t = now;
+            if (key) d[key] = ms;
+            return ms;
+        },
+        // Ship the numbers ONCE, when the walk ends (either end path) or the
+        // scan is canceled. The worker merges them with its own phase stamps
+        // and writes the block into the Saved Log.
+        _sendScanDiagnostics: function (endPhase) {
+            const d = PVI.downloadAllDiag;
+            if (!d || d._sent) return;
+            d._sent = true;
+            // Read the counters the walk already maintains instead of keeping
+            // a second copy of them in sync.
+            d.covered = PVI.downloadAllCoveredCount || 0;
+            d.unresolved = PVI.downloadAllUnresolved || 0;
+            d.groups = PVI.ambiguousUrlGroups ? PVI.ambiguousUrlGroups.length : 0;
+            d.endPhase = endPhase || 'completed';
+            d.totalMs = Date.now() - d.startedAt;
+            const payload = {};
+            for (const k in d) {
+                if (k.charAt(0) === '_' || typeof d[k] === 'function') continue;
+                payload[k] = d[k];
+            }
+            Port.send({ cmd: 'scanDiagnostics', diag: payload });
+        },
         _updateDownloadAllStatus: function (progressText) {
             if (!PVI.downloadAllStatusEl) {
                 PVI.downloadAllStatusEl = doc.createElement('div');
@@ -4969,6 +5027,12 @@
                     PVI.downloadAllQueue = filteredElements;
                     PVI.downloadAllTotal = filteredElements.length;
                     PVI.downloadAllFound = 0;
+                    if (PVI.downloadAllDiag) {
+                        PVI.downloadAllDiag.candidates = filteredElements.length;
+                        // closes the prefilter segment: collect -> prefilter -> walk
+                        PVI._mdDiagStamp('tPrefilterMs');
+                        PVI.downloadAllDiag._walkStart = Date.now();
+                    }
 
                     Port.send({ cmd: 'updateFilterStats', found: elementsToFilter.length, filtered: PVI.downloadAllFiltered });
 
@@ -4987,8 +5051,11 @@
                 return;
             }
             PVI.downloadAllActive = true;
+            PVI._mdDiagInit();
 
             const allElements = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
+            PVI.downloadAllDiag.elements = allElements.length;
+            PVI._mdDiagStamp('tCollectMs');
 
             PVI.downloadAllTotal = allElements.length;
             PVI.downloadAllFound = 0;
@@ -5037,6 +5104,10 @@
                     const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
                     PVI._updateDownloadAllStatus(finalMessage);
                     Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true });
+                    if (PVI.downloadAllDiag) {
+                        PVI.downloadAllDiag.tWalkMs = Date.now() - PVI.downloadAllDiag._walkStart;
+                        PVI._sendScanDiagnostics('no-groups');
+                    }
                     PVI.downloadAllActive = false;
                     PVI._stopKeepAwake(finalMessage);
                     if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
@@ -5117,6 +5188,9 @@
                     const albumId = el.IMGS_album;
                     const albumList = albumId ? PVI.stack[albumId] : null;
                     if (Array.isArray(albumList) && albumList.length > 1) {
+                        // diagnostics: an album answer costs a stack replay, not
+                        // a resolve — worth counting separately from the walk.
+                        if (PVI.downloadAllDiag) PVI.downloadAllDiag.albums++;
                         for (let ai = 1; ai < albumList.length; ai++) {
                             const aItem = albumList[ai];
                             let aUrl = Array.isArray(aItem) ? aItem[0] : aItem;
@@ -5239,7 +5313,14 @@
                     onResolved(null);
                 } else {
                     PVI.load(src);
-                    timeout = setTimeout(() => onResolved(null), ((cfg.da && cfg.da.resolutionTimeout) || 8) * 1000);
+                    // The cap is the walk's worst case per element: every timeout
+                    // here is one full da.resolutionTimeout of "nothing moved".
+                    // Counted, because a run of them is exactly the "long pause
+                    // between two 20-item status updates" (2026-09-13).
+                    timeout = setTimeout(() => {
+                        if (PVI.downloadAllDiag) PVI.downloadAllDiag.timeouts++;
+                        onResolved(null);
+                    }, ((cfg.da && cfg.da.resolutionTimeout) || 8) * 1000);
                 }
             } catch (err) {
                 console.error('Error during Mass Download scan:', err);
@@ -5251,6 +5332,13 @@
             // Audit N-05: after a user cancel the SW loop still finishes and
             // sends this message — do not claim "Analysis complete" then.
             if (!PVI.downloadAllActive) return;
+            // The walk is over on this path too: close the last segment and ship
+            // the numbers. (The groups path is the slow one — the worker may
+            // have taken minutes over them, and that time is NOT in tWalkMs.)
+            if (PVI.downloadAllDiag) {
+                PVI.downloadAllDiag.tWalkMs = Date.now() - PVI.downloadAllDiag._walkStart;
+                PVI._sendScanDiagnostics('groups-analyzed');
+            }
             const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
             PVI._updateDownloadAllStatus(finalMessage);
             // Same diagnostics as the no-groups path: where items died.
