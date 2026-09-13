@@ -673,6 +673,10 @@ function handleMessage(message, sender, sendResponse) {
                 sendResponse({
                     log: Object.values(items),
                     stats: downloadStats,
+                    // Unfinished work at save time: every other number here counts
+                    // what is DONE, so a stalled queue and a finished session look
+                    // alike (see mdPendingSnapshot in mass-download/service-core.js).
+                    pending: mdPendingSnapshot(),
                     // Where the time went (phases) and where the items died
                     // (counters) — null when the session produced no diagnostics.
                     scanDiagnostics: mdScanDiagnosticsForLog(),

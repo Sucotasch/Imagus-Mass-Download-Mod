@@ -22,9 +22,38 @@ let progressTabPromise = null;
 // broadcast tagged forProgressTab. Content/user scripts receive the same
 // message but their onMessage handlers ignore the unknown cmds. The tab's own
 // runtime.onMessage listener is always the delivery target while it is open.
+// How much work is still UNFINISHED (2026-09-14). Every other number the tab and
+// the Saved Log show counts what is already DONE (found / prefiltered / skipped /
+// downloaded), so a frozen queue and a finished session look exactly alike:
+// live 2026-09-13 21:52 the owner saw a pause, read it as "the downloads are
+// over", and the session had 68 items still queued. This is the missing half.
+//
+// `stalled` is the unambiguous signature and deliberately not a guess from a
+// timer: work is waiting (queued > 0) and NOTHING is in flight — no filter and
+// no download — so nothing can move it without a new event (the wake-up alarm,
+// a message, or a worker restart).
+var mdLastProgressAt = 0;
+
+function mdPendingSnapshot() {
+    return {
+        filtering: activeFilters,
+        downloading: activeDownloads,
+        queued: filterQueue.length + downloadQueue.length,
+        retries: activeRefererRetries,
+        stalled: (filterQueue.length + downloadQueue.length) > 0
+            && activeFilters === 0 && activeDownloads === 0 && activeRefererRetries === 0,
+        // Seconds since the last row changed anything. Context for the tab; it is
+        // NOT the freeze test (a big file with no progress events also sits here).
+        idleSec: mdLastProgressAt ? Math.round((Date.now() - mdLastProgressAt) / 1000) : null
+    };
+}
+
 function sendToProgressTab(msg) {
     if (!downloadProgressTabId) return;
-    chrome.runtime.sendMessage({ ...msg, forProgressTab: true }).catch(() => {});
+    // Every push carries the unfinished counts with it: the item pushes alone
+    // report transitions, and a session that STOPS producing them is precisely
+    // the case that must stay visible.
+    chrome.runtime.sendMessage({ ...msg, pending: mdPendingSnapshot(), forProgressTab: true }).catch(() => {});
 }
 
 async function getOrCreateProgressTab(initiatorTabId) {
@@ -553,8 +582,18 @@ function mdRecordWorkerStart() {
 mdRecordWorkerStart();
 
 // Shipped with getDownloadStatus / getDownloadLog (see the header note above).
+// `starts` is the whole start history of the browser session (times only, capped
+// at 24 by mdRecordWorkerStart): the console line already diagnoses the PREVIOUS
+// generation's lifetime, but a Saved Log is the artifact we actually read — and
+// without these numbers "the worker restarted" is unattributable (idle timer vs
+// per-operation limit vs a crash).
 function workerMarker() {
-    return { start: workerStartMs, gen: workerStarts.length || null, recovered: mdRecoveredInfo };
+    return {
+        start: workerStartMs,
+        gen: workerStarts.length || null,
+        starts: workerStarts.slice(),
+        recovered: mdRecoveredInfo
+    };
 }
 
 // --- Session snapshot and recovery (FIX-7, 2026-09-12) --------------------
@@ -1246,7 +1285,12 @@ function handleGetDownloadStatus(msg, sendResponse) {
         stats: downloadStats,
         maxRecords: maxRecords,
         sessionStart: sessionStartTime,
-        worker: workerMarker()
+        worker: workerMarker(),
+        // The half of the picture every other number omits: what is NOT done yet
+        // (see mdPendingSnapshot). A frozen queue and a finished session used to
+        // render identically — live 2026-09-13 21:52 the owner read a pause as
+        // "the downloads are over" while 68 items were still queued.
+        pending: mdPendingSnapshot()
     });
 }
 
@@ -1683,6 +1727,9 @@ function mdEvictOldestRows(table, maxRecords) {
 }
 
 function updateDownloadProgress(url, status, progress, error, downloadId, task) {
+    // The single place a row changes anything: the only honest "progress
+    // happened" signal there is (see mdPendingSnapshot).
+    mdLastProgressAt = Date.now();
     // P2: rows that die in the filter phase never reach
     // processDownloadQueue, so task.filename was never derived and the
     // progress tab / Save Log showed a raw URL basename ('index.php' for

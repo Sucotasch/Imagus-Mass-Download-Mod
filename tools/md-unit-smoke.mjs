@@ -1474,6 +1474,12 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `DIAG: ${tree} — the restart note must be driven by the recovery fact, not by gen > 1`);
         assert.ok(/const restarted = sw\.resumed === true;/.test(cutFnFrom(tab, 'mdScanDiagLines')),
             `DIAG: ${tree} — the Saved Log must say when "session" is the taking-over generation's uptime`);
+        // 2026-09-14: the 21:52 log printed `downloads=192.8s ... session=31.3s` — a
+        // span longer than the session beside it. It is correct (the interrupted
+        // generation's stamps are kept and ride the snapshot) but unreadable
+        // without this sentence, which is exactly the class of defect we fix.
+        assert.ok(/may CROSS generations/.test(cutFnFrom(tab, 'mdScanDiagLines')),
+            `DIAG: ${tree} — a resumed run's spans must be declared to cross generations (downloads > session)`);
 
         // --- the mirror: content.js == content-block.js ----------------------
         for (const m of ['HELPERS', 'PROPERTIES', 'MESSAGES', 'METHODS']) {
@@ -1520,6 +1526,157 @@ return {
             `DIAG: ${tree} — restore takes only whitelisted numeric stamps (a snapshot is storage, not trust)`);
     }
     console.log('md-unit-smoke: scan-diagnostics locks hold in both trees');
+}
+
+// ===========================================================================
+// 2026-09-14 — UNFINISHED WORK + WORKER GENERATIONS. Two questions that decided
+// what to fix next and that NO existing number answered:
+//   (A) WHY the worker restarted. The 21:52 log showed `interrupted worker
+//       21:50:20` -> `gen 8 21:50:40` (the generation lived <=20 s) and the
+//       reason existed only as an in-memory console line, never in a log.
+//   (B) Whether the run was FINISHED. Live 2026-09-13 21:52 the owner watched a
+//       pause, read it as "the downloads are over", and 68 items were still
+//       queued while every number on screen and in the log counted only what was
+//       DONE. A stalled queue and a clean finish rendered identically.
+// The counters are EXECUTED here on the real functions from each tree; the
+// rendering locks keep the wiring (worker -> push -> tab -> Saved Log) intact.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    const tabTexts = {};
+
+    for (const tree of trees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const svc = readNorm(tree, 'background/service.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+        const html = readNorm(tree, 'options/download-progress.html');
+        tabTexts[tree] = tab;
+
+        // --- (B) the worker owns the readout, and it must be honest ----------
+        assert.ok(/function mdPendingSnapshot\(/.test(core),
+            `UNFIN: ${tree} — the worker must own the unfinished-work readout`);
+        assert.ok(/^var mdLastProgressAt = 0;$/m.test(core),
+            `UNFIN: ${tree} — the idle clock must start unset ("never measured" is not "0s ago")`);
+        // A stall is NOT a timer guess: it is "work is waiting and nothing can
+        // move it". A big file with no progress events must not trip it, which is
+        // exactly what an idle-only test would do.
+        assert.ok(/stalled: \(filterQueue\.length \+ downloadQueue\.length\) > 0/.test(cutFnFrom(core, 'mdPendingSnapshot'))
+            && /activeFilters === 0 && activeDownloads === 0 && activeRefererRetries === 0/.test(cutFnFrom(core, 'mdPendingSnapshot')),
+            `UNFIN: ${tree} — stalled must require a non-empty queue AND nothing in flight`);
+        assert.ok(/mdLastProgressAt = Date\.now\(\);/.test(cutFnFrom(core, 'updateDownloadProgress')),
+            `UNFIN: ${tree} — the idle clock must be stamped where a row actually changes`);
+        // Wiring: the counts are useless if they never leave the worker.
+        assert.ok(/pending: mdPendingSnapshot\(\), forProgressTab: true/.test(cutFnFrom(core, 'sendToProgressTab')),
+            `UNFIN: ${tree} — every push must carry the unfinished counts (a session that STOPS pushing is the case that matters)`);
+        assert.ok(/pending: mdPendingSnapshot\(\)/.test(cutFnFrom(core, 'handleGetDownloadStatus')),
+            `UNFIN: ${tree} — a one-shot status poll must answer the same question as a push`);
+        assert.ok(/pending: mdPendingSnapshot\(\),/.test(svc),
+            `UNFIN: ${tree} — Save Log must ship the unfinished counts with the log`);
+
+        // --- (A) the start history must reach the log ------------------------
+        assert.ok(/starts: workerStarts\.slice\(\),/.test(cutFnFrom(core, 'workerMarker')),
+            `UNFIN: ${tree} — the worker marker must ship the whole start history (the Saved Log is what we read)`);
+        assert.ok(/function mdWorkerStartLines\(worker\)/.test(tab)
+            && /mdWorkerStartLines\(data\.worker\)/.test(tab),
+            `UNFIN: ${tree} — the Saved Log must print the generations (a builder nobody calls is dead code)`);
+        assert.ok(/function mdPendingLogLines\(pending\)/.test(tab)
+            && /mdPendingLogLines\(data\.pending\)/.test(tab),
+            `UNFIN: ${tree} — the Saved Log must print the unfinished counts`);
+
+        // --- tab wiring: the missing half on screen --------------------------
+        assert.ok(/function mdPendingNoteText\(pending\)/.test(tab),
+            `UNFIN: ${tree} — the tab's note must be a pure, testable builder`);
+        assert.ok(/updatePendingNote\(request\.pending\)/.test(cutFnBalanced(tab, 'handleMessage')),
+            `UNFIN: ${tree} — a push must refresh the note`);
+        assert.ok(/updatePendingNote\(response\.pending\)/.test(cutFnBalanced(tab, 'handleStatusResponse')),
+            `UNFIN: ${tree} — the status poll must refresh the note too`);
+        assert.ok(/if \(queued === 0 && busy === 0\)/.test(cutFnBalanced(tab, 'mdPendingNoteText')),
+            `UNFIN: ${tree} — a finished run must say so (and a NON-empty queue must never print that sentence)`);
+        assert.ok(/id="pendingNote"/.test(html),
+            `UNFIN: ${tree} — the note element must exist in the page`);
+
+        // --- EXECUTION: the real mdPendingSnapshot on the live numbers -------
+        const pendWorld = (queued, filters, downloads, retries, lastAt) => new Function(`
+var filterQueue = ${JSON.stringify(new Array(queued))};
+var downloadQueue = [];
+var activeFilters = ${filters};
+var activeDownloads = ${downloads};
+var activeRefererRetries = ${retries};
+var mdLastProgressAt = ${lastAt};
+${cutFnFrom(core, 'mdPendingSnapshot')}
+return mdPendingSnapshot;`)();
+        // The 21:52 run: 68 queued, nothing in flight, 12 s since a row changed.
+        const stalledRun = pendWorld(68, 0, 0, 0, Date.now() - 12000)();
+        assert.strictEqual(stalledRun.queued, 68);
+        assert.ok(stalledRun.stalled === true,
+            `UNFIN: ${tree} — 68 queued and nothing in flight IS the stall signature`);
+        assert.ok(Math.abs(stalledRun.idleSec - 12) <= 1,
+            `UNFIN: ${tree} — idle must be seconds since the last row change`);
+        // Anything in flight means the session can still move work: not stalled.
+        assert.strictEqual(pendWorld(68, 0, 2, 0, Date.now())().stalled, false,
+            `UNFIN: ${tree} — active downloads must suppress the stall verdict`);
+        assert.strictEqual(pendWorld(68, 3, 0, 0, Date.now())().stalled, false,
+            `UNFIN: ${tree} — active filters must suppress the stall verdict`);
+        assert.strictEqual(pendWorld(68, 0, 0, 1, Date.now())().stalled, false,
+            `UNFIN: ${tree} — an in-flight referer retry is work, not a stall`);
+        // The finished case must stay silent — the whole point of the fix.
+        const cleanRun = pendWorld(0, 0, 0, 0, Date.now() - 3600000)();
+        assert.strictEqual(cleanRun.stalled, false,
+            `UNFIN: ${tree} — a drained session must never be reported as stalled`);
+        assert.strictEqual(pendWorld(0, 0, 0, 0, 0)().idleSec, null,
+            `UNFIN: ${tree} — before any row changes there is no idle figure (not 0)`);
+
+        // --- EXECUTION: the two renderers --------------------------------
+        const noteOf = new Function(`${cutFnBalanced(tab, 'mdPendingNoteText')}
+return mdPendingNoteText;`)();
+        const stalledText = noteOf({ filtering: 0, downloading: 0, queued: 68, retries: 0, stalled: true, idleSec: 12 });
+        assert.ok(/STALLED/.test(stalledText) && /68/.test(stalledText) && /12s/.test(stalledText),
+            `UNFIN: ${tree} — the stalled sentence must name the queue, the verdict and the idle time`);
+        assert.ok(/none/.test(noteOf({ filtering: 0, downloading: 0, queued: 0, retries: 0, stalled: false, idleSec: 400 })),
+            `UNFIN: ${tree} — a drained session must read as finished`);
+        const busyText = noteOf({ filtering: 3, downloading: 2, queued: 68, retries: 1, stalled: false, idleSec: 4 });
+        assert.ok(/3 filtering/.test(busyText) && /2 downloading/.test(busyText)
+            && /68 queued/.test(busyText) && /1 referer retry/.test(busyText) && /idle 4s/.test(busyText),
+            `UNFIN: ${tree} — the live sentence must carry all four counts`);
+        // An older worker ships no `pending`: the note must degrade to silence,
+        // not to "Unfinished work: 0" (which is a claim it cannot make).
+        assert.strictEqual(noteOf(null), '');
+        assert.strictEqual(noteOf(undefined), '');
+
+        const genOf = new Function(`${cutFnBalanced(tab, 'fmtTs')}
+${cutFnBalanced(tab, 'mdWorkerStartLines')}
+return mdWorkerStartLines;`)();
+        const genLines = genOf({ start: 91000, gen: 3, starts: [1000, 31000, 91000] });
+        const genText = genLines.join('\n');
+        assert.ok(/gen 1/.test(genText) && /gen 3/.test(genText),
+            `UNFIN: ${tree} — every generation of the browser session must be listed`);
+        assert.ok(/lived 30s/.test(genText),
+            `UNFIN: ${tree} — a generation's lifetime is the diagnosis (idle kill vs crash)`);
+        assert.ok(/still live/.test(genText),
+            `UNFIN: ${tree} — the answering generation has no successor: it must not be given a fake lifetime`);
+        assert.deepStrictEqual(genOf(null), []);
+        assert.deepStrictEqual(genOf({ starts: [] }), []);
+
+        const pendLogOf = new Function(`${cutFnBalanced(tab, 'mdPendingLogLines')}
+return mdPendingLogLines;`)();
+        const stalledLog = pendLogOf({ filtering: 0, downloading: 0, queued: 68, retries: 0, stalled: true, idleSec: 12 }).join('\n');
+        assert.ok(/STALLED/.test(stalledLog) && /queued=68/.test(stalledLog) && /idle=12s/.test(stalledLog),
+            `UNFIN: ${tree} — the log's stalled block must carry the numbers, not just the word`);
+        assert.ok(/No unfinished work/.test(pendLogOf({ filtering: 0, downloading: 0, queued: 0, retries: 0, stalled: false, idleSec: 9 }).join('\n')),
+            `UNFIN: ${tree} — a drained run must be stated as finished in the log`);
+        assert.deepStrictEqual(pendLogOf(null), []);
+    }
+
+    // Copy-not-fork: the tab is byte-identical across trees, and these builders
+    // are the ones a future edit would most likely touch in one tree only.
+    assert.strictEqual(
+        cutFnBalanced(tabTexts['src-mv3-overlay-firefox'], 'mdPendingNoteText').replace(/\r\n/g, '\n'),
+        cutFnBalanced(tabTexts['src-mv3-overlay'], 'mdPendingNoteText').replace(/\r\n/g, '\n'),
+        'UNFIN: the tab note builder must be a copy, not a fork (both trees)');
+
+    console.log('md-unit-smoke: unfinished-work + worker-generation locks hold in both trees');
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

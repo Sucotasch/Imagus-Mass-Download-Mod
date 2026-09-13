@@ -164,6 +164,24 @@ instrumentation is lying, not that a host is slow:
   only if the interrupted generation never stamped them (they now ride in the snapshot).
 - `session=` on a `resumed` run is the uptime of the worker that TOOK THE SESSION OVER, not the whole
   session — the `Recovered:` line carries the earlier start.
+- **`Unfinished work at save time` (UNFIN-1, 2026-09-14)** — the only block that counts what is NOT done
+  (`filtering` / `downloading` / `queued` / `referer-retries` / `idle`), because every other number (and
+  the whole progress page) counts what is DONE. **`!! STALLED` means a queue is non-empty AND nothing is
+  in flight** — not a timer guess; a drained session prints `No unfinished work` and can never print
+  `STALLED`. `idle=` is the age of the last row change and is context only (a large download reports
+  progress in the browser's download bar, not through this list). Live 2026-09-13 21:52: the owner read a
+  pause as “the downloads are over” while 68 items were still queued — a frozen queue and a clean
+  finish looked identical.
+- **`Worker generations this browser session` (GEN-1, 2026-09-14)** — every worker start of the browser
+  session with its lifetime, from `workerMarker().starts` (`mdWorkerStarts` in `storage.session`, cap 24).
+  Read it as: ~30 s = the idle timer beat the 25 s keep-alive; minutes = Chrome's per-operation limit or a
+  crash; a burst = extension reload. The answering generation reads `this worker, still live` (no fake
+  lifetime). This is the only place the reason for a restart survives — the console line does not reach a
+  saved file (live 21:52: `interrupted worker 21:50:20` → `gen 8 21:50:40`, i.e. ≤20 s, shorter than BOTH
+  our timers).
+- **Spans may CROSS generations:** a stamp the interrupted generation made is kept (it rides the session
+  snapshot), so `downloads` / `after-scan tail` can exceed `session` — correct, and now said out loud in
+  the block (`DIAG-4`).
 - **`page → worker: sent=N not-delivered=M` (HANDOFF-2, 2026-09-14)** — the page's own delivery
   counters. This line is what tells the two look-alike failures apart: `M = 0` means the message
   channel was fine and the loss (if any) happened on the page (a stalled/frozen walk), while
@@ -175,7 +193,8 @@ instrumentation is lying, not that a host is slow:
 
 Executed gates for this block (not part of the repo): `.unlazy/review-verify-2026-09-12/` —
 `repro-scan-diagnostics.mjs`, `repro-walk-timeouts.mjs`, `repro-session-snapshot.mjs`,
-`repro-handoff-delivery.mjs`.
+`repro-handoff-delivery.mjs`, `repro-unfinished-work.mjs` (the two blocks above, executed on the real
+numbers of the 21:52 log, a clean run, a resumed run, and an old worker without the new fields).
 
 ## Settings (`da` in `defaults.json`)
 

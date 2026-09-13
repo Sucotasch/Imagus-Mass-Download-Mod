@@ -235,6 +235,11 @@
          Log. Without this line "17 completed" next to seventy failures reads as
          a broken page instead of a capped list. -->
     <p id="listNote" style="text-align: center; font-size: 0.9em; color: #6c757d; margin: 8px 0 0;"></p>
+    <!-- 2026-09-14: the counters above all count what is DONE, so a stalled queue
+         and a finished session looked identical: live 2026-09-13 21:52 the owner
+         saw a pause, read it as "the downloads are over", and 68 items were still
+         queued. This line is the worker's own unfinished counts (mdPendingSnapshot). -->
+    <p id="pendingNote" style="text-align: center; font-size: 0.9em; color: #495057; margin: 4px 0 0;"></p>
 
     <div class="controls">
       <div>

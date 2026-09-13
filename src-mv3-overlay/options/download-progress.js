@@ -8,6 +8,8 @@
     const failedFilesEl = document.getElementById('failedFiles');
     const canceledFilesEl = document.getElementById('canceledFiles');
     const listNoteEl = document.getElementById('listNote');
+    // 2026-09-14: shows what is NOT done yet (worker's mdPendingSnapshot).
+    const pendingNoteEl = document.getElementById('pendingNote');
     const statsFoundEl = document.getElementById('stats-found');
     const statsPrefilteredEl = document.getElementById('stats-prefiltered');
     const statsSkippedEl = document.getElementById('stats-skipped');
@@ -157,6 +159,9 @@
         }
         // Session identity of the worker that answered (see classifyWorkerState).
         if (response.sessionStart) lastSeenSessionStart = response.sessionStart;
+        // Unfinished work: the same numbers the pushes carry (see
+        // mdPendingNoteText). Present only on a worker that has the helper.
+        if (response.pending) updatePendingNote(response.pending);
         if (changed) updateDisplay();
     }
 
@@ -200,6 +205,11 @@
             if (request.sessionStart) lastSeenSessionStart = request.sessionStart;
             clearStateLost();
         }
+        // Every push carries the worker's unfinished counts (sendToProgressTab
+        // in mass-download/service-core.js): the counters below all count what is
+        // DONE, so without this line a stalled queue and a finished run render
+        // identically — which is exactly how the 2026-09-13 pause was read.
+        if (request.pending) updatePendingNote(request.pending);
         if (request.cmd === 'ping') {
             // Respond to ping for tab validation
             sendResponse({ pong: true });
@@ -407,6 +417,12 @@
             if (restarted) {
                 lines.push('  gen > 1: this worker took over mid-session, so "session" is its own uptime — the');
                 lines.push('  Recovered line at the top carries the start of the interrupted session.');
+                // 2026-09-14: live 21:52 the block printed `downloads=192.8s ...
+                // session=31.3s` — a span LONGER than the session it was next to.
+                // That is correct (a stamp made before the restart is kept: it
+                // rides the session snapshot), but unexplained it reads as a lie.
+                lines.push('  A span here is first-stamp-to-last-stamp and may CROSS generations: a stamp the');
+                lines.push('  interrupted generation made is kept, so "downloads" can exceed "session".');
             }
             lines.push('  "after-scan tail" = from the page closing its scan (its panel is gone) to the last download:');
             lines.push('  it is work the user had no on-screen sign of.');
@@ -417,6 +433,39 @@
     function updateListNote() {
         if (!listNoteEl) return;
         listNoteEl.textContent = mdListNoteText(maxProgressRecords, lastStats);
+    }
+
+    // --- Unfinished work (2026-09-14) --------------------------------------
+    // Every other number this page renders counts what is DONE. Live 2026-09-13
+    // 21:52 the owner watched a pause, read it as "the downloads are over", and
+    // the session still had 68 items queued: a stalled queue and a finished run
+    // looked identical. This renders the worker's own unfinished counts
+    // (mdPendingSnapshot in mass-download/service-core.js), which ride on every
+    // push and are also saved into the log.
+    // Pure (no DOM, no chrome) so the harness EXECUTES it.
+    function mdPendingNoteText(pending) {
+        if (!pending || typeof pending !== 'object') return '';
+        const n = (v) => (v == null ? 0 : v);
+        const queued = n(pending.queued);
+        const busy = n(pending.filtering) + n(pending.downloading) + n(pending.retries);
+        if (pending.stalled) {
+            return '⚠ STALLED — ' + queued + ' item(s) still queued and NOTHING in flight'
+                + (pending.idleSec != null ? ' (no progress for ' + pending.idleSec + 's)' : '')
+                + ': the session cannot move them on its own. See the Saved Log.';
+        }
+        if (queued === 0 && busy === 0) {
+            return 'Unfinished work: none — every item the worker knows about reached a terminal state.';
+        }
+        return 'Unfinished work: ' + n(pending.filtering) + ' filtering · '
+            + n(pending.downloading) + ' downloading · ' + queued + ' queued'
+            + (n(pending.retries) ? ' · ' + n(pending.retries) + ' referer retry' : '')
+            + (pending.idleSec != null ? ' · idle ' + pending.idleSec + 's' : '');
+    }
+
+    function updatePendingNote(pending) {
+        if (!pendingNoteEl) return;
+        pendingNoteEl.textContent = mdPendingNoteText(pending);
+        pendingNoteEl.style.color = (pending && pending.stalled) ? '#dc3545' : '#495057';
     }
 
     // Calculate and display summary stats from the items table
@@ -619,6 +668,61 @@
         return d.toISOString().replace('T', ' ').slice(0, 19);
     }
 
+    // --- Worker generations + unfinished work (2026-09-14) -----------------
+    // Two questions a Saved Log could not answer, both of which decided what to
+    // fix next:
+    //   (A) WHY the worker restarted. The in-memory console line already prints
+    //       the previous generation's lifetime, but the log did not — and the
+    //       logged restarts were unattributable between "idle timer won",
+    //       "Chrome's per-operation limit" and "the worker crashed". The times
+    //       live in worker.starts (chrome.storage.session, capped at 24).
+    //   (B) Whether the run was FINISHED. Every other number in this file counts
+    //       what is DONE; 2026-09-13 21:52 the owner read a pause as "the
+    //       downloads are over" while 68 items were still queued and the log
+    //       looked identical to a clean finish.
+    // Both pure (no DOM, no chrome) so the harnesses EXECUTE them.
+    function mdWorkerStartLines(worker) {
+        const starts = (worker && Array.isArray(worker.starts)) ? worker.starts : null;
+        if (!starts || starts.length === 0) return [];
+        const lines = ['', 'Worker generations this browser session: ' + starts.length];
+        for (let i = 0; i < starts.length; i++) {
+            const next = starts[i + 1];
+            // The LAST generation is the one answering this Save Log, so its
+            // "lived" is the distance to now, not to a successor.
+            lines.push('  gen ' + (i + 1) + ': ' + fmtTs(starts[i])
+                + (next ? ' (lived ' + Math.round((next - starts[i]) / 1000) + 's)'
+                    : ' (this worker, still live)'));
+        }
+        lines.push('  Read it as: a generation that lived ~30s was terminated by the idle timer before');
+        lines.push('  the 25s keep-alive fired; minutes mean a per-operation limit or a crash; a burst');
+        lines.push('  of starts means the extension was reloaded. This is the only place the reason for');
+        lines.push('  a restart survives — the worker console line does not reach a saved file.');
+        return lines;
+    }
+
+    function mdPendingLogLines(pending) {
+        if (!pending || typeof pending !== 'object') return [];
+        const num = (v) => (v == null ? '-' : String(v));
+        const lines = ['', 'Unfinished work at save time (live counters, not the row list):'];
+        lines.push('  filtering=' + num(pending.filtering)
+            + ' downloading=' + num(pending.downloading)
+            + ' queued=' + num(pending.queued)
+            + ' referer-retries=' + num(pending.retries)
+            + (pending.idleSec != null ? ' idle=' + pending.idleSec + 's' : ''));
+        if (pending.stalled) {
+            lines.push('  !! STALLED: ' + num(pending.queued) + ' item(s) are queued and NOTHING is in flight');
+            lines.push('     (no filter, no download, no referer retry), so nothing can move them without a');
+            lines.push('     new event. The completed rows above are the work that had already finished —');
+            lines.push('     these queued items are the rest of the run.');
+        } else if (!pending.queued && !pending.filtering && !pending.downloading && !pending.retries) {
+            lines.push('  No unfinished work: every item the worker knew about reached a terminal state.');
+            lines.push('  ("idle" is time since the last row changed, printed only as context — it is not');
+            lines.push('  a stall test on its own: a large download reports progress in the download bar,');
+            lines.push('  not through this list.)');
+        }
+        return lines;
+    }
+
     function formatLog(data, opts) {
         const items = data.log || [];
         const stats = data.stats || {};
@@ -630,6 +734,7 @@
         lines.push('Session start: ' + fmtTs(data.sessionStart));
         lines.push('Worker: ' + (data.worker && data.worker.start
             ? fmtTs(data.worker.start) + ' (gen ' + (data.worker.gen || '?') + ')' : '-'));
+        lines.push(...mdWorkerStartLines(data.worker));
         // FIX-7: a worker that resumed an interrupted session says so, so a
         // recovered run is never mistaken for a fresh one (and the "session
         // state lost" block below is not printed for it).
@@ -671,6 +776,7 @@
             + ' prefiltered=' + (stats.prefiltered || 0)
             + ' skipped=' + (stats.skipped || 0)
             + ' downloaded=' + (stats.downloaded || 0));
+        lines.push(...mdPendingLogLines(data.pending));
         lines.push('Rows in this log: ' + items.length + ' of the scan\'s own rows'
             + ' (list capped at da.maxProgressRecords=' + maxProgressRecords
             + '; a finished row is dropped before a live one, oldest first)'
