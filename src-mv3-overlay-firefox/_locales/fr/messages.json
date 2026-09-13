@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "Répertoire dans les téléchargements dans lequel enregistrer"
+		"message": "Dossier dans Téléchargements pour enregistrer"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Sous-répertoire dans le dossier Téléchargements du navigateur. \nLaissez vide pour enregistrer directement dans les téléchargements.\nVous pouvez utiliser ces espaces réservés :\n• <b>{page_domain}</b> : le domaine de la page à partir de laquelle vous enregistrez\n• <b>{link_domain}</b> : le domaine de l'URL que vous téléchargez\n• <b>{y}</b> : l'année en cours\n• <b>{m}</b> : le mois en cours (01-12)\n• <b>{d}</b> : le jour en cours (01-31)\n• <b>.</b> ou <b>/</b> : enregistrez directement dans Téléchargements, mais essayez quand même de remplacer les autres extensions.\n\nExemple : <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Sous-dossier dans le dossier Téléchargements du navigateur. Laissez ce champ vide pour enregistrer directement dans Téléchargements.\nVous pouvez utiliser ces variables :\n• <b>{page_domain}</b> - le domaine de la page depuis laquelle vous enregistrez\n• <b>{link_domain}</b> - le domaine de l’URL sur laquelle vous placez le curseur\n• <b>{file_domain}</b> - le domaine de l’URL que vous téléchargez\n• <b>{y}</b> - l’année en cours\n• <b>{m}</b> - le mois en cours (01-12)\n• <b>{d}</b> - le jour en cours (01-31)\n• <b>.</b> ou <b>/</b> - enregistrer directement dans Téléchargements, tout en essayant de remplacer les autres extensions\n\nExemple : <b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "Agrandir les petites images pour les adapter à la fenêtre"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "Copier l’URL\nDouble-clic : copier l’album entier"
 	}
 }

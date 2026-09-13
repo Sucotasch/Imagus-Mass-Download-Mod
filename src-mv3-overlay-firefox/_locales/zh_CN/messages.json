@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "下载中要保存到的目录"
+		"message": "用于保存的下载文件夹"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "浏览器下载文件夹内的子目录。\n留空可直接保存到“下载”。\n\n您可以使用这些占位符：\n\n• <b>{page_domain}</b> - 您要保存的页面的域\n\n• <b>{link_domain}</b> - 您正在下载的 URL 的域\n\n• <b>{y}</b> - 当前年份\n\n• <b>{m}</b> - 当前月份 (01-12)\n\n• <b>{d}</b> - 当前日期 (01-31)\n\n• <b>.</b> 或 <b>/</b> - 直接保存到“下载”，但仍尝试覆盖其他扩展名\n\n\n示例：<b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "浏览器“下载”文件夹中的子文件夹。留空以直接保存到“下载”文件夹。\n您可以使用以下占位符：\n• <b>{page_domain}</b> - 保存来源页面的域名\n• <b>{link_domain}</b> - 鼠标悬停的 URL 的域名\n• <b>{file_domain}</b> - 正在下载的 URL 的域名\n• <b>{y}</b> - 当前年份\n• <b>{m}</b> - 当前月份（01-12）\n• <b>{d}</b> - 当前日期（01-31）\n• <b>.</b> 或 <b>/</b> - 直接保存到“下载”文件夹，但仍会尝试覆盖其他扩展名\n\n示例：<b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "放大小图像以适合窗口"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "复制 URL\n双击：复制整个相册"
 	}
 }

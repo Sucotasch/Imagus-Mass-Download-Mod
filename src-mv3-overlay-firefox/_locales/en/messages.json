@@ -657,10 +657,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "Directory in Downloads to save to"
+		"message": "Folder in Downloads to save to"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Subdirectory inside the browser's Downloads folder. Leave empty to save directly to Downloads.\nYou can use these placeholders:\n• <b>{page_domain}</b> - the domain of the page you are saving from\n• <b>{link_domain}</b> - the domain of URL you are downloading\n• <b>{y}</b> - the current year\n• <b>{m}</b> - the current month (01-12)\n• <b>{d}</b> - the current day (01-31)\n• <b>.</b> or <b>/</b> - save directly to Downloads, but still try to override other extensions\n\nExample: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Subfolder inside the browser's Downloads folder. Leave empty to save directly to Downloads.\nYou can use these placeholders:\n• <b>{page_domain}</b> - the domain of the page you are saving from\n• <b>{link_domain}</b> - the domain of URL you are hovering\n• <b>{file_domain}</b> - the domain of URL you are downloading\n• <b>{y}</b> - the current year\n• <b>{m}</b> - the current month (01-12)\n• <b>{d}</b> - the current day (01-31)\n• <b>.</b> or <b>/</b> - save directly to Downloads, but still try to override other extensions\n\nExample: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
 	},
 	"SIV_REPO": {
 		"message": "Sieve repository URL (GitHub raw or jsDelivr mirror)"
@@ -700,5 +700,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "Copy URL\nDouble click: copy whole album"
 	}
 }

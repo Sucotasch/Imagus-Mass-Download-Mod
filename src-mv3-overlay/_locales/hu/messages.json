@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "A Letöltések mappában a mentéshez"
+		"message": "Mappa a Letöltésekben a mentéshez"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Alkönyvtár a böngésző Letöltések mappájában. \nHagyja üresen, ha közvetlenül a Letöltések közé szeretné menteni.\nEzeket a helyőrzőket használhatja:\n• <b>{page_domain}</b> – annak az oldalnak a domainje, amelyről a mentést végzi\n• <b>{link_domain}</b> – a letöltendő URL domainje\n• <b>{y}</b> – az aktuális év\n• <b>{m}</b> – az aktuális hónap (01-12)\n• <b>{d}</b> - az aktuális nap (01-31)\n• <b>.</b> vagy <b>/</b> – közvetlenül mentse a Letöltések mappába, de próbáljon felülbírálni más bővítményeket\n\nPélda: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Almappa a böngésző Letöltések mappáján belül. Hagyja üresen, ha közvetlenül a Letöltések mappába szeretné menteni.\nA következő helyőrzőket használhatja:\n• <b>{page_domain}</b> - annak az oldalnak a domainje, amelyről ment\n• <b>{link_domain}</b> - annak az URL-nek a domainje, amely fölé az egérmutatót helyezi\n• <b>{file_domain}</b> - a letöltött URL domainje\n• <b>{y}</b> - az aktuális év\n• <b>{m}</b> - az aktuális hónap (01-12)\n• <b>{d}</b> - az aktuális nap (01-31)\n• <b>.</b> vagy <b>/</b> - közvetlenül a Letöltések mappába ment, de továbbra is megpróbálja felülírni az egyéb kiterjesztéseket\n\nPélda: <b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "Nagyítsa fel a kis képeket, hogy illeszkedjen az ablakhoz"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "URL másolása\nDupla kattintás: a teljes album másolása"
 	}
 }

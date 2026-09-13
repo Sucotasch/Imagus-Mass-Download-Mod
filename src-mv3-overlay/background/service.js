@@ -19,7 +19,7 @@ const _ = function (msg) {
 
 const scriptMessages = {
     "INVALID_URL": "", "DOWNLOAD_FAILED": "", "HIDE_TOOLBAR": "", "SAVE": "", "OPEN_IN_NEW_TAB": "", "GALLERY": "", "GOTO_SEARCH": "", "ROTATE_RIGHT": "",
-    "PREFERENCES": "", "CANNOT_FIND_URL": "", "ADD_TO_IGNORE_LIST": ""
+    "PREFERENCES": "", "CANNOT_FIND_URL": "", "ADD_TO_IGNORE_LIST": "", "COPY_URL": ""
 };
 for (let key in scriptMessages) {
     scriptMessages[key] = _(key);
@@ -739,16 +739,18 @@ function getDownloadDirectory(msg) {
     let dir = (cachedPrefs?.hz?.saveDir ?? "").trim();
     if (!dir) return "";
 
-    if (msg.domain) {
-        dir = dir.replace(/\{page_domain\}/gi, msg.domain.toLowerCase());
+    // upstream 9.6: domains are computed in the content script (lowercase) and
+    // arrive as three fields — page/link/file. The SW no longer derives
+    // link_domain from msg.url (that was the link's target, not the link).
+    if (msg.pageDomain) {
+        dir = dir.replace(/\{page_domain\}/gi, msg.pageDomain);
     }
-
-    // top domain of the link URL, e.g. "example.com" from "sub.example.com"
-    let linkDomain = "";
-    try {
-        linkDomain = new URL(msg.url).hostname.replace(/^(?:.*\.)?([^.]+\.[^.]+)$/, "$1");
-    } catch (_) {}
-    dir = dir.replace(/\{link_domain\}/gi, linkDomain.toLowerCase());
+    if (msg.linkDomain) {
+        dir = dir.replace(/\{link_domain\}/gi, msg.linkDomain);
+    }
+    if (msg.fileDomain) {
+        dir = dir.replace(/\{file_domain\}/gi, msg.fileDomain);
+    }
 
     const now = new Date();
     dir = dir.replace(/\{Y\}/gi, now.getFullYear());
@@ -800,6 +802,8 @@ async function download(msg, tab, sendResponse) {
     // chrome.downloads.onDeterminingFilename, which upstream used on Chrome
     // and which intercepted all browser downloads (#132), broke domain
     // directories (#134) and renames (#69).
+    // Upstream 9.6: the directory takes three domain fields
+    // (pageDomain/linkDomain/fileDomain) — all computed in the content script.
     const dir = getDownloadDirectory(msg);
     if (dir && !filename) {
         filename = await getFilenameFromHeaders(msg.url) || getFilenameFromUrl(msg.url);
@@ -1160,6 +1164,23 @@ chrome.runtime.onInstalled.addListener(function (e) {
     mdDropSessionSnapshot();
     if (e.reason === "update") {
         registerContentScripts();
+        // upstream 9.6 (ce1072b): add the "C" (copy URL) toolbar button for
+        // users migrating from the 8.20 line. We match the whole line with
+        // startsWith because our releases are 2026.8.20.9/.10, not the
+        // literal "2026.8.20" upstream compares against.
+        if (e.previousVersion?.startsWith("2026.8.20")) {
+            cfg.get("hz", ({ hz }) => {
+                if (hz?.toolbarButtons && !hz.toolbarButtons.includes("C")) {
+                    const b = ['O', 'S', 'G'].find(c => hz.toolbarButtons.includes(c));
+                    if (b) {
+                        hz.toolbarButtons = hz.toolbarButtons.replace(b, b + "C");
+                    } else {
+                        hz.toolbarButtons += "C";
+                    }
+                    updatePrefs({ hz });
+                }
+            });
+        }
     } else if (e.reason === "install") {
         chrome.runtime.openOptionsPage();
     }

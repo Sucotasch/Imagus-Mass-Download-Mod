@@ -917,8 +917,62 @@
         }
     }
 
-    var openTab = async function (e) {
+    var copyToClipboard = function (text) {
+        PVI.timers.copy = undefined;
+        if (!text) return;
+        var oncopy = function (ev) {
+            this.removeEventListener(ev.type, oncopy);
+            ev.clipboardData.setData("text/plain", text);
+            ev.preventDefault();
+        };
+        doc.addEventListener("copy", oncopy);
+        doc.execCommand("copy");
+    }
+
+    var copyUrls = function () {
+        if (PVI.timers.copy) clearTimeout(PVI.timers.copy);
+        let isDouble = !!PVI.timers.copy;
+        let text = "";
+
+        if (PVI.TRG?.IMGS_album && (PVI.galleryState === 2 || isDouble)) {
+            text = getAlbumClean().join("\n");
+        }
+
+        if (!text) {
+            text = getSrc() || "";
+        }
+
+        PVI.timers.copy = setTimeout(copyToClipboard, 500, text);
+    }
+
+    var getSrc = function () {
         let src = PVI.EXTENSION?.IFRAME?.src || (PVI.isVideo() ? PVI.PLAYER?.src() : PVI.CNT.src);
+        return src;
+    }
+
+    var getAlbumClean = function () {
+        const album = PVI.stack[PVI.TRG.IMGS_album] || [];
+        if (album.length === 0) return [];
+
+        const urls = [];
+        for (let i = 1; i < album.length; i++) {
+            let item = album[i];
+            if (item[1]?.startsWith?.("<imagus-extension")) {
+                const match = item[1].match(/url="([^"]+)"/);
+                if (match) item = match[1];
+            }
+            let url = Array.isArray(item) ? item[0] : item;
+            url = Array.isArray(url) ? url[0] : url;
+            url = url?.replace?.(/^#/, "");
+            if (url && !url.startsWith("data:image")) {
+                urls.push(url);
+            }
+        }
+        return urls;
+    }
+
+    var openTab = async function (e) {
+        let src = getSrc();
         if (PVI.galleryState === 2 && PVI.TRG?.href) {
             src = PVI.TRG.href
         }
@@ -1216,7 +1270,7 @@
     }
 
     async function download(msg) {
-        let src = msg?.url || (PVI.isVideo() && PVI.PLAYER?.src()) || PVI.CNT.src;
+        let src = msg?.url || getSrc();
 
         if (PVI.galleryState === 2) {
             let album = PVI.stack[PVI.TRG?.IMGS_album] || [];
@@ -1250,6 +1304,14 @@
             }
 
         } else {
+            const topDomain = /^(?:.*\.)?([^./]+\.[^./?#]+)($|\?|\/|#).*/;
+            const urlPrefix = /^(https?:\/\/)?(www\.)?/;
+            const link = PVI.TRG?.href || PVI.TRG?.IMGS_c || PVI.TRG?.IMGS_c_resolved?.URL || "";
+
+            const pageDomain = win.location.hostname.replace(topDomain, "$1").toLowerCase();
+            const linkDomain = link.replace(urlPrefix, "").replace(topDomain, "$1").toLowerCase();
+            const fileDomain = src.replace(urlPrefix, "").replace(topDomain, "$1").toLowerCase();
+
             const type = PVI.isVideo() ? "video" : PVI.CNT.audio ? "audio" : "img";
             Port.send({
                 cmd: "download",
@@ -1257,7 +1319,9 @@
                 priorityExt: src.match(/#([\da-z]{3,4})$/)?.[1],
                 ext: { img: "jpg", video: "mp4", audio: "mp3" }[type],
                 filename: PVI.CNT.filename || PVI.VID.filename || PVI.IMG.filename,
-                domain: win.location.hostname.replace(/^www\./, ""),
+                pageDomain,
+                linkDomain,
+                fileDomain,
             });
         }
     }
@@ -1530,16 +1594,17 @@
 
             // create popup toolbar
             const BOTTONS = {
-                "X": { tag: "i", text: "≡", attrs: { "data-action": "hide", title: _("HIDE_TOOLBAR") }, nodes: [
+                "X": { tag: "button", text: "≡", attrs: { "data-action": "hide", title: _("HIDE_TOOLBAR") }, nodes: [
                     { tag: "span", text: "≡" },
                     { tag: "span", text: "⨉" },
                 ]},
-                "S": { tag: "i", text: "S", attrs: { "data-action": "download", title: _("SAVE") } },
-                "O": { tag: "i", text: "O", attrs: { "data-action": "open", title: _("OPEN_IN_NEW_TAB") } },
-                "G": { tag: "i", text: "G", attrs: { "data-action": "gallery", title: _("GALLERY") } },
-                "I": { tag: "i", text: "#", attrs: { "data-action": "goto", title: _("GOTO_SEARCH") } },
-                "R": { tag: "i", text: "↻", attrs: { "data-action": "rotate", title: _("ROTATE_RIGHT") } },
-                "P": { tag: "i", text: "P", attrs: { "data-action": "preferences", title: _("PREFERENCES") } },
+                "S": { tag: "button", text: "S", attrs: { "data-action": "download", title: _("SAVE") } },
+                "O": { tag: "button", text: "O", attrs: { "data-action": "open", title: _("OPEN_IN_NEW_TAB") } },
+                "C": { tag: "button", text: "C", attrs: { "data-action": "copy", title: _("COPY_URL") } },
+                "G": { tag: "button", text: "G", attrs: { "data-action": "gallery", title: _("GALLERY") } },
+                "I": { tag: "button", text: "#", attrs: { "data-action": "goto", title: _("GOTO_SEARCH") } },
+                "R": { tag: "button", text: "↻", attrs: { "data-action": "rotate", title: _("ROTATE_RIGHT") } },
+                "P": { tag: "button", text: "P", attrs: { "data-action": "preferences", title: _("PREFERENCES") } },
             };
             const btns = cfg.hz.toolbarButtons.toUpperCase().split("").map(b => BOTTONS[b] || null).filter(Boolean);
             buildNodes(PVI.DIV, [{
@@ -1641,9 +1706,13 @@
                     }
 
                     if (PVI.TRG?.IMGS_MEDIA?.nodeName === "VIDEO") {
-                        PVI.TRG.IMGS_MEDIA.pause();
-                        const totalTime = PVI.TRG.IMGS_MEDIA.duration || 0;
-                        let curTime = PVI.TRG.IMGS_MEDIA.currentTime || 0;
+                        const vid = PVI.TRG.IMGS_MEDIA;
+                        // pause the hovered video if it is not muted
+                        if (!(vid.attributes?.muted || vid.muted || vid.volume === 0)) {
+                            PVI.TRG.IMGS_MEDIA.pause();
+                        }
+                        const totalTime = vid.duration || 0;
+                        let curTime = vid.currentTime || 0;
                         curTime = curTime < totalTime * 0.9 ? curTime : 0;
                         PVI.PLAYER.currentTime(curTime);
                     }
@@ -2180,13 +2249,9 @@
                         console.log(`Rule ${i} matched:`, { url: URL, element: trg, image: imgs?.imgSRC || imgs?.imgBG });
                     }
 
-                    if (srcOnly) {
-                        return URL || imgs?.imgSRC || imgs?.imgBG;
-                    }
-
-                    if (isUrlIgnored(URL || imgs?.imgSRC || imgs?.imgBG)) {
-                        return false;
-                    }
+                    const urlToIgnore = URL || imgs?.imgSRC || imgs?.imgBG;
+                    if (srcOnly) return urlToIgnore;
+                    if (isUrlIgnored(urlToIgnore)) return false;
 
                     if (rule.res && (!tmp_el || (!rule.to && rule.url))) {
                         if (win.location.href.replace(rgxHash, "") === n.href.replace(rgxHash, "")) break;
@@ -2272,13 +2337,9 @@
                 }
             }
 
-            if (srcOnly) {
-                return ret;
-            }
-
-            if (isUrlIgnored(ret)) {
-                return false;
-            }
+            const urlToIgnore = URL || ret;
+            if (srcOnly) return urlToIgnore;
+            if (isUrlIgnored(urlToIgnore)) return false;
 
             if (rule && rule.loop && typeof ret === "string" && rule.loop & (use_img ? 2 : 1)) {
                 if ((trg.nodeType !== 1 && ret === trg.href) || trg.IMGS_loop_count > 5) return false;
@@ -2739,6 +2800,7 @@
                         caption: i.IMGS_caption,
                         x: PVI.x,
                         y: PVI.y,
+                        tbox: PVI.TBOX,
                     },
                     "*"
                 );
@@ -3181,6 +3243,9 @@
                     break;
                 case "open":
                     openTab(e);
+                    break;
+                case "copy":
+                    copyUrls(e);
                     break;
                 default:
                     break;
@@ -4381,6 +4446,14 @@
                 const rect = iframe?.getBoundingClientRect() || { x: 0, y: 0 };
                 PVI.x = (d.x + rect.x) || 0;
                 PVI.y = (d.y + rect.y) || 0;
+                if (d.tbox) {
+                    PVI.TBOX = {
+                        left: d.tbox.left + rect.x,
+                        right: d.tbox.right + rect.x,
+                        top: d.tbox.top + rect.y,
+                        bottom: d.tbox.bottom + rect.y,
+                    }
+                }
 
                 if (typeof d.msg === "string") {
                     PVI.show(d.msg);

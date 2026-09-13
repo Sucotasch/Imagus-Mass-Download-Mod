@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "Directorio en Descargas para guardar"
+		"message": "Carpeta en Descargas para guardar"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Subdirectorio dentro de la carpeta Descargas del navegador. \nDéjelo vacío para guardarlo directamente en Descargas.\nPuedes utilizar estos marcadores de posición:\n• <b>{page_domain}</b>: el dominio de la página desde la que estás guardando\n• <b>{link_domain}</b>: el dominio de la URL que está descargando\n• <b>{y}</b> - el año actual\n• <b>{m}</b> - el mes actual (01-12)\n• <b>{d}</b> - el día actual (01-31)\n• <b>.</b> o <b>/</b>: guarde directamente en Descargas, pero aún así intente anular otras extensiones.\n\nEjemplo: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Subcarpeta dentro de la carpeta de Descargas del navegador. Déjala vacía para guardar directamente en Descargas.\nPuedes utilizar estos marcadores de posición:\n• <b>{page_domain}</b> - el dominio de la página desde la que estás guardando\n• <b>{link_domain}</b> - el dominio de la URL sobre la que estás pasando el cursor\n• <b>{file_domain}</b> - el dominio de la URL que estás descargando\n• <b>{y}</b> - el año actual\n• <b>{m}</b> - el mes actual (01-12)\n• <b>{d}</b> - el día actual (01-31)\n• <b>.</b> o <b>/</b> - guardar directamente en Descargas, pero seguir intentando sobrescribir otras extensiones\n\nEjemplo: <b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "Ampliar imágenes pequeñas para que quepan en la ventana"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "Copiar URL\nDoble clic: copiar álbum completo"
 	}
 }

@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "Directory in Downloads om in op te slaan"
+		"message": "Map in Downloads om op te slaan"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Submap in de map Downloads van de browser. \nLaat leeg om direct op te slaan in Downloads.\nU kunt deze tijdelijke aanduidingen gebruiken:\n• <b>{page_domain}</b> - het domein van de pagina waarvan u opslaat\n• <b>{link_domain}</b> - het domein van de URL die u downloadt\n• <b>{y}</b> - het huidige jaar\n• <b>{m}</b> - de huidige maand (01-12)\n• <b>{d}</b> - de huidige dag (01-31)\n• <b>.</b> of <b>/</b> - sla rechtstreeks op in Downloads, maar probeer nog steeds andere extensies te overschrijven\n\nVoorbeeld: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Submap in de downloadmap van de browser. Laat dit leeg om rechtstreeks in Downloads op te slaan.\nJe kunt deze plaatsaanduidingen gebruiken:\n• <b>{page_domain}</b> - het domein van de pagina waarvan je opslaat\n• <b>{link_domain}</b> - het domein van de URL waar je met de muis overheen gaat\n• <b>{file_domain}</b> - het domein van de URL die je downloadt\n• <b>{y}</b> - het huidige jaar\n• <b>{m}</b> - de huidige maand (01-12)\n• <b>{d}</b> - de huidige dag (01-31)\n• <b>.</b> of <b>/</b> - rechtstreeks in Downloads opslaan, maar nog steeds proberen andere extensies te overschrijven\n\nVoorbeeld: <b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "Schaal kleine afbeeldingen op zodat ze in het venster passen"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "URL kopiëren\nDubbelklik: heel album kopiëren"
 	}
 }

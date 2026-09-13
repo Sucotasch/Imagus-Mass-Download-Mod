@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "Diretório em Downloads para salvar"
+		"message": "Pasta em Downloads para guardar"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Subdiretório dentro da pasta Downloads do navegador. \nDeixe em branco para salvar diretamente em Downloads.\nVocê pode usar estes espaços reservados:\n• <b>{page_domain}</b> - o domínio da página da qual você está salvando\n• <b>{link_domain}</b> - o domínio do URL que você está baixando\n• <b>{y}</b> - o ano atual\n• <b>{m}</b> - o mês atual (01-12)\n• <b>{d}</b> - o dia atual (01-31)\n• <b>.</b> ou <b>/</b> - salve diretamente em Downloads, mas ainda tente substituir outras extensões\n\nExemplo: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Subpasta dentro da pasta Transferências do navegador. Deixe em branco para guardar diretamente em Transferências.\nPode utilizar estes marcadores de posição:\n• <b>{page_domain}</b> - o domínio da página a partir da qual está a guardar\n• <b>{link_domain}</b> - o domínio do URL sobre o qual está a passar o cursor\n• <b>{file_domain}</b> - o domínio do URL que está a descarregar\n• <b>{y}</b> - o ano atual\n• <b>{m}</b> - o mês atual (01-12)\n• <b>{d}</b> - o dia atual (01-31)\n• <b>.</b> ou <b>/</b> - guardar diretamente em Transferências, mas continuar a tentar substituir outras extensões\n\nExemplo: <b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "Amplie imagens pequenas para caber na janela"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "Copiar URL\nClique duas vezes: copiar o álbum inteiro"
 	}
 }

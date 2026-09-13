@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "Katalog w Pobrane, w którym można zapisać"
+		"message": "Folder w Pobranych do zapisania"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Podkatalog w folderze Pobrane przeglądarki. \nPozostaw puste, aby zapisać bezpośrednio w Pobranych plikach.\nMożesz użyć tych symboli zastępczych:\n• <b>{page_domain</b> – domena strony, z której zapisujesz\n• <b>{link_domain</b> – domena adresu URL, który pobierasz\n• <b>{y</b> – bieżący rok\n• <b>{m</b> - bieżący miesiąc (01-12)\n• <b>{d}</b> - bieżący dzień (01-31)\n• <b>.</b> lub <b>/</b> – zapisz bezpośrednio w Pobranych, ale nadal próbuj zastąpić inne rozszerzenia\n\nPrzykład: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Podfolder w folderze Pobrane przeglądarki. Pozostaw puste, aby zapisywać bezpośrednio w folderze Pobrane.\nMożesz używać następujących symboli zastępczych:\n• <b>{page_domain}</b> - domena strony, z której zapisujesz\n• <b>{link_domain}</b> - domena adresu URL, nad którym znajduje się kursor\n• <b>{file_domain}</b> - domena adresu URL, który pobierasz\n• <b>{y}</b> - bieżący rok\n• <b>{m}</b> - bieżący miesiąc (01-12)\n• <b>{d}</b> - bieżący dzień (01-31)\n• <b>.</b> lub <b>/</b> - zapis bezpośrednio w folderze Pobrane, ale nadal z próbą zastąpienia innych rozszerzeń\n\nPrzykład: <b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "Skaluj małe obrazy, aby dopasować je do okna"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "Kopiuj URL\nDwukrotne kliknięcie: skopiuj cały album"
 	}
 }

@@ -18,6 +18,7 @@ Enlarges thumbnails and shows images/videos when hovering over links.
 Mod:
 - **Advanced Mass Download:** A completely redesigned two-phase algorithm scans the page, validates URLs in the background, and uses heuristics to find the best quality media, ensuring more accurate and reliable downloads.
 - **Gallery Save:** Open Imagus' gallery grid, tick items with checkboxes, and save them all — cells carry proven full-size URLs; links without a preview yet are resolved through the engine automatically.
+- **Copy URL Button (C):** The hover-popup toolbar has a **C** button (upstream 9.6): one click copies the current media URL, a double click copies the whole album as clean URLs (one per line, no `data:` URIs). The classic **Ctrl+C** double-press still copies the hovered item's *title text* — unlike upstream, this behavior was deliberately kept (upstream users filed [issue #144](https://github.com/hababr/Imagus-Reborn/issues/144) after losing it).
 - **Quick Start Hotkey:** Press `Ctrl+Q` to instantly start the mass download process on the current page.
 - **Persistent Progress UI:** A dedicated tab opens to show the real-time progress of all downloads. It provides detailed stats on completed, pending, failed, and skipped files.
 - **Powerful Pre-download Filtering:** To avoid downloading unwanted content, the mod includes a robust filtering system:
@@ -27,7 +28,7 @@ Mod:
 - **Hotlink Protection (Referer-Retry):** When a CDN rejects the download with 403/404 (rule34/e-hentai class of sites), the URL is retried through a page-context fetch that sends the site's cookies + Referer.
 - **Operation Control:** The download process can be fully canceled at any time. Failed or canceled downloads can be retried individually from the progress page.
 - **Download Diagnostics:** The progress tab can export a text log of every item (content type, file size, HTTP status, filter method, HD flag, source) along with session statistics and active settings — useful for debugging blocked or skipped downloads.
-- **Firefox build:** a mirrored `src-mv3-overlay-firefox` tree ships the same feature set for Firefox 136+ (see installation below). Firefox support is real only from **v2026.8.20.9** — earlier overlay releases shipped a background that died on load, so the extension did nothing there.
+- **Firefox build:** a mirrored `src-mv3-overlay-firefox` tree ships the same feature set for Firefox 136+ (see installation below). Firefox support is real only from **v2026.8.20.9** — earlier overlay releases shipped a background that died on load, so the extension did nothing there. Current release: **v2026.9.6.1** (upstream 9.6 port).
 
 ## 🛠 Installation (Developer Mode)
 
@@ -376,11 +377,14 @@ if (url.match(/\/thumb\/(\d+)\//)) {
 
 ### Download Directory & Small-Image Scale-Up
 
-Optional settings inherited from upstream Imagus Reborn 2026.8:
+Optional settings inherited from upstream Imagus Reborn 2026.9:
 
 - **Download directory** (Options → Sieves → ⚙ details panel): route downloads
-  into subfolders built from `{page_domain}`, `{link_domain}`, `{Y}`, `{M}`, `{D}`
-  templates, e.g. `{page_domain}/{Y}-{M}`.
+  into subfolders built from `{page_domain}`, `{link_domain}`, `{file_domain}`,
+  `{y}`, `{m}`, `{d}` templates, e.g. `{page_domain}/{y}-{m}`. As of this release
+  the domains are computed in the content script, and `{link_domain}` is the
+  domain of the link you hover (not of the media file — use `{file_domain}` for
+  that; they differ on CDN-fronted sites).
 - **Scale up small images** (hotkey `` ```, rebindable): while an image popup
   is open, toggle enlarging small images to fill the window.
 
@@ -502,6 +506,21 @@ chrome.storage.local.get(null, console.log)
 ## What Changed vs Stable 2026.7.25.1
 
 This build is an experimental overlay on top of Imagus Reborn. Compared with the stable 2026.7.25.1 line, the mass-download subsystem has been substantially reworked:
+
+### Ported from upstream v2026.9.6 (this release, v2026.9.6.1)
+
+- **Copy URL button (C)** in the hover-popup toolbar; double click copies the whole album as clean URLs.
+- **New download-directory domains:** `{file_domain}` (the media file's own domain) plus a corrected `{link_domain}` — both now computed in the content script instead of the service worker.
+- **Muted videos are no longer paused** by hovering (upstream fix: a muted/zero-volume `<video>` keeps playing).
+- **Iframe popup positioning fix:** the trigger element's bounding box is relayed from an iframe to the top frame, so the popup no longer crashes with `TypeError: box is undefined` in "no cover" placement ([upstream #135](https://github.com/hababr/Imagus-Reborn/issues/135)).
+- **Sieve editor:** the Format button now formats **all** open rule editors, not just the focused one; bundled beautify engine updated.
+- **Toolbar buttons** are now real `<button>` elements with a pressed-state animation.
+- **Fresh installs** default the full-zoom resize mode to "original" instead of "memory" (existing installs keep their setting).
+
+**Deliberately NOT ported from upstream 9.6** (verified regressions in upstream's issue tracker):
+
+- *SPA reinit on every URL change* — upstream's fix for [#140](https://github.com/hababr/Imagus-Reborn/issues/140) broke hover popups on Instagram and similar SPA sites after every in-page navigation ([upstream #143](https://github.com/hababr/Imagus-Reborn/issues/143)). Our builds keep the stable 8.20 behavior.
+- *Ctrl+C rework* — upstream replaced double-press copy-title with album copying; users immediately asked for the old behavior back ([upstream #144](https://github.com/hababr/Imagus-Reborn/issues/144)). We keep copy-title on Ctrl+C and ship the new copying as the separate **C** toolbar button.
 
 ### Sieve updates
 - The sieve repository URL is now configurable (Options → Sieves → ≡ button).
@@ -825,11 +844,14 @@ if (url.match(/\/thumb\/(\d+)\//)) {
 
 ### Каталог загрузок и увеличение мелких изображений
 
-Опциональные настройки, унаследованные от upstream Imagus Reborn 2026.8:
+Опциональные настройки, унаследованные от upstream Imagus Reborn 2026.9:
 
 - **Каталог загрузок** (Настройки → Сита → панель ⚙): раскладывает загрузки по
-  подпапкам из шаблонов `{page_domain}`, `{link_domain}`, `{Y}`, `{M}`, `{D}`,
-  например `{page_domain}/{Y}-{M}`.
+  подпапкам из шаблонов `{page_domain}`, `{link_domain}`, `{file_domain}`,
+  `{y}`, `{m}`, `{d}`, например `{page_domain}/{y}-{m}`. В этой версии домены
+  вычисляются в контент-скрипте, а `{link_domain}` — домен ссылки, на которую
+  наведён курсор (не домен файла — для него есть `{file_domain}`; на сайтах
+  с CDN они различаются).
 - **Увеличение мелких изображений** (хотkey `` ```, переназначается): при
   открытом попапе переключает растягивание маленьких картинок до окна.
 
@@ -952,6 +974,21 @@ chrome.storage.local.get(null, console.log)
 
 Эта сборка — экспериментальный оверлей поверх Imagus Reborn. По сравнению со стабильной веткой 2026.7.25.1 подсистема массовой загрузки существенно переработана:
 
+### Портировано из upstream v2026.9.6 (этот релиз, v2026.9.6.1)
+
+- **Кнопка Copy URL (C)** в тулбаре попапа; двойной клик копирует весь альбом чистыми URL.
+- **Новые домены каталога загрузок:** `{file_domain}` (домен самого файла) и исправленный `{link_domain}` — оба теперь вычисляются в контент-скрипте.
+- **Приглушённое видео больше не паузится** при наведении (фикс upstream: muted/нулевая громкость `<video>` продолжает играть).
+- **Позиционирование попапа в iframe:** bounding box триггера передаётся из фрейма в топ-окно, поэтому попап больше не падает с `TypeError: box is undefined` в режиме «no cover» ([upstream #135](https://github.com/hababr/Imagus-Reborn/issues/135)).
+- **Редактор сит:** кнопка Format форматирует **все** открытые редакторы, а не только сфокусированный; обновлён встроенный beautify.
+- **Кнопки тулбара** — настоящие `<button>` с анимацией нажатия.
+- **Свежие установки** по умолчанию используют режим full-zoom «original» вместо «memory» (существующие установки сохраняют свою настройку).
+
+**Намеренно НЕ портировано из upstream 9.6** (подтверждённые регрессии в их трекере):
+
+- *SPA-reinit на каждую смену URL* — фикс upstream для [#140](https://github.com/hababr/Imagus-Reborn/issues/140) сломал ховер-попапы на Instagram и подобных SPA-сайтах после каждой внутристраничной навигации ([upstream #143](https://github.com/hababr/Imagus-Reborn/issues/143)). Наши сборки сохраняют стабильное поведение 8.20.
+- *Переделка Ctrl+C* — upstream заменил копирование заголовка по двойному нажатию на копирование альбома; пользователи сразу попросили вернуть старое ([upstream #144](https://github.com/hababr/Imagus-Reborn/issues/144)). Мы сохранили copy-title на Ctrl+C, а новое копирование вынесли в отдельную кнопку **C**.
+
 ### Обновление фильтров (sieves)
 - URL репозитория фильтров теперь настраивается (Настройки → Сита → кнопка ≡).
 - При ответе GitHub 429 (превышение лимита) расширение автоматически переключается на зеркало jsDelivr того же репозитория.
@@ -1018,4 +1055,4 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
 ---
 
-*Last Updated: 2026-09-12 | Version: 2026.8.20.10 (Chrome + Firefox 136+)*
+*Last Updated: 2026-09-14 | Version: 2026.9.6.1 (Chrome + Firefox 136+)*

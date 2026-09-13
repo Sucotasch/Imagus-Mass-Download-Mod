@@ -194,10 +194,10 @@ div:hover > #imagus-toolbar:hover {
     background: #00000070;
     transition-delay: 0s;
 }
-#imagus-toolbar i:first-child {
+#imagus-toolbar button:first-child {
     font-size: 22px;
 }
-#imagus-toolbar i {
+#imagus-toolbar button {
     width: 40px;
     height: 40px;
     display: flex;
@@ -209,21 +209,25 @@ div:hover > #imagus-toolbar:hover {
     border-radius: 4px;
     font: 20px sans-serif;
     flex-shrink: 0;
-    color: #00000082
+    color: #00000082;
+    border: none;
 }
-#imagus-toolbar:hover i {
+#imagus-toolbar:hover button {
     color: black;
     background: #b5b5b5;
 }
-#imagus-toolbar:hover i:hover {
+#imagus-toolbar:hover button:hover {
     background: #ebebeb;
 }
-#imagus-toolbar i span:nth-child(2),
-#imagus-toolbar:hover i span:nth-child(1) {
+#imagus-toolbar button span:nth-child(2),
+#imagus-toolbar:hover button span:nth-child(1) {
     display: none;
 }
-#imagus-toolbar:hover i span:nth-child(2) {
+#imagus-toolbar:hover button span:nth-child(2) {
     display: block;
+}
+#imagus-toolbar button:active {
+    scale: 0.95;
 }
 [data-rotate="90"] #imagus-toolbar {
     left: -40px;

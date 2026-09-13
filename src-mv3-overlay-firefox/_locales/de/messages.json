@@ -648,10 +648,10 @@
 		"message": "to clear a focused hotkey on this page"
 	},
 	"HZ_SAVEDIR": {
-		"message": "Verzeichnis in „Downloads“, in dem gespeichert werden soll"
+		"message": "Ordner in Downloads zum Speichern"
 	},
 	"HZ_SAVEDIR_TIP": {
-		"message": "Unterverzeichnis im Download-Ordner des Browsers. \nLassen Sie das Feld leer, um es direkt unter „Downloads“ zu speichern.\nSie können diese Platzhalter verwenden:\n• <b>{page_domain}</b> – die Domain der Seite, von der Sie speichern\n• <b>{link_domain}</b> – die Domain der URL, die Sie herunterladen\n• <b>{y}</b> – das aktuelle Jahr\n• <b>{m}</b> – der aktuelle Monat (01-12)\n• <b>{d}</b> – der aktuelle Tag (01-31)\n• <b>.</b> oder <b>/</b> – direkt unter „Downloads“ speichern, aber dennoch versuchen, andere Erweiterungen zu überschreiben\n\nBeispiel: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+		"message": "Unterordner innerhalb des Download-Ordners des Browsers. Leer lassen, um direkt im Download-Ordner zu speichern.\nSie können diese Platzhalter verwenden:\n• <b>{page_domain}</b> - die Domain der Seite, von der Sie speichern\n• <b>{link_domain}</b> - die Domain der URL, auf der Sie sich mit dem Mauszeiger befinden\n• <b>{file_domain}</b> - die Domain der URL, die Sie herunterladen\n• <b>{y}</b> - das aktuelle Jahr\n• <b>{m}</b> - der aktuelle Monat (01-12)\n• <b>{d}</b> - der aktuelle Tag (01-31)\n• <b>.</b> oder <b>/</b> - direkt im Download-Ordner speichern, aber weiterhin versuchen, andere Dateierweiterungen zu überschreiben\n\nBeispiel: <b>Imagus/{page_domain}/{y}{m}{d}</b>"
 	},
 	"HZ_SCALEUP": {
 		"message": "Skalieren Sie kleine Bilder so, dass sie ins Fenster passen"
@@ -697,5 +697,8 @@
 	},
 	"DA_MAX_PROGRESS_RECORDS": {
 		"message": "Max Progress Records"
+	},
+	"COPY_URL": {
+		"message": "URL kopieren\nDoppelklick: gesamtes Album kopieren"
 	}
 }

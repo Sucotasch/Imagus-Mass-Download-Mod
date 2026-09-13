@@ -517,7 +517,7 @@ var sieve_sec,
                 SieveUI.renameRule(target.closest(".opened"));
 
             } else if (action === "format") {
-                SieveUI.formatEditor(target.closest(".opened")?.querySelector(".ace_editor.ace_focus"));
+                target.closest(".opened")?.querySelectorAll(".ace_editor").forEach(pre => SieveUI.formatEditor(pre));
             }
         },
         move: function (e) {
@@ -643,20 +643,20 @@ var sieve_sec,
             const editor = pre?.env?.editor;
             if (!editor) return;
             const value = editor.getValue() || "";
-            if (value.startsWith(":")) {
-                const cur = editor.selection.getCursor();
-                editor.setValue(
-                    // options: https://beautifier.io
-                    js_beautify(value, {
-                        "indent_size": "2",
-                        "keep_array_indentation": true,
-                        "space_before_conditional": true,
-                        "brace_style": "none,preserve-inline",
-                    }),
-                    -1
-                );
-                editor.gotoLine(cur.row + 1, cur.column);
-            }
+            if (!value.startsWith(":")) return;
+
+            const cur = editor.selection.getCursor();
+            editor.setValue(
+                // options: https://beautifier.io
+                js_beautify(value, {
+                    "indent_size": "2",
+                    "keep_array_indentation": true,
+                    "space_before_conditional": true,
+                    "brace_style": "none,preserve-inline",
+                }),
+                -1
+            );
+            editor.gotoLine(cur.row + 1, cur.column);
         },
 
         search: function () {
