@@ -211,6 +211,100 @@ function getFilterTimeouts() {
     };
 }
 
+// ---------------------------------------------------------------------------
+// GEN-4 (2026-09-14): what the generation that died still had open.
+//
+// Two runs in a row (23:08 and 23:24 logs) showed the same picture: every
+// generation ended 'abrupt' — no onSuspend, no error, no word at all — and the
+// last one recorded activity ONE SECOND before its replacement started. A
+// worker that dies that fast and that silently is being KILLED, not stopped,
+// and Chrome documents exactly two kill conditions of this kind, both about
+// requests that never finish: "a single request taking longer than 5 minutes"
+// and "a fetch() response taking more than 30 seconds to arrive". Neither
+// leaves a trace on our side — a dying worker is not around to be asked — so
+// every long-running SW request is registered here, the periodic snapshot
+// carries the registry, and the NEXT generation reports the age of the oldest
+// request the dead one left open. One-sided by construction: a small number
+// EXCLUDES a hung request as the cause; a large one is only consistent with it,
+// because the dead time before the next event is included in the measurement.
+// ---------------------------------------------------------------------------
+const MD_INFLIGHT_MAX = 8;
+var mdInflight = new Map();   // id -> { kind, url, startedAt, capMs }
+var mdInflightSeq = 0;
+
+// A URL for a human reading the Saved Log: host + a short path, query dropped
+// (a log line is not a place for a media URL's parameters).
+function mdInflightUrlShort(u) {
+    try {
+        const x = new URL(String(u));
+        const p = x.pathname.length > 48 ? x.pathname.slice(0, 48) + '..' : x.pathname;
+        return x.host + p;
+    } catch (_) {
+        return String(u == null ? '' : u).slice(0, 64);
+    }
+}
+
+function mdInflightStart(kind, url, capMs) {
+    // Keep the OLDEST entries: the oldest request is the one that can explain a
+    // kill, while a busy second can have several short ones in flight.
+    if (mdInflight.size >= MD_INFLIGHT_MAX) {
+        let newestId = null, newestAt = -1;
+        for (const [id, r] of mdInflight) {
+            if (r.startedAt >= newestAt) { newestAt = r.startedAt; newestId = id; }
+        }
+        if (newestId) mdInflight.delete(newestId);
+    }
+    const id = 'r' + (++mdInflightSeq);
+    mdInflight.set(id, {
+        kind: String(kind || 'request'),
+        url: mdInflightUrlShort(url),
+        startedAt: Date.now(),
+        capMs: Number.isFinite(capMs) && capMs > 0 ? capMs : 0
+    });
+    // A request starting is a state change worth persisting: without it the
+    // snapshot could be a second older than the request that killed us.
+    mdSchedulePersist();
+    return id;
+}
+
+function mdInflightEnd(id) {
+    if (id && mdInflight.delete(id)) mdSchedulePersist();
+}
+
+function mdInflightList() {
+    const out = [];
+    for (const r of mdInflight.values()) {
+        out.push({ kind: r.kind, url: r.url, startedAt: r.startedAt, capMs: r.capMs });
+    }
+    out.sort(function (a, b) { return a.startedAt - b.startedAt; });
+    return out.slice(0, MD_INFLIGHT_MAX);
+}
+
+// Pure: reads a dead generation's snapshot and says what it left open.
+// `null` = that snapshot predates this field (older build) — the caller prints
+// nothing. An EMPTY list is deliberately not null: "nothing was in flight" is a
+// fact that excludes the hung-request explanation, and printing it is the whole
+// point of one-sided reporting.
+function mdInflightDeathInfo(snap, workerStartMs) {
+    if (!snap || !Array.isArray(snap.inflight)) return null;
+    if (!Number.isFinite(workerStartMs)) return null;
+    let oldest = null;
+    for (const r of snap.inflight) {
+        if (!r || !Number.isFinite(r.startedAt)) continue;
+        if (!oldest || r.startedAt < oldest.startedAt) oldest = r;
+    }
+    // Entries we cannot read are NOT "nothing in flight": an unreadable list
+    // must print nothing instead of a claim the numbers do not support.
+    if (!oldest) return snap.inflight.length ? null : { count: 0 };
+    return {
+        count: snap.inflight.length,
+        kind: String(oldest.kind || 'request'),
+        url: String(oldest.url || ''),
+        oldestMs: Math.max(0, workerStartMs - oldest.startedAt),
+        capMs: Number.isFinite(oldest.capMs) ? oldest.capMs : 0
+    };
+}
+
 const MAX_FALLBACK_SIZE = 10 * 1024 * 1024;
 
 function parseContentLength(headers) {
@@ -1060,6 +1154,9 @@ function mdBuildSnapshot() {
         // cut off mid-flight). A dying worker cannot be asked; a live one that is
         // already persisting its state can answer for free with one number.
         activeAt: Date.now(),
+        // GEN-4: every long-running request this generation still has open. The
+        // taking-over worker reads it from here (the dying one cannot report).
+        inflight: mdInflightList(),
         sessionId: sessionId,
         sessionStart: sessionStartTime,
         scanInProgress: scanInProgress,
@@ -1289,6 +1386,8 @@ function mdApplySnapshot(snap) {
         // kill, because a killed worker waits for an event — the log says so
         // instead of over-claiming.
         activeGapMs: snap.activeAt ? Math.max(0, workerStartMs - snap.activeAt) : null,
+        // GEN-4: and what the dead generation had open when it went silent.
+        inflight: mdInflightDeathInfo(snap, workerStartMs),
         rows: restoredRows,
         requeued: requeue.length,
         adopted: 0,
@@ -2084,6 +2183,9 @@ async function processFilterQueue() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), headMs);
         activeControllers.set(task._id, controller);
+        // GEN-4: registered so the next generation can say what was open if
+        // this worker is killed rather than stopped (see mdInflightStart).
+        const inflightId = mdInflightStart('HEAD', task.url, headMs);
 
         try {
             // BT-03: Referer is NOT set here — it is a forbidden header name
@@ -2105,6 +2207,7 @@ async function processFilterQueue() {
             });
             clearTimeout(timeoutId);
             activeControllers.delete(task._id);
+            mdInflightEnd(inflightId);
 
             const contentType = response.headers.get('Content-Type') || '';
             const contentLength = parseContentLength(response.headers);
@@ -2154,6 +2257,7 @@ async function processFilterQueue() {
         } catch (error) {
             clearTimeout(timeoutId);
             activeControllers.delete(task._id);
+            mdInflightEnd(inflightId);
             if (task._session !== sessionId) continue;
             if (!scanInProgress) continue;
 
@@ -2161,6 +2265,7 @@ async function processFilterQueue() {
                 const innerController = new AbortController();
                 const innerTimeoutId = setTimeout(() => innerController.abort(), getMs);
                 activeControllers.set(task._id, innerController);
+                const innerInflightId = mdInflightStart('GET', task.url, getMs);
                 let response;
                 try {
                     // Fix E: rule ensured at task pickup (HEAD path above);
@@ -2181,6 +2286,7 @@ async function processFilterQueue() {
                 } finally {
                     clearTimeout(innerTimeoutId);
                     activeControllers.delete(task._id);
+                    mdInflightEnd(innerInflightId);
                 }
                 if (!scanInProgress) continue;
                 if (task._session !== sessionId) continue;
@@ -3060,6 +3166,7 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
         : String(Date.now()) + ':' + Math.random();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     activeControllers.set(id, controller);
+    const inflightId = mdInflightStart('validate', absUrl, timeout);
     try {
         // BT-03: no Referer header (forbidden name, silently dropped) — the
         // DNR session rule in md-dnr.js is the mechanism. `referer` stays in
@@ -3083,6 +3190,7 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
     } finally {
         clearTimeout(timeoutId);
         activeControllers.delete(id);
+        mdInflightEnd(inflightId);
     }
 }
 

@@ -1898,3 +1898,113 @@ return mdWorkerStartLines;`)();
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');
+
+// ===========================================================================
+// 2026-09-14 — GEN-4: what the dead generation still had open.
+// Every generation in the 23:08 and 23:24 logs ended 'abrupt' (no onSuspend, no
+// error) while the last one had been active ONE SECOND before its replacement,
+// i.e. they were KILLED while working, not stopped for being idle. Chrome
+// documents exactly two kills of that kind, both about requests that never
+// finish: "a single request taking longer than 5 minutes" and "a fetch()
+// response taking more than 30 seconds to arrive". A dying worker cannot answer
+// for itself, so the age of its oldest open request is recorded in the snapshot
+// it already writes, and reported by the worker that takes over. Read
+// ONE-SIDED, like GEN-3: a small number EXCLUDES a hung request; a large one is
+// only consistent with the documented kill.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    const tabTexts = {};
+
+    for (const tree of trees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+        const bg = readNorm(tree, 'background/service.js');
+        tabTexts[tree] = tab;
+
+        // --- wiring ---------------------------------------------------------
+        assert.ok(/inflight: mdInflightList\(\),/.test(cutFnFrom(core, 'mdBuildSnapshot')),
+            `GEN-4: ${tree} — the snapshot must carry what is still in flight`);
+        assert.ok(/inflight: mdInflightDeathInfo\(snap, workerStartMs\),/.test(cutFnFrom(core, 'mdApplySnapshot')),
+            `GEN-4: ${tree} — and the worker that takes over must turn it into the death report`);
+        assert.ok(/function mdInflightStart\(kind, url, capMs\)/.test(core)
+            && /mdInflightStart\('HEAD', task\.url, headMs\)/.test(core)
+            && /mdInflightStart\('GET', task\.url, getMs\)/.test(core)
+            && /mdInflightStart\('validate', absUrl, timeout\)/.test(core),
+            `GEN-4: ${tree} — every long-running SW fetch must register itself`);
+        assert.ok(/function mdInflightEnd\(id\)/.test(core)
+            && (core.match(/mdInflightEnd\(/g) || []).length >= 5,
+            `GEN-4: ${tree} — and deregister on every exit path (a leaked entry lies forever)`);
+        // The two requests that had NO cap at all — both upstream paths, both
+        // reached in the DOWNLOAD/resolve phase, i.e. exactly where a hang kills
+        // the worker mid-session.
+        assert.ok(/signal: controller\.signal \}\)/.test(cutFnFrom(bg, 'getFilenameFromHeaders'))
+            && /setTimeout\(\(\) => controller\.abort\(\), MD_FILENAME_HEAD_MS\)/
+                .test(cutFnFrom(bg, 'getFilenameFromHeaders')),
+            `GEN-4: ${tree} — the filename HEAD must be bounded (an unbounded fetch is a documented kill)`);
+        assert.ok(/signal: resolveController\.signal,/.test(bg)
+            && /setTimeout\(\(\) => resolveController\.abort\(\), MD_RESOLVE_FETCH_MS\)/.test(bg)
+            && /mdResolveSettled\(\)/.test(bg),
+            `GEN-4: ${tree} — the sieve resolver fetch must be bounded too, and must deregister`);
+        assert.ok(/function mdInflightDeathLines\(info\)/.test(tab)
+            && /mdInflightDeathLines\(rc\.inflight\)/.test(tab),
+            `GEN-4: ${tree} — the Saved Log must print it (a builder nobody calls is dead code)`);
+
+        // The wording may never upgrade "consistent with" into "proof" — that is
+        // the exact class of error this line of work removes.
+        const linesSrc = cutFnBalanced(tab, 'mdInflightDeathLines');
+        assert.ok(/too short for any request timeout/.test(linesSrc)
+            && /not proof/.test(linesSrc) && !/proves/.test(linesSrc),
+            `GEN-4: ${tree} — the text must say which side proves what, and claim nothing more`);
+
+        // --- EXECUTION ------------------------------------------------------
+        const info = new Function(`${cutFnFrom(core, 'mdInflightDeathInfo')}\nreturn mdInflightDeathInfo;`)();
+        const inflightLines = new Function(`${cutFnBalanced(tab, 'mdInflightDeathLines')}\nreturn mdInflightDeathLines;`)();
+        const one = (startedAt, capMs) => ({ inflight: [{ kind: 'HEAD', url: 'cdn.example.com/x.jpg', startedAt, capMs }] });
+
+        // Young request: the kill was NOT a request timeout. Decisive, so it must
+        // be stated.
+        const young = info(one(10000, 8000), 12000);
+        assert.strictEqual(young.oldestMs, 2000);
+        assert.ok(/too short for any request timeout/.test(inflightLines(young)[0], 'young'));
+        // Old request: consistent with the documented kill and nothing more.
+        const old = info(one(1000, 8000), 1000 + 62000);
+        assert.strictEqual(old.oldestMs, 62000);
+        assert.strictEqual(old.capMs, 8000);
+        assert.ok(/^oldest SW request still open when that generation went silent: 62s \(HEAD cdn\.example\.com\/x\.jpg, own cap 8s\)/
+            .test(inflightLines(old)[0]), 'old: the line must name the age, kind and cap');
+        assert.ok(/not proof/.test(inflightLines(old)[0]) && !/NOT an idle kill|proves/.test(inflightLines(old)[0]),
+            'old: an upper bound must never be printed as proof');
+        // The oldest entry wins, whatever the order in the snapshot.
+        assert.strictEqual(info({ inflight: [
+            { kind: 'GET', startedAt: 5000, capMs: 0 },
+            { kind: 'HEAD', startedAt: 1000, capMs: 0 }
+        ] }, 8000).kind, 'HEAD');
+        // Nothing in flight is a FACT, and it is printed (that is the whole point
+        // of one-sided reporting) — with the snapshot, not a cause, as its claim.
+        const none = info({ inflight: [] }, 5000);
+        assert.strictEqual(none.count, 0);
+        assert.ok(/no SW request was in flight/.test(inflightLines(none)[0])
+            && !/cause/.test(inflightLines(none)[0]),
+            'empty: report the fact, not a cause');
+        // Older builds / unreadable input print nothing at all.
+        assert.strictEqual(info(null, 1), null);
+        assert.strictEqual(info({}, 1), null);
+        assert.strictEqual(info({ inflight: [] }, NaN), null);
+        assert.strictEqual(info({ inflight: [{ startedAt: 'nope' }] }, 5000), null);
+        assert.deepStrictEqual(inflightLines(null), []);
+        assert.deepStrictEqual(inflightLines(undefined), []);
+        assert.deepStrictEqual(inflightLines('nonsense'), []);
+        assert.deepStrictEqual(inflightLines({}), []);
+    }
+
+    // A copy, not a fork: the two trees carry byte-identical renderers.
+    assert.strictEqual(
+        cutFnBalanced(tabTexts['src-mv3-overlay-firefox'], 'mdInflightDeathLines').replace(/\r\n/g, '\n'),
+        cutFnBalanced(tabTexts['src-mv3-overlay'], 'mdInflightDeathLines').replace(/\r\n/g, '\n'),
+        'GEN-4: the in-flight renderer must be a copy, not a fork (both trees)');
+
+    console.log('md-unit-smoke: open-request-at-death (GEN-4) locks hold in both trees');
+}

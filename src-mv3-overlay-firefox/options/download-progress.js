@@ -770,6 +770,39 @@
             + ' a killed worker waits for the next event, so a long gap is not proof of idleness';
     }
 
+    // --- GEN-4: what did the dead generation still have open? ----------------
+    // `inflight` is built by the taking-over worker from the dead one's last
+    // snapshot (mdInflightDeathInfo) — the requests it had not finished. It is
+    // the one number that can separate the two kill paths Chrome documents for
+    // an extension worker, both of which are about requests that never finish:
+    // "a fetch() response taking more than 30 seconds to arrive" and "a single
+    // request taking longer than 5 minutes".
+    //
+    // Same one-sided contract as the gap above: the measurement includes the
+    // dead time before the next event, so only a SMALL value proves anything —
+    // it excludes a hung request. A large one is consistent with the documented
+    // kill but is not proof, and must never be printed as one.
+    // Pure (no DOM, no chrome) so the harnesses EXECUTE it.
+    function mdInflightDeathLines(info) {
+        if (!info || typeof info !== 'object') return [];
+        if (info.count === 0) {
+            return ['no SW request was in flight when that generation last wrote its state'
+                + ' (nothing of ours was left hanging)'];
+        }
+        if (!isFinite(info.oldestMs) || info.oldestMs < 0) return [];
+        const s = Math.round(info.oldestMs / 1000);
+        const cap = isFinite(info.capMs) && info.capMs > 0
+            ? ', own cap ' + Math.round(info.capMs / 1000) + 's'
+            : '';
+        const line = 'oldest SW request still open when that generation went silent: ' + s + 's ('
+            + String(info.kind || 'request') + ' ' + String(info.url || '') + cap + ')';
+        if (s <= 5) {
+            return [line + ' — too short for any request timeout to have been the cause'];
+        }
+        return [line + ' — consistent with a request that never finished, but an upper bound:'
+            + ' the dead time before the next event is included, so it is not proof'];
+    }
+
     function formatLog(data, opts) {
         const items = data.log || [];
         const stats = data.stats || {};
@@ -797,6 +830,9 @@
             // itself (see mdActivityGapText).
             const gapText = mdActivityGapText(rc.activeGapMs);
             if (gapText) lines.push('  ' + gapText);
+            // GEN-4: and what it still had open (see mdInflightDeathLines).
+            const inflightLines = mdInflightDeathLines(rc.inflight);
+            for (let i = 0; i < inflightLines.length; i++) lines.push('  ' + inflightLines[i]);
         }
         if (opts && opts.stateLost) {
             lines.push('');

@@ -563,10 +563,21 @@ function handleMessage(message, sender, sendResponse) {
                 data.params.url = [urlParts[1], postData];
             }
 
+            // GEN-4: bounded (see MD_RESOLVE_FETCH_MS). The chain below already
+            // answers 'no match' on failure, so an abort is a normal outcome.
+            const resolveController = new AbortController();
+            const resolveTimeoutId = setTimeout(() => resolveController.abort(), MD_RESOLVE_FETCH_MS);
+            const resolveInflightId = mdInflightStart('resolve fetch', msg.url, MD_RESOLVE_FETCH_MS);
+            const mdResolveSettled = function () {
+                clearTimeout(resolveTimeoutId);
+                mdInflightEnd(resolveInflightId);
+            };
+
             fetch(msg.url, {
                 method: postData ? "POST" : "GET",
                 body: postData,
                 headers: postData ? { "Content-Type": "application/x-www-form-urlencoded" } : {},
+                signal: resolveController.signal,
             })
                 .then((fetchResp) => {
                     const contentType = fetchResp.headers.get("Content-Type");
@@ -574,12 +585,14 @@ function handleMessage(message, sender, sendResponse) {
                         data.m = msg.url;
                         data.noloop = true;
                         console.warn(chrome.runtime.getManifest().name + ": rule " + data.params.rule.id + " matched against an image file");
+                        mdResolveSettled();
                         context.postMessage(data);
                         return null;
                     }
                     return fetchResp.text();
                 })
                 .then((body) => {
+                    mdResolveSettled();
                     // if (body === null) return;
                     let base = body.slice(0, 4096);
                     const baseHrefMatch = /<base\s+href\s*=\s*("[^"]+"|'[^']+')/.exec(base);
@@ -630,6 +643,7 @@ function handleMessage(message, sender, sendResponse) {
                 .catch((error) => {
                     // Audit N-17: a network failure must not leave the sender
                     // hanging for its resolutionTimeout — fail fast as "no match".
+                    mdResolveSettled();
                     console.warn(manifest.name + ": resolve fetch failed: " + (error && error.message));
                     context?.postMessage({ cmd: "resolved", id: msg.id, m: null, params: msg.params });
                 });
@@ -817,13 +831,36 @@ function getFilenameFromUrl(url) {
     }
 }
 
+// GEN-4 (2026-09-14): an UNBOUNDED request in the worker is a documented hard
+// kill — the browser terminates a background worker whose fetch() response takes
+// more than 30 seconds to arrive — and the dying worker leaves no record of it
+// (all of the live 2026-09-13 generations ended 'abrupt': no onSuspend, no
+// error). This HEAD runs in the DOWNLOAD path (handleDownloadMass -> filename),
+// i.e. after the scan, on the very hosts that are already rate-limiting us:
+// exactly where a hang lands. The cap only ever costs a filename —
+// getFilenameFromUrl is the caller's next attempt.
+const MD_FILENAME_HEAD_MS = 5000;
+// The sieve resolver (case 'resolve', res:1 rules) fetched page bodies with no
+// cap at all. The content side gives up after da.resolutionTimeout (8 s by
+// default) and nobody is waiting for the answer any more, while the worker kept
+// the request open — the 30 s kill path above, with no symptom at all until the
+// whole session restarted. 20 s stays under the limit and far above a page that
+// is actually alive.
+const MD_RESOLVE_FETCH_MS = 20000;
+
 async function getFilenameFromHeaders(url) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), MD_FILENAME_HEAD_MS);
+    const inflightId = mdInflightStart('HEAD (filename)', url, MD_FILENAME_HEAD_MS);
     try {
-        const resp = await fetch(url, { method: "HEAD" });
+        const resp = await fetch(url, { method: "HEAD", signal: controller.signal });
         const match = /filename[^;=\n]*=["']?([^"';\n]*)/.exec(resp.headers.get("Content-Disposition") || "");
         return match?.[1];
     } catch (_) {
         return undefined;
+    } finally {
+        clearTimeout(timeoutId);
+        mdInflightEnd(inflightId);
     }
 }
 

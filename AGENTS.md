@@ -200,7 +200,23 @@ instrumentation is lying, not that a host is slow:
   `activeGapMs = workerStartMs − activeAt`, and the `Recovered:` line prints it. Read it ONE-SIDED: ≤5 s
   proves the worker was working right up to the end (an idle kill is excluded); a larger value is an upper
   bound only (both the death and the unknown wait for the next event live inside it), so calling it "idle"
-  is forbidden — locked by a REGRESSION assertion.
+  is forbidden — locked by a REGRESSION assertion. The 23:24 log then added **GEN-4**: six generations, EVERY
+  one `abrupt`, the last one active 1 s before its replacement — a worker killed while working, and Chrome
+  documents exactly two kills of that kind, both about requests that never finish (**a single request taking
+  longer than 5 minutes**, **a `fetch()` response taking more than 30 seconds to arrive**). A dying worker
+  cannot be asked, so every long-running SW request registers in `mdInflight` and rides the snapshot as
+  `inflight`; the taking-over worker reports its oldest entry in the same `Recovered:` block as
+  `oldest SW request still open when that generation went silent: Ns (KIND url, own cap Ns)`. Same one-sided
+  reading: N ≤ 5 s EXCLUDES a request timeout (decisive); a larger N is an upper bound — the dead time before
+  the next event is inside it — and must never be printed as proof. An empty registry prints
+  `no SW request was in flight when that generation last wrote its state …`, which is a fact about the
+  snapshot, not a cause. **Every SW fetch must be bounded:** the two upstream ones were not —
+  `getFilenameFromHeaders`'s HEAD (runs per download item, i.e. exactly where a rate-limited host stalls) and
+  the `resolve` sieve fetch (the page gives up after `da.resolutionTimeout` and nobody is waiting any more) —
+  because an abort costs a filename or a single rule match, while a hang costs the whole session. Owners:
+  `mdInflightStart/End/List`, `mdInflightDeathInfo` (mass-download/service-core.js),
+  `mdInflightDeathLines` (options/download-progress.js), `MD_FILENAME_HEAD_MS`/`MD_RESOLVE_FETCH_MS`
+  (background/service.js).
 - **Spans may CROSS generations:** a stamp the interrupted generation made is kept (it rides the session
   snapshot), so `downloads` / `after-scan tail` can exceed `session` — correct, and now said out loud in
   the block (`DIAG-4`).
