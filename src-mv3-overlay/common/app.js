@@ -75,8 +75,47 @@ window.addEventListener(
     true
 );
 
+// Delivery accounting (2026-09-14). Every mass-download command is
+// fire-and-forget (downloadMass, updateStatus, updateFilterStats,
+// reportSkippedItem, scanDiagnostics), and D-5's wrapper deliberately swallows
+// runtime.lastError so the console is not flooded with "The message port closed
+// before a response was received". That silence also hid the one failure that
+// matters: a message that was never DELIVERED at all — live 2026-09-13 21:09,
+// the page found ~180 items and the worker took over 8, with the sender unable
+// to tell. Classify it instead of ignoring it:
+//
+//   'no-receiver'   — nothing was listening (the worker was still booting or is
+//                     gone): the message went NOWHERE, counted as a loss.
+//   'context-gone'  — the extension was reloaded under the page: same, a loss.
+//   'no-answer'     — the port closed before a response: the normal shape of
+//                     every fire-and-forget command (a listener received it and
+//                     answered nothing), so it is NOT a loss and must never be
+//                     counted as one — otherwise the counter would read 100%
+//                     on a perfectly healthy run.
+//
+// Pure function (no chrome API) so the harness EXECUTES it on real source text.
+function mdClassifySendError(message) {
+    const text = String(message == null ? '' : message);
+    if (!text) return 'ok';
+    if (text.indexOf('Receiving end does not exist') > -1) return 'no-receiver';
+    if (text.indexOf('context invalidated') > -1) return 'context-gone';
+    return 'no-answer';
+}
+
 // Port handling
 const Port = {
+    // Sent / not-delivered counters for the world this Port lives in. Reported
+    // to the worker (see _sendScanDiagnostics in content.js) so the Saved Log
+    // can answer "did the page's messages reach anyone?" — the question the
+    // 21:09 log could not answer at all.
+    stats: { sent: 0, failed: 0, lastError: '' },
+
+    // Copy for a message payload: these counters keep moving, and a message is
+    // serialized whenever the browser gets to it, not when it was created.
+    snapshot: function () {
+        return { sent: Port.stats.sent, failed: Port.stats.failed, lastError: Port.stats.lastError };
+    },
+
     listen: function (callback) {
         if (this.listener) {
             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
@@ -107,6 +146,7 @@ const Port = {
             return Promise.reject(new Error('Extension context invalidated'));
         }
         const handler = callback || Port.listener;
+        Port.stats.sent++;
         if (!handler) {
             return chrome.runtime.sendMessage(message);
         }
@@ -122,10 +162,30 @@ const Port = {
         // keep working exactly as before. Nothing else changes: Port.listener is
         // still resolved at call time, and the callback still receives the
         // single response argument it received from Chrome directly.
-        return chrome.runtime.sendMessage(message, function (response) {
-            try { void chrome.runtime.lastError; } catch (e) { /* nothing to read */ }
-            return handler(response);
-        });
+        let pending;
+        try {
+            pending = chrome.runtime.sendMessage(message, function (response) {
+                let kind = 'ok';
+                try {
+                    kind = mdClassifySendError(chrome.runtime.lastError && chrome.runtime.lastError.message);
+                } catch (e) { /* nothing to read */ }
+                // Still swallowed (D-5 noise), but now counted: only the two
+                // kinds that mean "nobody received this" count as a loss.
+                if (kind === 'no-receiver' || kind === 'context-gone') {
+                    Port.stats.failed++;
+                    Port.stats.lastError = kind;
+                }
+                return handler(response);
+            });
+        } catch (e) {
+            // A dead extension context throws synchronously instead of setting
+            // lastError. Count it the same way, then behave exactly as before:
+            // the caller sees the same rejection.
+            Port.stats.failed++;
+            Port.stats.lastError = 'context-gone';
+            throw e;
+        }
+        return pending;
     },
 };
 

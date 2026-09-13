@@ -919,7 +919,13 @@ async function registerContentScripts() {
     try {
         await chrome.userScripts.configureWorld({ csp: "script-src 'self' 'unsafe-eval'", messaging: true });
 
-        await chrome.runtime.onUserScriptMessage?.addListener(onMessage);
+        // NOTE: the onUserScriptMessage listener is NOT registered here. A user
+        // script reaches the worker ONLY through that dedicated event (the
+        // userScripts docs: "they don't use onMessage"), and this function runs
+        // after an awaited chrome.storage.local.get — so registering it here
+        // left the worker deaf to its own page for the whole boot window and
+        // every downloadMass sent in it vanished without a trace. It is
+        // registered synchronously at the top level now, next to onMessage.
         await chrome.userScripts.unregister();
         await chrome.userScripts.register([
             {
@@ -1194,6 +1200,15 @@ chrome.runtime.onInstalled.addListener(function (e) {
     }
 });
 chrome.runtime.onMessage?.addListener(onMessage);
+// A user script's message is delivered to onUserScriptMessage ONLY (the
+// dedicated handler — see the userScripts docs), so this listener must be
+// registered SYNCHRONOUSLY at the top level, exactly like onMessage above.
+// Live 2026-09-13 21:09: the page found ~180 items while the worker took over 8
+// — the old registration lived at the end of the async registerContentScripts(),
+// i.e. beyond an awaited chrome.storage.local.get, and everything the page sent
+// during that boot window was dropped silently (the sender cannot tell, see
+// Port.send in common/app.js).
+chrome.runtime.onUserScriptMessage?.addListener(onMessage);
 
 keepAlive();
 

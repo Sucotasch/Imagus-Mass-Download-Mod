@@ -370,7 +370,36 @@ function handleResolveGroups(msg, sender) {
     processUrlGroupsWithValidation(msg.groups, msg.referer, sender);
 }
 
+// The page's delivery counters (Port.send / mdClassifySendError in
+// common/app.js): how many messages it sent and how many reached nobody.
+// Numbers only, known keys only, clamped — the payload comes from a page, and
+// diagnostics must never become a way to inject an arbitrary shape into the log.
+function mdNormalizeSendStats(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const n = (v) => (typeof v === 'number' && isFinite(v) && v >= 0 ? Math.floor(v) : null);
+    const sent = n(raw.sent), failed = n(raw.failed);
+    if (sent == null || failed == null) return null;
+    return {
+        sent: sent,
+        // A page cannot have lost more messages than it sent; clamp instead of
+        // printing an impossible number.
+        failed: Math.min(failed, sent),
+        lastError: typeof raw.lastError === 'string' ? raw.lastError.slice(0, 40) : ''
+    };
+}
+
+// The page ships these with every status it sends (and once with the scan
+// diagnostics), so the newest numbers survive even when the very message that
+// would have carried them is the one that got lost.
+function mdRecordSendStats(raw) {
+    const stats = mdNormalizeSendStats(raw);
+    if (!stats) return null;
+    mdScanDiagnostics = Object.assign({}, mdScanDiagnostics || {}, { page: stats });
+    return stats;
+}
+
 function handleUpdateStatus(msg) {
+    mdRecordSendStats(msg.sendStats);
     sendToProgressTab(msg);
     if (msg.done) {
         // Content finished scanning — do not cancel in-flight filter/download.
@@ -399,6 +428,10 @@ function handleScanDiagnostics(msg) {
         content[k] = Number.isFinite(v) ? v : null;
     });
     mdScanDiagnostics = Object.assign({}, mdScanDiagnostics || {}, { content: content });
+    // The page's half of the conversation: how many of its messages reached
+    // nobody (see mdRecordSendStats). 0 here is the answer "the channel was
+    // fine — the loss happened elsewhere".
+    mdRecordSendStats(d.sendStats);
     sendToProgressTab({ cmd: 'updateScanDiagnostics', diagnostics: mdScanDiagnostics });
     if (scanInProgress) mdSchedulePersist();
 }

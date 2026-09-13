@@ -999,8 +999,13 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `D-5: ${tree} — the response callback must still be resolved at call time`);
         assert.ok(/chrome\.runtime\.sendMessage\(message, function \(response\) \{/.test(app),
             `D-5: ${tree} — send must wrap the response callback`);
-        assert.ok(/void chrome\.runtime\.lastError;/.test(app),
-            `D-5: ${tree} — reading lastError INSIDE the callback is what silences the false "message port closed" reports`);
+        // 2026-09-14: the wrapper still READS lastError inside the callback (that
+        // read is what silences the false "message port closed" reports) and now
+        // also classifies it (D-5b). The old lock asserted the exact spelling
+        // `void chrome.runtime.lastError;`, which tied the invariant to one line
+        // of code instead of to the behaviour; this one asserts the behaviour.
+        assert.ok(/mdClassifySendError\(chrome\.runtime\.lastError && chrome\.runtime\.lastError\.message\)/.test(app),
+            `D-5: ${tree} — lastError must be read INSIDE the callback (that read silences the false "message port closed" reports) and classified`);
         assert.ok(/return handler\(response\);/.test(app),
             `D-5: ${tree} — the response must be forwarded unchanged`);
         // The wrapper must not be "simplified" into dropping the callback:
@@ -1009,6 +1014,54 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         const svcFile = readNorm(tree, 'background/service.js');
         assert.ok(/postMessage: sendResponse/.test(svcFile),
             `D-5: ${tree} — resolve answers arrive via sendResponse; the listener callback must stay wired`);
+    }
+
+    // --- D-5b: what counts as a LOST message (executed, not regex-matched) ---
+    // These counters are the instrument that decides whether the next live run
+    // sends us after the message channel or after the page's walk (live
+    // 2026-09-13 21:09: the page found ~180 items, the worker took over 8). A
+    // wrong classifier makes that decision wrong, so the function is EXECUTED
+    // on real source text rather than pattern-matched.
+    for (const tree of batchTrees) {
+        const app = readNorm(tree, 'common/app.js');
+        const classify = new Function(`${cutFnFrom(app, 'mdClassifySendError')}\nreturn mdClassifySendError;`)();
+        assert.ok(classify(undefined) === 'ok' && classify('') === 'ok' && classify(null) === 'ok',
+            `D-5b: ${tree} — no lastError means no failure`);
+        assert.ok(classify('Could not establish connection. Receiving end does not exist.') === 'no-receiver',
+            `D-5b: ${tree} — "Receiving end does not exist" is the message that was NOT delivered`);
+        assert.ok(classify('Extension context invalidated.') === 'context-gone',
+            `D-5b: ${tree} — an invalidated extension context is also a message that went nowhere`);
+        assert.ok(classify('The message port closed before a response was received.') === 'no-answer',
+            `D-5b: ${tree} — a closed port is the NORMAL shape of every fire-and-forget command; counting it as a loss would report 100% loss on a healthy run`);
+        assert.ok(/Port\.stats\.sent\+\+/.test(app) && /Port\.stats\.failed\+\+/.test(app),
+            `D-5b: ${tree} — both counters must actually be incremented (a sent count with no loss count is decoration)`);
+        const coreDiag = readNorm(tree, 'mass-download/service-core.js');
+        assert.ok(/failed: Math\.min\(failed, sent\)/.test(coreDiag),
+            `D-5b: ${tree} — a page cannot have lost more messages than it sent; clamp instead of logging an impossible number`);
+        assert.ok(/raw\.lastError\.slice\(0, 40\)/.test(coreDiag),
+            `D-5b: ${tree} — lastError is a page-controlled string and must be truncated before it reaches the log`);
+        assert.ok(/d\.sendStats = Port\.snapshot\(\);/.test(readNorm(tree, 'content/content.js')),
+            `D-5b: ${tree} — the page's counters must ride with the scan diagnostics, or the log keeps its blind spot`);
+        assert.ok(/mdRecordSendStats\(msg\.sendStats\)/.test(readNorm(tree, 'mass-download/service-core.js')),
+            `D-5b: ${tree} — the status messages must carry the counters too, so the newest numbers survive a lost final message`);
+    }
+
+    // --- D-5c: the user-script listener must be registered SYNCHRONOUSLY -----
+    // A user script's message reaches the worker ONLY through
+    // onUserScriptMessage (the userScripts docs: "they don't use onMessage").
+    // Registering it at the end of the async registerContentScripts() put it
+    // behind an awaited chrome.storage.local.get — i.e. the worker was deaf to
+    // its own page for the whole boot window, silently. Live 2026-09-13 21:09:
+    // the page found ~180 items while the worker took over 8.
+    for (const tree of batchTrees) {
+        const svcSrc = readNorm(tree, 'background/service.js');
+        const regs = svcSrc.match(/onUserScriptMessage\?\.addListener/g) || [];
+        assert.ok(regs.length === 1,
+            `D-5c: ${tree} — exactly one onUserScriptMessage registration (two would deliver every message twice, zero would make the worker deaf)`);
+        assert.ok(/^chrome\.runtime\.onUserScriptMessage\?\.addListener\(onMessage\);$/m.test(svcSrc),
+            `D-5c: ${tree} — it must be a top-level registration next to onMessage, not a nested one`);
+        assert.ok(!/await chrome\.runtime\.onUserScriptMessage/.test(svcSrc),
+            `D-5c: ${tree} — the late (awaited) registration must not come back: it is the boot-window deafness`);
     }
 
     // --- D-6: credentialed filter requests ----------------------------------

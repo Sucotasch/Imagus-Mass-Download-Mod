@@ -352,7 +352,8 @@
         if (!diag || typeof diag !== 'object') return [];
         const c = diag.content || null;
         const sw = diag.sw || null;
-        if (!c && !sw) return [];
+        const p = diag.page || null;
+        if (!c && !sw && !p) return [];
         const num = (v) => (v == null ? '-' : String(v));
         const lines = ['', 'Scan diagnostics:'];
         if (c) {
@@ -372,6 +373,23 @@
             if (c.timeouts) {
                 lines.push('  ' + c.timeouts + ' element(s) waited out da.resolutionTimeout — each of those is a full wait');
                 lines.push('  inside the serial walk, so a run of them is the "long pause" between two status updates.');
+            }
+        }
+        if (p) {
+            // The page's own delivery accounting (Port.send in common/app.js).
+            // It is the only evidence of whether the page's messages had a
+            // listener: the 21:09 log could not separate "the worker was deaf"
+            // from "the page stopped walking", and those two need completely
+            // different fixes. `not-delivered` counts ONLY the two errors that
+            // mean nobody received the message — a closed port is the normal
+            // shape of every fire-and-forget command and is never counted.
+            lines.push('  page → worker: sent=' + num(p.sent)
+                + ' not-delivered=' + num(p.failed)
+                + (p.lastError ? ' (last: ' + p.lastError + ')' : ''));
+            if (p.failed) {
+                lines.push('  not-delivered > 0 means the worker was NOT listening while the page was sending:');
+                lines.push('  those items never reached any queue. See Port.send (D-5 wrapper) and the');
+                lines.push('  synchronous onUserScriptMessage registration in background/service.js.');
             }
         }
         if (sw) {

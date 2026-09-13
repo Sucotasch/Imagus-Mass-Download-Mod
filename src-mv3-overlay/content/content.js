@@ -808,7 +808,7 @@
                         // late downloadMass items arrive as canceled.
                         var msg = 'Gallery save: ' + queuedCount + ' item(s) queued.';
                         if (unresolved > 0) msg += ' ' + unresolved + ' could not be resolved.';
-                        Port.send({ cmd: 'updateStatus', status: msg, done: true });
+                        Port.send({ cmd: 'updateStatus', status: msg, done: true, sendStats: Port.snapshot() });
                     }
                     if (unresolved > 0)
                         console.warn(cfg.app?.name + ': [gallery-save] ' + unresolved + ' item(s) could not be resolved and were skipped');
@@ -4911,6 +4911,13 @@
             d.groups = PVI.ambiguousUrlGroups ? PVI.ambiguousUrlGroups.length : 0;
             d.endPhase = endPhase || 'completed';
             d.totalMs = Date.now() - d.startedAt;
+            // Delivery accounting of THIS page (Port.send / mdClassifySendError
+            // in common/app.js): how many messages the page sent and how many
+            // of them reached nothing at all. Only the page can know this — a
+            // restarted worker saw nothing of the page's half of the
+            // conversation. Live 2026-09-13 21:09 is why it is here: the log
+            // could not tell "the worker was deaf" from "the page stalled".
+            d.sendStats = Port.snapshot();
             const payload = {};
             for (const k in d) {
                 if (k.charAt(0) === '_' || typeof d[k] === 'function') continue;
@@ -5107,7 +5114,7 @@
                     // progress tab alone.
                     const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
                     PVI._updateDownloadAllStatus(finalMessage);
-                    Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true });
+                    Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true, sendStats: Port.snapshot() });
                     if (PVI.downloadAllDiag) {
                         PVI.downloadAllDiag.tWalkMs = Date.now() - PVI.downloadAllDiag._walkStart;
                         PVI._sendScanDiagnostics('no-groups');
@@ -5355,7 +5362,7 @@
             const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;
             PVI._updateDownloadAllStatus(finalMessage);
             // Same diagnostics as the no-groups path: where items died.
-            Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound + (processedCount || 0)} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true });
+            Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound + (processedCount || 0)} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true, sendStats: Port.snapshot() });
 
             PVI.downloadAllActive = false;
             PVI._stopKeepAwake(finalMessage);
