@@ -11,6 +11,8 @@
     const statsFoundEl = document.getElementById('stats-found');
     const statsPrefilteredEl = document.getElementById('stats-prefiltered');
     const statsSkippedEl = document.getElementById('stats-skipped');
+    // 2026-09-13: the worker's live downloaded counter (see updateGlobalStats).
+    const statsDownloadedEl = document.getElementById('stats-downloaded');
     const refreshBtn = document.getElementById('refreshBtn');
     const saveLogBtn = document.getElementById('saveLogBtn');
     const clearBtn = document.getElementById('clearBtn');
@@ -20,6 +22,11 @@
     // State management
     let downloadItems = {};
     let maxProgressRecords = 100;
+    // Last scan counters the worker pushed (found/prefiltered/skipped/downloaded).
+    // Kept so the on-screen window note can print the LIVE totals next to the
+    // capped row list — the 2026-09-13 Firefox log showed "Completed in List 0 /
+    // Failed 100" while downloaded=291, which reads as a broken page.
+    let lastStats = null;
 
     // --- Session-loss detection --------------------------------------------
     // The SW owns the mass-download session in memory only (queues, stats,
@@ -306,12 +313,30 @@
     // session. Saying so is the difference between "the page lies" and "the page
     // shows the last N records" — the counters for the scan itself are in the
     // Saved Log (downloaded=, skipped=).
+    // Pure (no DOM, no chrome) — the single owner of the on-screen window note.
+    // Kept pure so the same text is executed by the harnesses instead of being
+    // regex-matched: "Completed in List" is a count of rows STILL SHOWN, not of
+    // files downloaded, and the gap reads as a lost file unless the live
+    // counters are printed next to it (2026-09-13 Firefox: 291 downloaded,
+    // 0 completed rows, 100 failures). Mirrored by tools/md-unit-smoke.mjs.
+    function mdListNoteText(maxRecords, stats) {
+        let note = 'Showing the last ' + maxRecords
+            + ' records — the list is a rolling window, so the oldest FINISHED rows drop off first'
+            + ' and "Completed in List" counts only the rows still shown.';
+        const s = stats || {};
+        if (s.downloaded !== undefined || s.skipped !== undefined) {
+            note += ' This session: downloaded=' + (s.downloaded || 0)
+                + ', skipped=' + (s.skipped || 0) + ' (live counters, not the list).';
+        } else {
+            note += ' The scan totals (downloaded=, skipped=) are in the Saved Log.';
+        }
+        note += ' Alternate candidate URLs that a later candidate replaced are listed as skipped (they are not missing files).';
+        return note;
+    }
+
     function updateListNote() {
         if (!listNoteEl) return;
-        listNoteEl.textContent = 'Showing the last ' + maxProgressRecords
-            + ' records — the list is capped, and the oldest finished rows drop off first.'
-            + ' The scan totals (downloaded=, skipped=) are in the Saved Log.'
-            + ' Alternate candidate URLs that a later candidate replaced are listed as skipped (they are not missing files).';
+        listNoteEl.textContent = mdListNoteText(maxProgressRecords, lastStats);
     }
 
     // Calculate and display summary stats from the items table
@@ -335,9 +360,18 @@
     // Audit BUG-08: the old single `filtered` counter conflated content DOM
     // pre-filter rejects with SW size/type skips.
     function updateGlobalStats(stats) {
+        if (!stats) return;
         if (stats.found !== undefined) statsFoundEl.textContent = stats.found;
         if (stats.prefiltered !== undefined && statsPrefilteredEl) statsPrefilteredEl.textContent = stats.prefiltered;
         if (stats.skipped !== undefined && statsSkippedEl) statsSkippedEl.textContent = stats.skipped;
+        // `downloaded` gets its own tile because it is the ONE counter the row
+        // cap cannot falsify: the rows are a rolling window, this is the live
+        // scan total (2026-09-13 Firefox: 291 downloaded, 0 completed rows).
+        if (stats.downloaded !== undefined && statsDownloadedEl) statsDownloadedEl.textContent = stats.downloaded;
+        // Merge (not replace): a partial push must not wipe known totals, and
+        // the window note below prints them on every update.
+        lastStats = Object.assign({}, lastStats, stats);
+        updateListNote();
     }
 
     // Update the entire display

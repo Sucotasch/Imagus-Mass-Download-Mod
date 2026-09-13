@@ -205,6 +205,14 @@
         <div class="stat-value" id="stats-skipped">0</div>
         <div class="stat-label">Skipped</div>
       </div>
+      <!-- 2026-09-13: the only number eviction cannot falsify. The grid below
+           counts the ROWS SHOWN; this one is the worker's live counter, so
+           "Completed in List 0" beside "Failed 100" stops reading as "nothing
+           was downloaded" (live Firefox log: 291 downloaded, 0 completed rows). -->
+      <div class="stat-item">
+        <div class="stat-value" id="stats-downloaded">0</div>
+        <div class="stat-label">Downloaded</div>
+      </div>
       <div class="stat-item">
         <div class="stat-value" id="totalFiles">0</div>
         <div class="stat-label">Rows in List</div>

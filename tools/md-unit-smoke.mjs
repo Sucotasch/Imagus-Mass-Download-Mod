@@ -1143,8 +1143,25 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `ROWS: ${tree} — the note must fire when completed rows < downloaded (and stay silent when they agree)`);
         assert.ok(!/items\.length < \(stats\.downloaded/.test(tabCode),
             `ROWS REGRESSION: ${tree} — the total-row-count comparison never fired on a full list; it must not return`);
+        // 2026-09-13: the on-screen note must print the LIVE counters beside the
+        // capped rows. Live Firefox run: 100 failed rows, 0 completed rows,
+        // downloaded=291 — the page read as "everything failed" while the files
+        // were on disk and only the Saved Log said so. Executed in
+        // .unlazy/…/repro-row-window.mjs.
+        assert.ok(/function mdListNoteText\(/.test(tabCode)
+            && /mdListNoteText\(maxProgressRecords, lastStats\)/.test(cutFnBalanced(tab, 'updateListNote')),
+            `ROWS: ${tree} — the window note must be built by mdListNoteText() from the live stats`);
+        // The exact phrase, not just "downloaded=": the fallback sentence mentions
+        // "(downloaded=, skipped=)" too, and a lock that a fallback satisfies would
+        // be deaf to the counters being removed.
+        assert.ok(/This session: downloaded=/.test(cutFnBalanced(tab, 'mdListNoteText')),
+            `ROWS: ${tree} — the note must print the live downloaded counter (not just name the log)`);
+        assert.ok(/statsDownloadedEl\.textContent = stats\.downloaded/.test(cutFnBalanced(tab, 'updateGlobalStats')),
+            `ROWS: ${tree} — the Downloaded tile must be fed by the worker's live counter (the cap cannot falsify it)`);
         const tabHtml = readNorm(tree, 'options/download-progress.html');
         assert.ok(/id="listNote"/.test(tabHtml), `ROWS: ${tree} — the note element must exist in the page`);
+        assert.ok(/id="stats-downloaded"/.test(tabHtml) && /Downloaded/.test(tabHtml),
+            `ROWS: ${tree} — the page needs a Downloaded tile next to the row counts`);
         assert.ok(/Rows in List/.test(tabHtml),
             `ROWS: ${tree} — the window count must not be labelled "To Download"`);
         assert.ok(/Completed in List/.test(tabHtml),

@@ -2536,6 +2536,13 @@ function requeueNextCandidateForFilter(task) {
 //   HTTP 403                                       -> SERVER_FORBIDDEN
 //   HTTP 401/407                                   -> SERVER_UNAUTHORIZED
 //   every other 4xx/5xx                            -> SERVER_FAILED
+// 2026-09-13: the SAME mapping was then read out of Firefox's own source
+// (toolkit/components/extensions/parent/ext-downloads.js, allowHttpStatus) — it
+// is identical, so this text is right for both engines. The consequence matters
+// for the live 2026-09-13 Firefox log: 284 rows said "HTTP 5xx" while
+// SERVER_FORBIDDEN never appeared in it at all, i.e. those downloads were
+// truncated by a status that is NOT 403/404 — a 429 (rate limit) lands in this
+// bucket exactly like a 5xx does. Claiming "5xx" invented a code we never saw.
 // The raw enum stays in the attempt chain of the Save Log, so nothing is lost —
 // only the human-readable line changes.
 function mapDownloadInterruptReason(reason) {
@@ -2544,7 +2551,7 @@ function mapDownloadInterruptReason(reason) {
     if (s === 'SERVER_BAD_CONTENT') return 'Server says there is no such file (HTTP 404 — dead link)';
     if (s === 'SERVER_FORBIDDEN') return 'Server refused access to the URL (HTTP 403 — hotlink/login block)';
     if (s === 'SERVER_UNAUTHORIZED') return 'Authorization required (HTTP 401)';
-    if (s === 'SERVER_FAILED') return 'Server error (HTTP 5xx)';
+    if (s === 'SERVER_FAILED') return 'Server refused the download (HTTP error other than 403/404 — often 429 rate limiting, or a 5xx)';
     if (s === 'USER_CANCELED') return 'Canceled by user';
     if (s === 'SERVER_CERT_PROBLEM' || s === 'NETWORK_FAILED' || s === 'NETWORK_TIMEOUT'
         || s === 'NETWORK_DISCONNECTED' || s === 'NETWORK_SERVER_DOWN'
