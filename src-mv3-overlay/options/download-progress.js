@@ -684,19 +684,32 @@
     function mdWorkerStartLines(worker) {
         const starts = (worker && Array.isArray(worker.starts)) ? worker.starts : null;
         if (!starts || starts.length === 0) return [];
+        const ends = (worker && Array.isArray(worker.ends)) ? worker.ends : [];
         const lines = ['', 'Worker generations this browser session: ' + starts.length];
+        let sawEnd = false;
         for (let i = 0; i < starts.length; i++) {
             const next = starts[i + 1];
-            // The LAST generation is the one answering this Save Log, so its
-            // "lived" is the distance to now, not to a successor.
+            // The LAST generation is the one answering this Save Log, so it has no
+            // successor and no end yet.
+            const why = ends[i] ? ', ended: ' + ends[i] : '';
+            if (ends[i]) sawEnd = true;
             lines.push('  gen ' + (i + 1) + ': ' + fmtTs(starts[i])
-                + (next ? ' (lived ' + Math.round((next - starts[i]) / 1000) + 's)'
+                + (next ? ' (lived ' + Math.round((next - starts[i]) / 1000) + 's' + why + ')'
                     : ' (this worker, still live)'));
         }
-        lines.push('  Read it as: a generation that lived ~30s was terminated by the idle timer before');
-        lines.push('  the 25s keep-alive fired; minutes mean a per-operation limit or a crash; a burst');
-        lines.push('  of starts means the extension was reloaded. This is the only place the reason for');
-        lines.push('  a restart survives — the worker console line does not reach a saved file.');
+        // 2026-09-14: `lived` is a start-to-start distance, so it is an UPPER BOUND
+        // on a lifetime (a dead worker waits for the next event to be woken) — the
+        // first version of this block said "~30s means the idle timer won", which
+        // was a guess: the 22:40 log showed 3s/4s/6s gaps that no idle timer can
+        // produce. `ended:` is the fact; `lived` is only context.
+        lines.push('  "lived" = distance to the NEXT start, i.e. an upper bound on the lifetime (a dead');
+        lines.push('  worker waits for the next event). The FACT is `ended:` — suspend = Chrome asked it');
+        lines.push('  to stop and it answered (idle/timeout); error: … = it threw; abrupt = it left no');
+        lines.push('  word (hard kill, or a crash whose write never completed).');
+        if (!sawEnd) {
+            lines.push('  No end reason recorded for any generation: this build predates GEN-2, or every');
+            lines.push('  generation so far is still the current one.');
+        }
         return lines;
     }
 

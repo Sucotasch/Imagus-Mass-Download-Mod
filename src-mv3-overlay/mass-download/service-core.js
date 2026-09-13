@@ -544,6 +544,13 @@ function handleStopScanning() {
 // sessionStartTime did not open that session itself, so its queues are gone.
 var workerStartMs = Date.now();
 var workerStarts = [];
+// Why each generation ENDED, parallel to workerStarts (workerStartEnds[i] answers
+// for workerStarts[i]). `starts` alone could not do it: the distance between two
+// starts is an UPPER BOUND on a lifetime, because a dead worker stays dead until
+// an event wakes it — live 2026-09-13 22:40 the log showed 9 generations in 8
+// minutes (3s, 4s, 6s, 14s between starts) and no way to tell an idle kill from a
+// crash from a hard kill. A generation now leaves a record as it dies.
+var workerStartEnds = [];
 
 // The log prefix cannot assume `manifest`: in the Firefox event page this file
 // is evaluated BEFORE background/service.js, which is where `var manifest` lives
@@ -555,43 +562,122 @@ function mdWorkerLabel() {
     catch (e) { return 'Imagus'; }
 }
 
+// --- Why a generation died (GEN-2, 2026-09-14) ------------------------------
+// A terminating generation writes one small record here (storage.session, so it
+// survives the worker and is wiped with it only when the whole browser session
+// ends). The NEXT generation reads it and attributes the reason to the previous
+// start. Only two things can be observed, and both are useful:
+//   'suspend'     — Chrome asked the worker to stop (`onSuspend` fired) and it
+//                   managed to answer: the idle timer / a normal termination.
+//                   If a short-lived generation reports this, the idle timer is
+//                   winning DESPITE the keep-alive.
+//   'error: …'    — the worker threw (`error` / `unhandledrejection`). A worker
+//                   that throws while evaluating registers no listeners at all,
+//                   which is exactly the shape of a restart loop.
+// Anything else — no record, or one older than the previous start — is reported
+// as 'abrupt': it died without a word (hard kill, or a crash whose write never
+// completed). Saying "abrupt" is honest; inventing a cause is not.
+const MD_GEN_END_KEY = 'mdGenerationEnd';
+
+function mdErrorText(e) {
+    if (!e) return 'unknown';
+    if (typeof e === 'string') return e;
+    try {
+        if (e.message) return String(e.message);
+    } catch (err) { /* hostile getter */ }
+    try { return String(e); } catch (err) { return 'unknown'; }
+}
+
+function mdWriteGenerationEnd(reason) {
+    try {
+        const rec = {
+            at: Date.now(),
+            gen: workerStarts.length || 0,
+            reason: String(reason || 'abrupt').slice(0, 120)
+        };
+        mdSwallow(chrome.storage.session.set({ [MD_GEN_END_KEY]: rec }));
+    } catch (e) { /* diagnostics only — never fatal */ }
+}
+
+function mdClearGenerationEnd() {
+    try { mdSwallow(chrome.storage.session.remove(MD_GEN_END_KEY)); } catch (e) { /* never fatal */ }
+}
+
+// Pure (no chrome, no timers) so the harnesses can EXECUTE the attribution rule
+// instead of matching it as text. `prevStart` is the start time of the generation
+// whose end we are labelling; `rec` is whatever the dead generation managed to
+// write (or null). A record older than prevStart belongs to an EARLIER generation
+// and must not be attributed to this one — that staleness check is the whole
+// difference between a real answer and a made-up one.
+function mdGenEndLabel(prevStart, rec) {
+    if (!prevStart) return null;                       // first start of the browser session
+    if (!rec || typeof rec !== 'object') return 'abrupt';
+    const at = Number(rec.at);
+    if (!at || !(at >= prevStart)) return 'abrupt';    // stale or missing = no word from it
+    const r = String(rec.reason || '');
+    if (r.indexOf('error') === 0) return r.slice(0, 80);
+    if (r === 'suspend') return 'suspend';
+    return 'abrupt';
+}
+
 function mdRecordWorkerStart() {
     try {
-        chrome.storage.session.get('mdWorkerStarts').then(function (r) {
+        chrome.storage.session.get(['mdWorkerStarts', 'mdGenerationEnds', MD_GEN_END_KEY]).then(function (r) {
             const prev = r && Array.isArray(r.mdWorkerStarts) ? r.mdWorkerStarts : [];
+            const prevEnds = r && Array.isArray(r.mdGenerationEnds) ? r.mdGenerationEnds : [];
             const prevStart = prev.length ? prev[prev.length - 1] : 0;
+            // What the previous generation left behind as it died (if anything).
+            const prevReason = mdGenEndLabel(prevStart, r && r[MD_GEN_END_KEY] ? r[MD_GEN_END_KEY] : null);
             workerStarts = prev.concat([workerStartMs]).slice(-24);
+            // Parallel array: prevReason answers for the previous generation, the
+            // new generation's own end is unknown until it ends.
+            workerStartEnds = prevEnds.concat([prevReason, null]).slice(-24);
             const gen = workerStarts.length;
-            // How long the previous instance lived is the whole diagnosis: ~30 s
-            // after its last event means the idle timer won (the keep-alive
-            // failed), minutes mean Chrome's per-operation limit or a crash, and
-            // a start right after an extension reload / browser start shows up
-            // in the onInstalled/onStartup lines next to this one.
+            // The distance to the next start is the lifetime ONLY while events keep
+            // arriving; a dead worker waits for the next event, so this is an upper
+            // bound. `ended:` is what tells the causes apart.
             const lived = prevStart ? ' (lived ' + Math.round((workerStartMs - prevStart) / 1000) + 's)' : '';
             // Persist FIRST, log afterwards: a failure in the log line must never
             // skip the write (the marker is the actual diagnostic payload).
-            return chrome.storage.session.set({ mdWorkerStarts: workerStarts }).then(function () {
+            return chrome.storage.session.set({ mdWorkerStarts: workerStarts, mdGenerationEnds: workerStartEnds }).then(function () {
                 console.info(mdWorkerLabel() + ': mass-download worker gen ' + gen
                     + ' started ' + new Date(workerStartMs).toISOString()
                     + (prevStart ? ' — previous gen ' + prev.length + ' ended' + lived
-                        + ', in-memory queues lost' : ' (first start of this browser session)'));
+                        + ', ended by: ' + (prevReason || '?') + ', in-memory queues lost'
+                        : ' (first start of this browser session)'));
             });
         }).catch(function () { /* diagnostics only — never fatal */ });
     } catch (e) { /* storage.session unavailable: keep the in-memory marker */ }
 }
 mdRecordWorkerStart();
 
+// A crashed generation is otherwise invisible: it registers no listeners, so no
+// message can be answered and nothing reaches the log. Best-effort — the storage
+// write may itself be cut off if the worker is torn down instantly, and then the
+// next generation reports 'abrupt', which is the truth.
+if (typeof self !== 'undefined' && self && self.addEventListener) {
+    self.addEventListener('error', function (e) {
+        mdWriteGenerationEnd('error: ' + mdErrorText(e && (e.message || e.error)));
+    });
+    self.addEventListener('unhandledrejection', function (e) {
+        mdWriteGenerationEnd('error: ' + mdErrorText(e && e.reason));
+    });
+}
+
 // Shipped with getDownloadStatus / getDownloadLog (see the header note above).
 // `starts` is the whole start history of the browser session (times only, capped
 // at 24 by mdRecordWorkerStart): the console line already diagnoses the PREVIOUS
 // generation's lifetime, but a Saved Log is the artifact we actually read — and
 // without these numbers "the worker restarted" is unattributable (idle timer vs
-// per-operation limit vs a crash).
+// per-operation limit vs a crash). `ends` is the parallel list of end reasons
+// (GEN-2): only the pair answers WHY, since a start-to-start distance is an upper
+// bound on a lifetime.
 function workerMarker() {
     return {
         start: workerStartMs,
         gen: workerStarts.length || null,
         starts: workerStarts.slice(),
+        ends: workerStartEnds.slice(),
         recovered: mdRecoveredInfo
     };
 }
@@ -1262,12 +1348,18 @@ setTimeout(mdRestoreSession, 400);
 // runs.
 if (chrome.runtime.onSuspend) {
     chrome.runtime.onSuspend.addListener(function () {
+        // GEN-2: this is the one chance to say WHY this generation is ending, and
+        // the moment to say it — a saved log cannot read a worker console.
+        mdWriteGenerationEnd('suspend');
         mdFlushSession();
         console.info(mdWorkerLabel() + ': worker suspending now (lived '
             + Math.round((Date.now() - workerStartMs) / 1000) + 's) — session snapshot written for recovery');
     });
     if (chrome.runtime.onSuspendCanceled) {
         chrome.runtime.onSuspendCanceled.addListener(function () {
+            // Suspension was called off: the record would describe an end that did
+            // not happen, and the next generation would blame the wrong cause.
+            mdClearGenerationEnd();
             console.info(mdWorkerLabel() + ': suspension canceled — worker stays alive');
         });
     }

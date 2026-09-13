@@ -656,8 +656,8 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             assert.ok(/var workerStartMs = Date\.now\(\);/.test(coreText),
                 `session loss: ${label} must stamp this worker's start time`);
             assert.ok(/function mdRecordWorkerStart\(/.test(coreText)
-                && /chrome\.storage\.session\.set\(\{ mdWorkerStarts: workerStarts \}\)/.test(coreText),
-                `session loss: ${label} must persist the worker start history in storage.session`);
+                && /chrome\.storage\.session\.set\(\{ mdWorkerStarts: workerStarts, mdGenerationEnds: workerStartEnds \}\)/.test(coreText),
+                `session loss: ${label} must persist the worker start history (and the end reasons, GEN-2) in storage.session`);
             assert.ok(/^mdRecordWorkerStart\(\);$/m.test(coreText),
                 `session loss: ${label} must record the start at evaluation time`);
             // Evaluation order: FF runs this file BEFORE background/service.js,
@@ -669,7 +669,7 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             assert.ok(/function mdWorkerLabel\(/.test(coreText)
                 && /typeof manifest !== 'undefined'/.test(coreText),
                 `session loss: ${label} must guard the manifest lookup`);
-            assert.ok(coreText.indexOf("chrome.storage.session.set({ mdWorkerStarts: workerStarts })") <
+            assert.ok(coreText.indexOf("mdGenerationEnds: workerStartEnds })") <
                 coreText.indexOf("console.info(mdWorkerLabel() + ': mass-download worker gen '"),
                 `session loss: ${label} must persist before it logs (log failure cannot skip the write)`);
             // The start line must carry how long the PREVIOUS instance lived —
@@ -880,8 +880,16 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
                 `FIX-7: ${label} must refuse its own/newer snapshot (no self-restore, no double restore)`);
             assert.ok(/chrome\.runtime\.onSuspend\.addListener/.test(coreText),
                 `FIX-7: ${label} must log a proactive suspension (the only non-guess diagnosis of an idle kill)`);
-            assert.ok(/mdFlushSession\(\);[\s\S]{0,200}onSuspend|onSuspend[\s\S]{0,200}mdFlushSession\(\)/.test(coreText),
+            // GEN-2 (2026-09-14) inserted one statement ahead of the flush (the end
+            // reason, which must be written before the async flush or a torn-down
+            // worker loses it). The invariant is not "flush is first" but "the flush
+            // still runs inside the suspension callback, with no await in front".
+            const suspendAt = coreText.indexOf('chrome.runtime.onSuspend.addListener');
+            const flushAt = coreText.indexOf('mdFlushSession();', suspendAt);
+            assert.ok(suspendAt >= 0 && flushAt > suspendAt,
                 `FIX-7: ${label} must flush the snapshot while the suspension callback still runs`);
+            assert.ok(!/await/.test(coreText.slice(suspendAt, flushAt)),
+                `FIX-7: ${label} must not await before the flush (the worker is being torn down)`);
             assert.ok(/onInstalled\.addListener\(function \(e\) \{[\s\S]{0,700}mdDropSessionSnapshot\(\);/.test(svcText),
                 `FIX-7: ${label} onInstalled must drop the snapshot (a reload discards the session)`);
             assert.ok(/recovered: mdRecoveredInfo/.test(coreText),
@@ -1677,6 +1685,118 @@ return mdPendingLogLines;`)();
         'UNFIN: the tab note builder must be a copy, not a fork (both trees)');
 
     console.log('md-unit-smoke: unfinished-work + worker-generation locks hold in both trees');
+}
+
+// ===========================================================================
+// 2026-09-14 — GEN-2: WHY a generation died. The first version of the
+// generation block printed only the distance between starts, and the live log
+// (22:40:54) delivered 9 generations in 8 minutes with 3s/4s/6s gaps — numbers
+// NO idle timer can produce (Chrome's floor is ~30 s), which proved the metric
+// was being read as a lifetime when it is only an upper bound. A generation now
+// records its own end: 'suspend' (Chrome asked, it answered), 'error: …' (it
+// threw), or nothing at all (reported as 'abrupt' — no invention).
+// The attribution rule is pure and EXECUTED here; the writers are locked into
+// the three places that can observe an end.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+
+    for (const tree of trees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+
+        assert.ok(/^const MD_GEN_END_KEY = 'mdGenerationEnd';$/m.test(core),
+            `GEN-2: ${tree} — the end record needs one owner key`);
+        assert.ok(/function mdWriteGenerationEnd\(reason\)/.test(core)
+            && /function mdClearGenerationEnd\(\)/.test(core),
+            `GEN-2: ${tree} — write and clear must both exist (a canceled suspension must not leave a false end)`);
+        assert.ok(/function mdGenEndLabel\(prevStart, rec\)/.test(core),
+            `GEN-2: ${tree} — the attribution rule must be a pure function the harness can execute`);
+        // The three observers. Without the FIRST one there is no answer at all —
+        // the idle termination is the common case and onSuspend is its only
+        // notification. The order matters: the reason must be written before the
+        // (async) flush, or a torn-down worker loses it.
+        assert.ok(/mdWriteGenerationEnd\('suspend'\);/.test(cutFnFrom(core, 'mdRestoreSession'))
+            || /mdWriteGenerationEnd\('suspend'\);/.test(core),
+            `GEN-2: ${tree} — the suspension must record its reason`);
+        assert.ok(core.indexOf("mdWriteGenerationEnd('suspend');") < core.indexOf('mdFlushSession();',
+            core.indexOf("chrome.runtime.onSuspend.addListener")),
+            `GEN-2: ${tree} — the reason must be written BEFORE the flush (a killed worker loses async writes)`);
+        assert.ok(/mdClearGenerationEnd\(\);/.test(core),
+            `GEN-2: ${tree} — a canceled suspension must drop the record`);
+        assert.ok(/addEventListener\('error', function \(e\)/.test(core)
+            && /addEventListener\('unhandledrejection', function \(e\)/.test(core),
+            `GEN-2: ${tree} — a crashed generation must be able to say so (a throwing worker registers no listeners)`);
+        assert.ok(/mdWriteGenerationEnd\('error: ' \+ mdErrorText\(e && \(e\.message \|\| e\.error\)\)\)/.test(core)
+            && /mdWriteGenerationEnd\('error: ' \+ mdErrorText\(e && e\.reason\)\)/.test(core),
+            `GEN-2: ${tree} — both crash paths must carry the error text`);
+        // Wiring: the record is useless unless the next start reads it and the
+        // marker ships it.
+        assert.ok(/mdGenEndLabel\(prevStart, r && r\[MD_GEN_END_KEY\] \? r\[MD_GEN_END_KEY\] : null\)/.test(cutFnFrom(core, 'mdRecordWorkerStart')),
+            `GEN-2: ${tree} — the next start must attribute the previous end`);
+        assert.ok(/workerStartEnds = prevEnds\.concat\(\[prevReason, null\]\)\.slice\(-24\)/.test(cutFnFrom(core, 'mdRecordWorkerStart')),
+            `GEN-2: ${tree} — the reasons array must stay PARALLEL to the starts array (aligned, capped the same way)`);
+        assert.ok(/ends: workerStartEnds\.slice\(\),/.test(cutFnFrom(core, 'workerMarker')),
+            `GEN-2: ${tree} — the worker marker must ship the end reasons (the log is what we read)`);
+        // Renderer: the token per generation, and the CORRECTED reading note — the
+        // old one called `lived` a lifetime, which the 3 s gaps disproved.
+        assert.ok(/ended: ' \+ ends\[i\]/.test(cutFnFrom(tab, 'mdWorkerStartLines')),
+            `GEN-2: ${tree} — each dead generation must print why it ended`);
+        assert.ok(/upper bound on the lifetime/.test(cutFnFrom(tab, 'mdWorkerStartLines')),
+            `GEN-2: ${tree} — the block must say that "lived" is a start-to-start bound, not a lifetime`);
+        assert.ok(!/lived ~30s was terminated by the idle timer/.test(cutFnFrom(tab, 'mdWorkerStartLines')),
+            `GEN-2 REGRESSION: ${tree} — "~30 s = idle kill" must not come back (3 s gaps in the 22:40 log disprove it)`);
+        assert.ok(/if \(!sawEnd\)/.test(cutFnFrom(tab, 'mdWorkerStartLines')),
+            `GEN-2: ${tree} — a log with no recorded ends (older worker) must say so instead of staying silent`);
+
+        // --- EXECUTION: the attribution rule on hostile records ---------------
+        const label = new Function(`${cutFnFrom(core, 'mdGenEndLabel')}\nreturn mdGenEndLabel;`)();
+        assert.strictEqual(label(0, { at: 5, reason: 'suspend' }), null,
+            `GEN-2: ${tree} — the first start of a browser session has no predecessor to explain`);
+        assert.strictEqual(label(1000, { at: 1500, reason: 'suspend' }), 'suspend',
+            `GEN-2: ${tree} — a suspension answered by the dying worker is a fact`);
+        assert.strictEqual(label(1000, { at: 1500, reason: 'error: boom' }), 'error: boom',
+            `GEN-2: ${tree} — a crash must carry its message`);
+        assert.strictEqual(label(1000, { at: 1500, reason: 'error: ' + 'x'.repeat(300) }).length, 80,
+            `GEN-2: ${tree} — a page/worker error string must be clipped before it reaches the log`);
+        // The staleness check: a record from an EARLIER generation must never be
+        // attributed to this one, or the log invents a cause for an abrupt kill.
+        assert.strictEqual(label(2000, { at: 1500, reason: 'suspend' }), 'abrupt',
+            `GEN-2: ${tree} — a record PREDATING the previous start belongs to an earlier generation`);
+        assert.strictEqual(label(1000, null), 'abrupt',
+            `GEN-2: ${tree} — a generation that left no word is 'abrupt', never a guess`);
+        assert.strictEqual(label(1000, { at: 1500, reason: 'nonsense' }), 'abrupt',
+            `GEN-2: ${tree} — an unknown reason is not a claim`);
+        assert.strictEqual(label(1000, 'garbage'), 'abrupt');
+        assert.strictEqual(label(1000, { reason: 'suspend' }), 'abrupt',
+            `GEN-2: ${tree} — a record without a timestamp cannot be placed in time`);
+
+        // --- EXECUTION: the live 22:40 list (9 generations, 3s..257s) ---------
+        const render = new Function(`${cutFnBalanced(tab, 'fmtTs')}
+${cutFnBalanced(tab, 'mdWorkerStartLines')}
+return mdWorkerStartLines;`)();
+        const T = (m, s) => Date.UTC(2026, 8, 13, 22, m, s);
+        const starts = [T(32, 49), T(37, 6), T(37, 38), T(37, 41), T(37, 46), T(38, 47), T(39, 1), T(40, 1), T(40, 6)];
+        const text = render({
+            start: T(40, 6), gen: 9, starts,
+            ends: ['suspend', 'abrupt', 'abrupt', 'abrupt', 'abrupt', 'abrupt', 'abrupt', 'suspend', null]
+        }).join('\n');
+        assert.ok(/gen 2: .*lived 32s, ended: abrupt\)/.test(text),
+            `GEN-2: ${tree} — the live list must print the token next to the number`);
+        assert.ok(/gen 8: .*ended: suspend\)/.test(text),
+            `GEN-2: ${tree} — a suspension-answered generation must read as such`);
+        assert.ok(/gen 9: .*still live/.test(text) && !/gen 9: .*ended:/.test(text),
+            `GEN-2: ${tree} — the answering generation has no end and must not be given one`);
+        const noEnds = render({ start: 1, gen: 1, starts: [1000, 2000] }).join('\n');
+        // `/ended: /` with the comma is the per-generation TOKEN; the reading note
+        // itself mentions `ended:` in prose and must not satisfy this lock.
+        assert.ok(!/, ended: /.test(noEnds) && /No end reason recorded/.test(noEnds),
+            `GEN-2: ${tree} — an old worker (no ends) must produce no invented tokens and say so`);
+    }
+
+    console.log('md-unit-smoke: generation-end (GEN-2) locks hold in both trees');
 }
 
 console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds in both trees');

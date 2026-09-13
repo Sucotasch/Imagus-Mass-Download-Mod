@@ -172,13 +172,22 @@ instrumentation is lying, not that a host is slow:
   progress in the browser's download bar, not through this list). Live 2026-09-13 21:52: the owner read a
   pause as “the downloads are over” while 68 items were still queued — a frozen queue and a clean
   finish looked identical.
-- **`Worker generations this browser session` (GEN-1, 2026-09-14)** — every worker start of the browser
-  session with its lifetime, from `workerMarker().starts` (`mdWorkerStarts` in `storage.session`, cap 24).
-  Read it as: ~30 s = the idle timer beat the 25 s keep-alive; minutes = Chrome's per-operation limit or a
-  crash; a burst = extension reload. The answering generation reads `this worker, still live` (no fake
-  lifetime). This is the only place the reason for a restart survives — the console line does not reach a
-  saved file (live 21:52: `interrupted worker 21:50:20` → `gen 8 21:50:40`, i.e. ≤20 s, shorter than BOTH
-  our timers).
+- **`Worker generations this browser session` (GEN-1/GEN-2, 2026-09-14)** — every worker start of the
+  browser session from `workerMarker().starts` (`mdWorkerStarts` in `storage.session`, cap 24), each with
+  its **`ended:` token** from the parallel `ends` array (`mdGenerationEnds`). Read the token, NOT `lived`:
+  **`lived` is the distance to the next START, i.e. an upper bound on a lifetime** — a killed worker stays
+  dead until an event wakes it (the live 22:40 log showed gaps of 3/4/6 s, which no idle timer can
+  produce; the first version of this block wrongly read `lived` as a lifetime). `ended: suspend` = Chrome
+  asked it to stop and it answered (`onSuspend` — idle/timeout; a short generation reporting this means
+  the idle timer wins DESPITE the keep-alive); `ended: error: …` = it threw (`error`/`unhandledrejection`,
+  clipped to 80 chars); `ended: abrupt` = it left no word (hard kill, or a crash whose write never
+  completed — a worker that throws while evaluating registers no listeners at all). No token for any
+  generation means an older worker, and the block says so. The answering generation reads
+  `this worker, still live` (no fake lifetime). This is the only place the reason for a restart survives —
+  the worker console line does not reach a saved file (live 21:52: `interrupted worker 21:50:20` →
+  `gen 8 21:50:40`, i.e. ≤20 s, shorter than BOTH our timers; live 22:40: 9 generations in 8 minutes).
+  Owners: `mdRecordWorkerStart`/`mdGenEndLabel`/`mdWriteGenerationEnd` (service-core.js, both trees — the
+  `onSuspend` write MUST precede the async `mdFlushSession()`), `mdWorkerStartLines` (download-progress.js).
 - **Spans may CROSS generations:** a stamp the interrupted generation made is kept (it rides the session
   snapshot), so `downloads` / `after-scan tail` can exceed `session` — correct, and now said out loud in
   the block (`DIAG-4`).
