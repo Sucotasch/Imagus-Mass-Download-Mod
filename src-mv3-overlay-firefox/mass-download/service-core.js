@@ -608,6 +608,13 @@ function mdScanPhaseReport() {
     const end = mdScanPhases.drained || Date.now();
     return {
         gen: workerStarts.length || null,
+        // True when THIS generation took a session over from a worker that died
+        // mid-run (mdRecoveredInfo is set by the recovery path only). `totalMs`
+        // then starts at the takeover, not at the session's first moment — the
+        // Recovered line in the log carries that earlier start. Reported as a
+        // fact instead of guessed from `gen > 1`, which only says that some
+        // worker restarted at some point in the browser session.
+        resumed: !!mdRecoveredInfo,
         groupsMs: mdPhaseMs('groups'),
         // The download phase has no "end" marker of its own: it ends when the
         // session drains, and until then its span is the time elapsed (a
@@ -621,6 +628,35 @@ function mdScanPhaseReport() {
         totalMs: sessionStartTime ? end - sessionStartTime : null,
         drained: !!mdScanPhases.drained
     };
+}
+
+// The phase stamps that must outlive a worker restart. `drained` is NOT here on
+// purpose: it marks a session that finished on its own, and a restored "finished"
+// stamp would freeze every span in mdScanPhaseReport at a past moment and label
+// the resumed session as drained. The whitelist also keeps mdScanPhases (assigned
+// into straight from storage) free of arbitrary keys.
+var MD_SNAPSHOT_PHASES = ['groups', 'groupsEnd', 'download', 'scanDone'];
+
+function mdSnapshotPhases() {
+    const out = Object.create(null);
+    MD_SNAPSHOT_PHASES.forEach(function (k) {
+        if (typeof mdScanPhases[k] === 'number') out[k] = mdScanPhases[k];
+    });
+    return out;
+}
+
+function mdRestorePhases(raw) {
+    if (!raw || typeof raw !== 'object') return;
+    const restored = Object.create(null);
+    let n = 0;
+    MD_SNAPSHOT_PHASES.forEach(function (k) {
+        if (typeof raw[k] === 'number') { restored[k] = raw[k]; n++; }
+    });
+    // Nothing usable in the field: keep the live stamps. Assigning an empty
+    // object would silently wipe a generation that had already stamped its own
+    // phases (a legacy/partial snapshot is not a reason to lose the span).
+    if (n === 0) return;
+    mdScanPhases = restored;
 }
 
 function mdScanDiagnosticsForLog() {
@@ -839,10 +875,14 @@ function mdBuildSnapshot() {
         hostModes: Object.assign(Object.create(null), refererHostModes),
         // The page's half of the scan diagnostics survives a restart: the walk
         // usually happens BEFORE the worker dies (2026-09-13: restart 95 s in,
-        // log saved after), and those numbers are the ones worth keeping. The
-        // worker half is recomputed by the instance that answers (see
-        // mdScanPhaseReport — it prints its own generation).
+        // log saved after), and those numbers are the ones worth keeping.
         scanDiagnostics: mdScanDiagnostics || null,
+        // The worker's half travels too. Without it the Saved Log of exactly the
+        // runs that HAD a restart printed groups=- and after-scan tail=- (live log
+        // 2026-09-13 20:33:09: gen 2 restored 309 items, yet both spans came out
+        // blank because the stamps died with gen 1). See mdSnapshotPhases —
+        // whitelisted, and `drained` is deliberately not in it.
+        scanPhases: mdSnapshotPhases(),
         rows: rows,
         processedUrls: Array.from(globalProcessedUrls).slice(-MD_SNAPSHOT_MAX_KEYS),
         processedHashes: Array.from(globalProcessedMediaHashes).slice(-MD_SNAPSHOT_MAX_KEYS),
@@ -900,6 +940,10 @@ function mdApplySnapshot(snap) {
     sessionId = Number(snap.sessionId) || sessionId;
     mdScanDiagnostics = snap.scanDiagnostics && typeof snap.scanDiagnostics === 'object'
         ? snap.scanDiagnostics : null;
+    // Phase stamps of the interrupted generation: the groups span and the
+    // after-scan tail are first-to-last measurements, so restoring the earlier
+    // start is what makes them readable in a run that spanned two workers.
+    mdRestorePhases(snap.scanPhases);
     const st = snap.stats || {};
     downloadStats = {
         found: Number(st.found) || 0,

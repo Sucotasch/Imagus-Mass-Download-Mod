@@ -4904,6 +4904,10 @@
             // a second copy of them in sync.
             d.covered = PVI.downloadAllCoveredCount || 0;
             d.unresolved = PVI.downloadAllUnresolved || 0;
+            // prefiltered was never wired: the block printed `prefiltered=0`
+            // while the stats line of the SAME log said `prefiltered=222`
+            // (2026-09-13). Read the walk's own counter like the two above.
+            d.prefiltered = PVI.downloadAllFiltered || 0;
             d.groups = PVI.ambiguousUrlGroups ? PVI.ambiguousUrlGroups.length : 0;
             d.endPhase = endPhase || 'completed';
             d.totalMs = Date.now() - d.startedAt;
@@ -5312,15 +5316,24 @@
                 if (src === false) {
                     onResolved(null);
                 } else {
-                    PVI.load(src);
-                    // The cap is the walk's worst case per element: every timeout
-                    // here is one full da.resolutionTimeout of "nothing moved".
-                    // Counted, because a run of them is exactly the "long pause
-                    // between two 20-item status updates" (2026-09-13).
+                    // The cap is armed BEFORE load. Armed after it, a resolve
+                    // delivered INSIDE PVI.load (synchronous PVI.set, or the
+                    // engine's PVI.show('R_...')) runs cleanup() while `timeout`
+                    // is still undefined — nothing is cleared, the timer is armed
+                    // afterwards and can never be cancelled, so it fires one cap
+                    // later and counts a wait that never happened. Proven by the
+                    // 2026-09-13 live log (block printed timeouts=272 next to
+                    // unresolved=255 for a 218.9 s walk — 272 x 8 s does not fit)
+                    // and locked by .unlazy/review-verify-2026-09-12/
+                    // repro-walk-timeouts.mjs. A fired cap now means exactly one
+                    // full da.resolutionTimeout of "nothing moved" — the "long
+                    // pause between two 20-item status updates".
                     timeout = setTimeout(() => {
+                        if (resolved) return; // lost the race: load already answered
                         if (PVI.downloadAllDiag) PVI.downloadAllDiag.timeouts++;
                         onResolved(null);
                     }, ((cfg.da && cfg.da.resolutionTimeout) || 8) * 1000);
+                    PVI.load(src);
                 }
             } catch (err) {
                 console.error('Error during Mass Download scan:', err);

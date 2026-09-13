@@ -375,11 +375,21 @@
             }
         }
         if (sw) {
+            // A resumed session is re-owned by the taking-over worker, so
+            // `session` (drained - sessionStartTime) is that generation's own
+            // uptime, not the whole run: the 20:33:09 log printed session=118.7s
+            // for a run that took 411 s in the tab. `sw.resumed` is the worker's
+            // own fact (it recovered a session), not a guess from the counter.
+            const restarted = sw.resumed === true;
             lines.push('  phases (worker gen ' + num(sw.gen) + '): groups=' + mdSecs(sw.groupsMs)
                 + ' downloads=' + mdSecs(sw.downloadMs)
                 + ' after-scan tail=' + mdSecs(sw.scanTailMs)
                 + ' session=' + mdSecs(sw.totalMs)
                 + (sw.drained ? '' : ' (session still running at save time)'));
+            if (restarted) {
+                lines.push('  gen > 1: this worker took over mid-session, so "session" is its own uptime — the');
+                lines.push('  Recovered line at the top carries the start of the interrupted session.');
+            }
             lines.push('  "after-scan tail" = from the page closing its scan (its panel is gone) to the last download:');
             lines.push('  it is work the user had no on-screen sign of.');
         }

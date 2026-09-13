@@ -146,7 +146,25 @@ Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `sr
 - **User scripts need Developer Mode.**
 - **Sieve rules starting with `_`** are user/local — never overwrite on auto-update.
 - **Weekly sieve auto-update** via `chrome.alarms` (upstream feature; mod may add retry/timeout hardening).
-- **Verification tools (run from repo root):** `node tools/md-unit-smoke.mjs` (dedup contract both trees + MIME/ext helpers + the 2026-09-12 batch locks D-1/D-5/D-6/D-7/D-8 + the progress-window rule (ROWS-1) + the superseded-attempt rule (SUPERSEDE-1/2, incl. a cross-tree byte check of the five chain functions) + the restart-resume rule (RESUME-1: ask/window/ack wired in both trees, cross-tree byte check of `mdAskInitiatorToResume`/`mdResumeAck`/`mdProbeInitiatorTab`/`handleResolveGroups`) + the tombstone lock for the reverted D-10 + Firefox locks: `background.scripts` order, no `importScripts` call, Referer headers + DNR/offscreen locks: cross-engine `resourceTypes` without `webbundle`, no throwing DNR install, offscreen permission only in the Chrome manifest), `node tools/md-marker-check.mjs` (byte-sync of the 5 marker sections, both trees), `node tools/md-ff-delta.mjs` (FF tree differs in exactly the 3 canonical files), `node tools/_chk_defaults.mjs` (key defaults in both trees), `node scripts/verify-syntax.mjs` (`node --check` on the Chrome runtime JS), `node scripts/verify-security.mjs` (surface/supply-chain/Firefox wiring — green since 2026-09-12; `scripts/` is a LOCAL, untracked dir, so the smoke lock for it is skipped when the file is absent). The smoke test **cuts functions out of source text** assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` can break extraction. When diffing the two trees, use `git diff --no-index --ignore-cr-at-eol` — flat diffs show ~13 phantom files from CRLF noise (N-20); do not "fix" line endings tree-wide.
+- **Verification tools (run from repo root):** `node tools/md-unit-smoke.mjs` (dedup contract both trees + MIME/ext helpers + the 2026-09-12 batch locks D-1/D-5/D-6/D-7/D-8 + the progress-window rule (ROWS-1) + the superseded-attempt rule (SUPERSEDE-1/2, incl. a cross-tree byte check of the five chain functions) + the restart-resume rule (RESUME-1: ask/window/ack wired in both trees, cross-tree byte check of `mdAskInitiatorToResume`/`mdResumeAck`/`mdProbeInitiatorTab`/`handleResolveGroups`) + the scan-diagnostics rule (DIAG-1..3: the `timeouts` cap is armed BEFORE `PVI.load` and guarded by `if (resolved) return;`, `prefiltered` reads `PVI.downloadAllFiltered`, `scanPhases` travels in the snapshot without `drained`, the restart note follows `sw.resumed`; `mdSnapshotPhases`/`mdRestorePhases` are also EXECUTED here on both trees, so the invariant survives without the ignored `.unlazy/` harnesses) + the tombstone lock for the reverted D-10 + Firefox locks: `background.scripts` order, no `importScripts` call, Referer headers + DNR/offscreen locks: cross-engine `resourceTypes` without `webbundle`, no throwing DNR install, offscreen permission only in the Chrome manifest), `node tools/md-marker-check.mjs` (byte-sync of the 5 marker sections, both trees), `node tools/md-ff-delta.mjs` (FF tree differs in exactly the 3 canonical files), `node tools/_chk_defaults.mjs` (key defaults in both trees), `node scripts/verify-syntax.mjs` (`node --check` on the Chrome runtime JS), `node scripts/verify-security.mjs` (surface/supply-chain/Firefox wiring — green since 2026-09-12; `scripts/` is a LOCAL, untracked dir, so the smoke lock for it is skipped when the file is absent). The smoke test **cuts functions out of source text** assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` can break extraction. When diffing the two trees, use `git diff --no-index --ignore-cr-at-eol` — flat diffs show ~13 phantom files from CRLF noise (N-20); do not "fix" line endings tree-wide.
+
+## Reading a Saved Log (`Scan diagnostics:` block)
+
+The block answers "where did the time go". Invariants that must hold — a violation means the
+instrumentation is lying, not that a host is slow:
+
+- **`timeouts ≤ unresolved`** — a real cap-wait calls `onResolved(null)` too, so it is always a subset
+  of `unresolved`. `timeouts` counts ONLY elements that waited the full `da.resolutionTimeout`
+  (2026-09-13: it printed `272` while `walk=218.9s` and `unresolved=255`, because the cap timer was
+  armed after `PVI.load` and a synchronous resolve inside `load` left an uncancellable timer).
+- `prefiltered` next to `candidates` must equal `elements - candidates`.
+- spans are first-to-last and may cross worker generations: `groups`/`after-scan tail` come back as `-`
+  only if the interrupted generation never stamped them (they now ride in the snapshot).
+- `session=` on a `resumed` run is the uptime of the worker that TOOK THE SESSION OVER, not the whole
+  session — the `Recovered:` line carries the earlier start.
+
+Executed gates for this block (not part of the repo): `.unlazy/review-verify-2026-09-12/` —
+`repro-scan-diagnostics.mjs`, `repro-walk-timeouts.mjs`, `repro-session-snapshot.mjs`.
 
 ## Settings (`da` in `defaults.json`)
 

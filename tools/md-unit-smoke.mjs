@@ -1386,12 +1386,85 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         assert.ok(!/Stats \(scan totals, live counters\): found=/.test(tab),
             `DIAG REGRESSION: ${tree} — the misleading found= label must not return`);
 
+        // --- 2026-09-13, second live log (20:33:09) --------------------------
+        // The block reported `unresolved=255 timeouts=272` for a 218.9 s walk:
+        // 272 x 8 s cannot fit, and a REAL cap-wait also lands in `unresolved`,
+        // so a count above the unresolved total proves phantom increments. Cause:
+        // the cap was armed AFTER PVI.load, so a resolve delivered inside load ran
+        // cleanup() while `timeout` was still undefined; the timer could never be
+        // cancelled and fired one cap later. Executed in repro-walk-timeouts.mjs.
+        assert.ok(/if \(resolved\) return; \/\/ lost the race: load already answered/.test(content),
+            `DIAG: ${tree} — a cap that lost the race (load answered) must not be counted as a wait`);
+        {
+            const walkStart = content.indexOf('processNextInQueue: function () {');
+            const armIdx = content.indexOf('timeout = setTimeout(', walkStart);
+            const loadIdx = content.indexOf('PVI.load(src);', walkStart);
+            assert.ok(walkStart > 0 && armIdx > walkStart && loadIdx > armIdx,
+                `DIAG: ${tree} — the cap must be armed BEFORE PVI.load (armed after, cleanup() cannot clear it)`);
+        }
+        // `prefiltered` was never wired: the block printed 0 while the stats line
+        // of the SAME log said 222.
+        assert.ok(/d\.prefiltered = PVI\.downloadAllFiltered \|\| 0;/.test(content),
+            `DIAG: ${tree} — the prefilter count must come from the walk's counter, not its zeroed default`);
+        // The worker half of that log printed `groups=- ... after-scan tail=-`: the
+        // phase stamps died with the interrupted generation while the page's half
+        // travelled in the snapshot.
+        assert.ok(/scanPhases: mdSnapshotPhases\(\),/.test(cutFnFrom(core, 'mdBuildSnapshot')),
+            `DIAG: ${tree} — the worker's phase stamps must travel in the session snapshot`);
+        assert.ok(/mdRestorePhases\(snap\.scanPhases\);/.test(cutFnFrom(core, 'mdApplySnapshot')),
+            `DIAG: ${tree} — and be restored by the generation that takes the session over`);
+        assert.ok(!/MD_SNAPSHOT_PHASES = \[[^\]]*'drained'/.test(core),
+            `DIAG: ${tree} — 'drained' must never be restored: a stale "finished" stamp freezes every span`);
+        assert.ok(/if \(n === 0\) return;/.test(cutFnFrom(core, 'mdRestorePhases')),
+            `DIAG: ${tree} — an empty/garbage phase field must not wipe the live stamps`);
+        assert.ok(/resumed: !!mdRecoveredInfo,/.test(cutFnFrom(core, 'mdScanPhaseReport')),
+            `DIAG: ${tree} — the restart note must be driven by the recovery fact, not by gen > 1`);
+        assert.ok(/const restarted = sw\.resumed === true;/.test(cutFnFrom(tab, 'mdScanDiagLines')),
+            `DIAG: ${tree} — the Saved Log must say when "session" is the taking-over generation's uptime`);
+
         // --- the mirror: content.js == content-block.js ----------------------
         for (const m of ['HELPERS', 'PROPERTIES', 'MESSAGES', 'METHODS']) {
             const a = content.slice(content.indexOf(`>>> MASS-DOWNLOAD-${m}`), content.indexOf(`<<< MASS-DOWNLOAD-${m}`));
             const b = block.slice(block.indexOf(`>>> MASS-DOWNLOAD-${m}`), block.indexOf(`<<< MASS-DOWNLOAD-${m}`));
             assert.strictEqual(a, b, `DIAG: ${tree} — the ${m} section must stay byte-identical in content-block.js`);
         }
+
+        // --- versioned EXECUTION: the two phase-stamp helpers ----------------
+        // The .unlazy repro harnesses are not part of the repo, so the two
+        // invariants that decide whether a restarted run's numbers are readable
+        // are executed here on the REAL functions from each tree: `drained`
+        // never travels (a restored "finished" stamp would freeze every span in
+        // mdScanPhaseReport and label the resumed session as drained), and a
+        // missing/garbage field never wipes the live stamps.
+        const phaseVar = (core.match(/^var MD_SNAPSHOT_PHASES = \[[^\]]*\];$/m) || [])[0];
+        assert.ok(!!phaseVar && !/'drained'/.test(phaseVar),
+            `DIAG: ${tree} — the snapshot whitelist must exist and must not contain 'drained'`);
+        const phaseWorld = new Function(`${phaseVar}
+var mdScanPhases = Object.create(null);
+${cutFnFrom(core, 'mdSnapshotPhases')}
+${cutFnFrom(core, 'mdRestorePhases')}
+return {
+    snap: mdSnapshotPhases,
+    restore: mdRestorePhases,
+    set: function (p) { mdScanPhases = p; },
+    get: function () { return mdScanPhases; }
+};`)();
+        phaseWorld.set({ groups: 1000, groupsEnd: 2000, download: 3000, scanDone: 4000, drained: 5000 });
+        const snapPhases = phaseWorld.snap();
+        assert.ok(snapPhases.groups === 1000 && snapPhases.groupsEnd === 2000
+            && snapPhases.download === 3000 && snapPhases.scanDone === 4000 && !('drained' in snapPhases),
+            `DIAG: ${tree} — the snapshot must carry the four stamps and never 'drained'`);
+        phaseWorld.set({ groups: 9 });
+        phaseWorld.restore(null);
+        phaseWorld.restore('nope');
+        phaseWorld.restore({ download: 'not-a-number' });
+        phaseWorld.restore({});
+        assert.strictEqual(phaseWorld.get().groups, 9,
+            `DIAG: ${tree} — a missing/empty/garbage phase field must not wipe the live stamps`);
+        phaseWorld.restore({ download: 7000, groups: 'x', evil: 1 });
+        assert.ok(phaseWorld.get().download === 7000 && phaseWorld.get().groups === undefined
+            && phaseWorld.get().evil === undefined,
+            `DIAG: ${tree} — restore takes only whitelisted numeric stamps (a snapshot is storage, not trust)`);
     }
     console.log('md-unit-smoke: scan-diagnostics locks hold in both trees');
 }
