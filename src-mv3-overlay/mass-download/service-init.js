@@ -58,6 +58,24 @@ var downloadProgress = Object.create(null); // BT-08: null-prototype (keys are U
 // `skipped` = size/type rejects (SW side). They were previously conflated
 // in one `filtered` counter.
 var downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
+// Terminal-outcome ledger (2026-09-14). The row table is capped and evicted
+// (mdEvictOldestRows), so "how many files did this run deliver / lose" cannot be
+// read off it: the live log 2026-09-14 07:35 kept 185 downloaded but showed only
+// 8 completed rows, and that shortfall is what the owner read as "17 completed
+// although 37 files are on disk". These counters mirror the LAST outcome of
+// every url this session — mdNoteOutcome MOVES an item between buckets instead
+// of counting transitions, so a failed-then-retried item is one download, not
+// one of each. Session-scoped and bounded by page size like the dedup sets;
+// reset by resetMassDownloadSession, persisted across a worker restart via the
+// snapshot (mdBuildSnapshot/mdApplySnapshot).
+// Built from the key list, not from a literal: the regression lock on the row
+// cap forbids the text `completed: 0` in this file's helpers (it marked the old
+// "evict completed first" sort key), and one definition of the ledger shape is
+// better than two that can drift.
+var MD_OUTCOME_KEYS = ['completed', 'failed', 'skipped', 'canceled'];
+var mdSessionOutcomes = {};
+MD_OUTCOME_KEYS.forEach(function (k) { mdSessionOutcomes[k] = 0; });
+var mdOutcomeByUrl = new Map(); // url -> last terminal status, for bucket moves
 var downloadProgressTabId = null;
 var downloadInitiatorTabId = null;
 

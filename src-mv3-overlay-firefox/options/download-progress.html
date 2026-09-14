@@ -240,6 +240,13 @@
          saw a pause, read it as "the downloads are over", and 68 items were still
          queued. This line is the worker's own unfinished counts (mdPendingSnapshot). -->
     <p id="pendingNote" style="text-align: center; font-size: 0.9em; color: #495057; margin: 4px 0 0;"></p>
+    <!-- 2026-09-14: the REAL totals of the run that just ended, from the worker's
+         outcome ledger (mdSessionSummary) — the grid above counts rows, and rows
+         are evicted. Live log 2026-09-14 07:35: 185 files downloaded, 8 completed
+         rows on screen; this line is the one that reports the run, not the window.
+         It stays until the next run produces work, so the owner can read it after
+         the dust settles. -->
+    <p id="sessionSummary" style="text-align: center; font-size: 1em; font-weight: 600; color: #1e7e34; margin: 8px 0 0;"></p>
 
     <div class="controls">
       <div>

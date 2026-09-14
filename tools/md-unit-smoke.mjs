@@ -2008,3 +2008,309 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
 
     console.log('md-unit-smoke: open-request-at-death (GEN-4) locks hold in both trees');
 }
+
+// ===========================================================================
+// 2026-09-14 — SESSION STATUS (the after-scan tail).
+// The walk ends long before the WORK does: the live log 2026-09-14 07:35
+// measured 319.4 s of filtering/downloading after the page's panel had faded
+// out, and the owner could not tell "still running" from "finished", could not
+// see the two background restarts that happened inside it, and could not know
+// whether closing the tab was safe. The panel now lives through the tail, fed by
+// ONE compact poll a second (counters, never the row list) with a backoff and a
+// give-up, and a second scan asks before it cancels a running queue.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    const contentTexts = {}, tabTexts = {};
+
+    // Object-literal methods (PVI.xxx: function () {}) — brace-balanced.
+    const cutMethod = (source, name) => {
+        const start = source.indexOf(`        ${name}: function (`);
+        assert.ok(start >= 0, `method ${name} not found`);
+        let depth = 0;
+        for (let j = source.indexOf('{', start); j < source.length; j++) {
+            const ch = source[j];
+            if (ch === '{') depth++;
+            else if (ch === '}') {
+                depth--;
+                if (depth === 0) return source.slice(start, j + 1);
+            }
+        }
+        throw new Error(`unbalanced braces while extracting ${name}`);
+    };
+
+    for (const tree of trees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const init = readNorm(tree, 'mass-download/service-init.js');
+        const content = readNorm(tree, 'content/content.js');
+        const tab = readNorm(tree, 'options/download-progress.js');
+        contentTexts[tree] = content;
+        tabTexts[tree] = tab;
+
+        // --- the phase has ONE owner: the worker ------------------------------
+        const phaseSrc = cutFnFrom(core, 'mdSessionPhase');
+        for (const p of ['scan', 'tail', 'done', 'canceled', 'none']) {
+            assert.ok(phaseSrc.includes(`'${p}'`),
+                `STATUS: ${tree} — mdSessionPhase must be able to report '${p}'`);
+        }
+        assert.ok(/phase: phase/.test(cutFnFrom(core, 'handleGetDownloadStatus')),
+            `STATUS: ${tree} — the poll answer must carry the phase (the page must not re-derive it)`);
+
+        // --- the poll must never pull the row list ----------------------------
+        const gds = cutFnFrom(core, 'handleGetDownloadStatus');
+        assert.ok(/if \(!msg\.compact\) payload\.items = serializeAllProgress\(\);/.test(gds),
+            `STATUS: ${tree} — compact answers must skip serializeAllProgress: a per-second row serialization is the one cost this feature may not add`);
+        assert.ok(/if \(msg\.compact\) \{/.test(gds) && /payload\.outcomes = mdOutcomeCounts\(\);/.test(gds)
+            && /payload\.current = mdCurrentItemText\(\);/.test(gds),
+            `STATUS: ${tree} — counters and the running file ride in the compact answer`);
+        assert.ok(/payload\.summary = mdSessionSummary\(\);/.test(gds),
+            `STATUS: ${tree} — terminal phases must carry the real totals`);
+        // Comments are stripped first: the explanation next to the guard names the
+        // function on purpose, and a lock that trips on its own documentation is
+        // noise, not protection.
+        const gdsCode = gds.replace(/^\s*\/\/.*$/gm, '');
+        const GUARD = 'if (!msg.compact) payload.items = serializeAllProgress();';
+        const afterGuard = gdsCode.slice(gdsCode.indexOf(GUARD) + GUARD.length);
+        assert.ok(!/serializeAllProgress/.test(afterGuard),
+            `STATUS REGRESSION: ${tree} — no second serializeAllProgress call may sneak into the poll path`);
+
+        // --- the outcome ledger ------------------------------------------------
+        assert.ok(/function mdNoteOutcome\(url, status\)/.test(core),
+            `STATUS: ${tree} — the ledger needs its single writer`);
+        assert.ok(/mdNoteOutcome\(url, status\);/.test(cutFnFrom(core, 'updateDownloadProgress')),
+            `STATUS: ${tree} — every row transition must feed the ledger (updateDownloadProgress is the single funnel)`);
+        assert.ok(/function mdResetOutcomes\(\)/.test(core)
+            && /mdResetOutcomes\(\);/.test(cutFnFrom(core, 'resetMassDownloadSession')),
+            `STATUS: ${tree} — a new session starts a clean ledger`);
+        assert.ok(/var MD_OUTCOME_KEYS/.test(init) && /mdSessionOutcomes\[k\] = 0;/.test(init),
+            `STATUS: ${tree} — the ledger shape has ONE definition (the row-cap lock forbids the literal)`);
+        assert.ok(/outcomes: \{/.test(cutFnFrom(core, 'mdBuildSnapshot')),
+            `STATUS: ${tree} — the ledger must survive a worker restart (the rows cannot: they are capped)`);
+        const apply = cutFnFrom(core, 'mdApplySnapshot');
+        assert.ok(/mdOutcomeCount\(oc\.completed\)/.test(apply) && /mdOutcomeCount\(oc\.failed\)/.test(apply),
+            `STATUS: ${tree} — restored ledger numbers are re-validated, never trusted`);
+        assert.ok(/else mdNoteOutcome\(row\.url, status\);/.test(apply),
+            `STATUS: ${tree} — a row this restore just failed (volatile) is a NEW outcome and must be counted`);
+        assert.ok(/summary: mdSessionSummary\(\)/.test(core),
+            `STATUS: ${tree} — allDownloadsComplete must carry the totals (it was a five-second line with none)`);
+        const cur = cutFnFrom(core, 'mdCurrentItemText');
+        assert.ok(/e\.status !== 'downloading'\) continue;/.test(cur) && !/'(pending|filtering)'/.test(cur),
+            `STATUS: ${tree} — "now: X" may not name a queued or filtering item as if it were running`);
+
+        // --- content: the panel lives through the tail -------------------------
+        assert.ok((content.match(/PVI\.mdEnterTail\(finalMessage\);/g) || []).length === 2,
+            `STATUS: ${tree} — BOTH scan-end paths (direct and groups) must hand the panel to the tail`);
+        const enterTail = cutMethod(content, 'mdEnterTail');
+        assert.ok(/downloadAllAudioEl\.pause\(\)/.test(enterTail),
+            `STATUS: ${tree} — the audio keep-awake belongs to the WALK and must stop when it ends`);
+        assert.ok(/PVI\.mdPollSessionStatus\(true\);/.test(enterTail),
+            `STATUS: ${tree} — the panel must hand over to the poll instead of fading out`);
+        const poll = cutMethod(content, 'mdPollSessionStatus');
+        assert.ok(/doc\.addEventListener\('visibilitychange', PVI\.mdForceStatusTick\);/.test(poll)
+            && /mdSessionVisibilityHooked/.test(poll),
+            `STATUS: ${tree} — a throttled background tab must refresh the moment it becomes visible, and hook once`);
+        const tick = cutMethod(content, 'mdSessionTick');
+        assert.ok(/cmd: 'getDownloadStatus', compact: true/.test(tick),
+            `STATUS: ${tree} — the panel must poll the COMPACT answer`);
+        assert.ok(/MD_STATUS_BACKOFF_AFTER_MS/.test(tick) && /MD_STATUS_GIVE_UP_MS/.test(tick)
+            && /mdStopSessionPoll\(\);/.test(tick),
+            `STATUS: ${tree} — identical answers must back off and then stop (an unlimited 1 Hz poll is not allowed)`);
+        assert.ok(/Downloads continue in the background\./.test(tick),
+            `STATUS: ${tree} — giving up must say the work still runs`);
+        assert.ok(/typeof pendingRequest\.catch === 'function'/.test(tick),
+            `STATUS: ${tree} — the tick must not leave an unhandled rejection`);
+        const render = cutMethod(content, 'mdRenderSessionStatus');
+        assert.ok(/phase === 'done' \|\| phase === 'canceled'/.test(render) && /mdStopSessionPoll\(\)/.test(render),
+            `STATUS: ${tree} — terminal phases stop the poll`);
+        assert.ok(/resp\.worker\.recovered/.test(render) && /mdSessionPollGen/.test(render),
+            `STATUS: ${tree} — a background restart must be reported, including one that happened during the walk`);
+        assert.ok(/_mdTabSafeToClose\(resp\.pending\)/.test(render) && /Safe to close/.test(render)
+            && /Do not close this tab yet/.test(render),
+            `STATUS: ${tree} — the panel must answer "can I close this tab" both ways`);
+        // A worker that just spawned answers 'none' for a few hundred ms, before
+        // mdRestoreSession (400 ms timer) picks the session up. Declaring it dead
+        // there would stop the watch on a healthy run.
+        const noneBranch = render.slice(render.indexOf("phase !== 'tail' && phase !== 'scan'"),
+            render.indexOf('// A pending question owns the panel'));
+        assert.ok(noneBranch.length > 0 && /Waiting for the background worker/.test(noneBranch)
+            && !/mdStopSessionPoll/.test(noneBranch),
+            `STATUS: ${tree} — a 'none' answer must WAIT for the restore, never declare the session dead`);
+        assert.ok(/if \(PVI\.mdSessionConfirmShown\) return;/.test(render),
+            `STATUS: ${tree} — a displayed question must own the panel (a poll tick would wipe its button)`);
+
+        // --- content: a second scan asks first ---------------------------------
+        const startAll = cutMethod(content, 'mdStartDownloadAll');
+        assert.ok(/cmd: 'getDownloadStatus', compact: true/.test(startAll)
+            && /phase !== 'tail' && phase !== 'scan'/.test(startAll),
+            `STATUS: ${tree} — starting a scan must ask the worker what is still running`);
+        assert.ok(/Start over \(cancel the rest\)/.test(startAll) && /Files already downloaded are kept\./.test(startAll),
+            `STATUS: ${tree} — the confirmation must say what is cancelled and what is kept`);
+        assert.ok(/PVI\.mdStartDownloadAll\(doc\);/.test(content),
+            `STATUS: ${tree} — the hotkey must use the gated start`);
+        assert.ok(/PVI\.mdStartDownloadAll\(doc, sendResponse, d\.sender\);/.test(content),
+            `STATUS: ${tree} — and so must the popup path`);
+        assert.ok(!/PVI\.downloadAll\(doc\);\n\s+pv = true;/.test(content),
+            `STATUS REGRESSION: ${tree} — the hotkey must not bypass the confirmation`);
+        assert.ok(/PVI\.mdStopSessionPoll\(\);\n\s+PVI\.mdSessionPollNote = '';/.test(content),
+            `STATUS: ${tree} — a new scan owns the panel again (two writers on one element)`);
+
+        // --- the tab: the run's real totals ------------------------------------
+        assert.ok(/getElementById\('sessionSummary'\)/.test(tab) && /mdSessionSummaryText\(summary\)/.test(tab),
+            `STATUS: ${tree} — the tab must print the run's totals, not only the capped grid`);
+        assert.ok(/if \(request\.summary\) updateSessionSummary\(request\.summary\);/.test(tab),
+            `STATUS: ${tree} — allDownloadsComplete must render the summary`);
+        assert.ok(/if \(response\.summary\) updateSessionSummary\(response\.summary\);/.test(tab),
+            `STATUS: ${tree} — so must a refresh after the run (the totals outlive the tab)`);
+        assert.ok(/clearSessionSummary\(\);/.test(tab),
+            `STATUS: ${tree} — and the next run clears it (stale totals beside new counters read as corruption)`);
+
+        // --- EXECUTION: the phase ----------------------------------------------
+        const phaseFn = new Function(`${phaseSrc}\nreturn function (state) {
+            userCanceled = !!state.canceled;
+            contentScanDone = !!state.contentScanDone;
+            scanInProgress = !!state.scanInProgress;
+            filterQueue = []; downloadQueue = [];
+            activeFilters = state.activeFilters || 0;
+            activeDownloads = state.activeDownloads || 0;
+            activeRefererRetries = state.retries || 0;
+            for (let i = 0; i < (state.queued || 0); i++) downloadQueue.push({});
+            return mdSessionPhase();
+        };`)();
+        assert.strictEqual(phaseFn({ canceled: true, scanInProgress: true }), 'canceled',
+            `STATUS: ${tree} — a cancel wins over every other phase`);
+        assert.strictEqual(phaseFn({ scanInProgress: true }), 'scan',
+            `STATUS: ${tree} — a walk in progress is 'scan'`);
+        assert.strictEqual(phaseFn({ contentScanDone: true, activeDownloads: 2 }), 'tail',
+            `STATUS: ${tree} — the walk is over, a download is running: 'tail'`);
+        assert.strictEqual(phaseFn({ contentScanDone: true, queued: 5 }), 'tail',
+            `STATUS: ${tree} — a non-empty queue is 'tail'`);
+        assert.strictEqual(phaseFn({ contentScanDone: true, retries: 1 }), 'tail',
+            `STATUS: ${tree} — a referer retry is 'tail' (the page is still needed)`);
+        assert.strictEqual(phaseFn({ contentScanDone: true }), 'done',
+            `STATUS: ${tree} — the walk is over and nothing is left: 'done'`);
+        assert.strictEqual(phaseFn({}), 'none',
+            `STATUS: ${tree} — no session at all is 'none'`);
+
+        // --- EXECUTION: the ledger moves, it does not count ---------------------
+        const termSrc = (core.match(/var MD_TERMINAL_STATUSES = \{[^}]*\};/) || [''])[0];
+        assert.ok(termSrc, `STATUS: ${tree} — the terminal status set must exist`);
+        const ledger = new Function(`
+            ${termSrc}
+            var mdOutcomeByUrl = new Map();
+            var mdSessionOutcomes = {};
+            ['completed', 'failed', 'skipped', 'canceled'].forEach(function (k) { mdSessionOutcomes[k] = 0; });
+            ${cutFnFrom(core, 'mdNoteOutcome')}
+            return { note: mdNoteOutcome, outcomes: mdSessionOutcomes, byUrl: mdOutcomeByUrl };`)();
+        ledger.note('u1', 'completed');
+        assert.strictEqual(ledger.outcomes.completed, 1,
+            `STATUS: ${tree} — a completion is one outcome`);
+        ledger.note('u1', 'completed');
+        assert.strictEqual(ledger.outcomes.completed, 1,
+            `STATUS: ${tree} — the same terminal write twice must not count twice`);
+        ledger.note('u1', 'failed');
+        assert.strictEqual(ledger.outcomes.failed, 1, `STATE: ${tree} — a retry failure moves the item`);
+        assert.strictEqual(ledger.outcomes.completed, 0, `STATUS: ${tree} — and leaves the old bucket empty`);
+        ledger.note('u1', 'downloading');
+        assert.strictEqual(ledger.outcomes.failed, 0,
+            `STATUS: ${tree} — a retry re-opens the item: no outcome yet`);
+        ledger.note('u1', 'completed');
+        assert.strictEqual(ledger.outcomes.completed, 1, `STATUS: ${tree} — the recovered download counts once`);
+        assert.strictEqual(ledger.outcomes.failed, 0, `STATUS: ${tree} — and its old failure is gone`);
+        ledger.note('', 'completed');
+        assert.strictEqual(ledger.outcomes.completed, 1, `STATUS: ${tree} — an empty url is not an outcome`);
+        ledger.note('u2', 'pending');
+        assert.strictEqual(ledger.outcomes.completed, 1,
+            `STATUS: ${tree} — a plain queue write changes nothing`);
+    }
+
+    // --- EXECUTION: the panel's text builders ----------------------------------
+    const contentOf = (tree) => contentTexts[tree];
+    const helperFactory = (tree) => {
+        const c = contentOf(tree);
+        return new Function(`
+            ${cutVarFn(c, '_mdCount')}
+            ${cutVarFn(c, '_mdTailCounters')}
+            ${cutVarFn(c, '_mdTabSafeToClose')}
+            ${cutVarFn(c, '_mdDurationText')}
+            ${cutVarFn(c, '_mdSummaryText')}
+            ${cutVarFn(c, '_mdStatusKey')}
+            ${cutVarFn(c, '_mdRestartNoteText')}
+            return { _mdCount, _mdTailCounters, _mdTabSafeToClose, _mdSummaryText, _mdStatusKey, _mdRestartNoteText };`)();
+    };
+    for (const tree of trees) {
+        const h = helperFactory(tree);
+        // Counters only: no denominator, no ETA — the owner's rule.
+        assert.strictEqual(
+            h._mdTailCounters({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 }),
+            'Downloaded 34 · 2 failed · 3 active · 12 queued',
+            `STATUS: ${tree} — the tail line is counters, nothing else`);
+        assert.ok(!/of \d|ETA|remaining|~/.test(h._mdTailCounters({ completed: 1 }, { queued: 1 })),
+            `STATUS: ${tree} — no estimate may appear in the tail line`);
+        assert.strictEqual(h._mdTailCounters(null, null), '',
+            `STATUS: ${tree} — an empty answer renders an empty line, not "undefined"`);
+        // The close-the-tab verdict is a consequence of the worker's own numbers.
+        assert.strictEqual(h._mdTabSafeToClose({ queued: 0, filtering: 0, downloading: 0, retries: 0 }), true,
+            `STATUS: ${tree} — a drained queue is safe`);
+        assert.strictEqual(h._mdTabSafeToClose({ queued: 0, filtering: 0, downloading: 1, retries: 0 }), false,
+            `STATUS: ${tree} — a running download that may still 403 through this page is NOT safe`);
+        assert.strictEqual(h._mdTabSafeToClose({ queued: 0, filtering: 0, downloading: 0, retries: 1 }), false,
+            `STATUS: ${tree} — an active referer retry is NOT safe`);
+        assert.strictEqual(h._mdTabSafeToClose(null), false,
+            `STATUS: ${tree} — unknown state must not be sold as safe`);
+        // The final line: real totals, wall-clock duration.
+        assert.strictEqual(h._mdSummaryText({ completed: 185, failed: 11, skipped: 81, elapsedSec: 222 }),
+            'Downloaded 185 · 11 failed · 81 skipped · 3m 42s',
+            `STATUS: ${tree} — the summary must render the ledger and the duration`);
+        assert.strictEqual(h._mdSummaryText(null), '',
+            `STATUS: ${tree} — an older worker ships no summary: print nothing`);
+        // Backoff identity: a live download with still counters must not look frozen.
+        const base = { filtering: 0, downloading: 1, queued: 4, retries: 0 };
+        const out = { completed: 3, failed: 0, skipped: 0, canceled: 0 };
+        assert.strictEqual(
+            h._mdStatusKey('tail', out, Object.assign({ idleSec: 2 }, base)),
+            h._mdStatusKey('tail', out, Object.assign({ idleSec: 1 }, base)),
+            `STATUS: ${tree} — progress inside the last seconds keeps one identity`);
+        assert.notStrictEqual(
+            h._mdStatusKey('tail', out, Object.assign({ idleSec: 2 }, base)),
+            h._mdStatusKey('tail', out, Object.assign({ idleSec: 90 }, base)),
+            `STATUS: ${tree} — a frozen worker must look different from a busy one`);
+        assert.notStrictEqual(h._mdStatusKey('tail', out, base), h._mdStatusKey('done', out, base),
+            `STATUS: ${tree} — the phase is part of the identity`);
+        assert.ok(/169/.test(h._mdRestartNoteText({ requeued: 169 }))
+            && /nothing lost/.test(h._mdRestartNoteText({ requeued: 169 }))
+            && /nothing lost/.test(h._mdRestartNoteText(null)),
+            `STATUS: ${tree} — the restart line must carry the re-queued count when there is one`);
+    }
+
+    // --- EXECUTION: the tab's totals line --------------------------------------
+    for (const tree of trees) {
+        const tabText = tabTexts[tree];
+        const summaryText = new Function(
+            `${cutFnBalanced(tabText, 'mdSessionSummaryText')}\nreturn mdSessionSummaryText;`)();
+        const text = summaryText({ completed: 185, failed: 11, skipped: 81, canceled: 0, elapsedSec: 222 });
+        assert.ok(/Downloaded 185/.test(text) && /11 failed/.test(text) && /3m 42s/.test(text),
+            `STATUS: ${tree} — the tab summary must print the real totals`);
+        assert.ok(/capped/.test(text),
+            `STATUS: ${tree} — and must say WHY it differs from the grid above (the list is a window)`);
+        assert.ok(/^Stopped — /.test(summaryText({ completed: 4, failed: 0, elapsedSec: 5, userCanceled: true })),
+            `STATUS: ${tree} — a cancelled run must not be reported as finished`);
+        assert.strictEqual(summaryText(null), '', `STATUS: ${tree} — no summary, no line`);
+        assert.strictEqual(summaryText(undefined), '', `STATUS: ${tree} — and no crash on an old worker`);
+    }
+
+    // A copy, not a fork: the two trees carry byte-identical renderers.
+    for (const name of ['_mdTailCounters', '_mdSummaryText', '_mdRestartNoteText', '_mdStatusKey']) {
+        assert.strictEqual(
+            cutVarFn(contentTexts['src-mv3-overlay-firefox'], name).replace(/\r\n/g, '\n'),
+            cutVarFn(contentTexts['src-mv3-overlay'], name).replace(/\r\n/g, '\n'),
+            `STATUS: ${name} must be a copy, not a fork (both trees)`);
+    }
+    assert.strictEqual(
+        cutFnBalanced(tabTexts['src-mv3-overlay-firefox'], 'mdSessionSummaryText'),
+        cutFnBalanced(tabTexts['src-mv3-overlay'], 'mdSessionSummaryText'),
+        'STATUS: the tab summary renderer must be a copy, not a fork (both trees)');
+
+    console.log('md-unit-smoke: after-scan session status locks hold in both trees');
+}

@@ -10,6 +10,9 @@
     const listNoteEl = document.getElementById('listNote');
     // 2026-09-14: shows what is NOT done yet (worker's mdPendingSnapshot).
     const pendingNoteEl = document.getElementById('pendingNote');
+    // 2026-09-14: the run's REAL totals (the worker's outcome ledger), as opposed
+    // to the capped row grid above. See mdSessionSummaryText.
+    const sessionSummaryEl = document.getElementById('sessionSummary');
     const statsFoundEl = document.getElementById('stats-found');
     const statsPrefilteredEl = document.getElementById('stats-prefiltered');
     const statsSkippedEl = document.getElementById('stats-skipped');
@@ -162,6 +165,9 @@
         // Unfinished work: the same numbers the pushes carry (see
         // mdPendingNoteText). Present only on a worker that has the helper.
         if (response.pending) updatePendingNote(response.pending);
+        // Terminal phases carry the run's totals, so a page opened (or refreshed)
+        // AFTER the run can still read them instead of an empty list.
+        if (response.summary) updateSessionSummary(response.summary);
         if (changed) updateDisplay();
     }
 
@@ -210,6 +216,12 @@
         // DONE, so without this line a stalled queue and a finished run render
         // identically — which is exactly how the 2026-09-13 pause was read.
         if (request.pending) updatePendingNote(request.pending);
+        // A new run has produced work: the previous run's summary is history and
+        // must not sit next to the new run's counters as if it were current.
+        if (request.pending && (request.pending.queued || request.pending.filtering
+            || request.pending.downloading || request.pending.retries)) {
+            clearSessionSummary();
+        }
         if (request.cmd === 'ping') {
             // Respond to ping for tab validation
             sendResponse({ pong: true });
@@ -234,6 +246,11 @@
                 updateGlobalStats(request.stats);
             }
         } else if (request.cmd === 'allDownloadsComplete') {
+            // The announcement now carries the run's real totals (mdSessionSummary
+            // in the worker) — the one moment where every number is known. Rendered
+            // persistently: "All downloads completed" used to be a 5-second line
+            // with no figures, so the page could not answer "how many" afterwards.
+            if (request.summary) updateSessionSummary(request.summary);
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
                 scanStatusEl.textContent = 'All downloads completed';
@@ -247,6 +264,7 @@
         } else if (request.cmd === 'resetForNewDownload') {
             // Clear UI for tab reuse
             downloadItems = {};
+            clearSessionSummary();
             updateDisplay();
             const scanStatusEl = document.getElementById('scanStatus');
             if (scanStatusEl) {
@@ -466,6 +484,44 @@
         if (!pendingNoteEl) return;
         pendingNoteEl.textContent = mdPendingNoteText(pending);
         pendingNoteEl.style.color = (pending && pending.stalled) ? '#dc3545' : '#495057';
+    }
+
+    // --- Session summary (2026-09-14) --------------------------------------
+    // The real delivery numbers of the run that just ended, from the worker's
+    // outcome LEDGER — not from the rows above. The table is capped
+    // (da.maxProgressRecords) and evicts the oldest finished rows first, so
+    // "17 completed although 37 files are on disk" was this page telling the
+    // truth about 100 rows while lying about the run (live logs 2026-09-14:
+    // 185 downloaded, 8 completed rows). The worker counts every url it touched.
+    // Pure (no DOM, no chrome) so the harness EXECUTES it.
+    function mdSessionSummaryText(summary) {
+        if (!summary || typeof summary !== 'object') return '';
+        const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+        const parts = ['Downloaded ' + n(summary.completed)];
+        if (n(summary.failed)) parts.push(n(summary.failed) + ' failed');
+        if (n(summary.skipped)) parts.push(n(summary.skipped) + ' skipped');
+        if (n(summary.canceled)) parts.push(n(summary.canceled) + ' canceled');
+        const sec = Number(summary.elapsedSec);
+        if (Number.isFinite(sec) && sec >= 0) {
+            const m = Math.floor(sec / 60);
+            parts.push(m > 0 ? m + 'm ' + Math.round(sec % 60) + 's' : Math.round(sec) + 's');
+        }
+        // Say where the numbers come from: the grid above is the window, this is
+        // the run. Without that sentence the two disagree and the page looks broken.
+        return (summary.userCanceled ? 'Stopped — ' : 'Finished — ') + parts.join(' · ')
+            + ' (the worker\'s totals for this run; the list above is capped)';
+    }
+
+    function updateSessionSummary(summary) {
+        if (!sessionSummaryEl) return;
+        const text = mdSessionSummaryText(summary);
+        if (!text) return;
+        sessionSummaryEl.textContent = text;
+        sessionSummaryEl.style.color = summary && summary.userCanceled ? '#b02a37' : '#1e7e34';
+    }
+
+    function clearSessionSummary() {
+        if (sessionSummaryEl) sessionSummaryEl.textContent = '';
     }
 
     // Calculate and display summary stats from the items table

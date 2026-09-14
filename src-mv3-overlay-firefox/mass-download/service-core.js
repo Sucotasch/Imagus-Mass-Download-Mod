@@ -48,6 +48,106 @@ function mdPendingSnapshot() {
     };
 }
 
+// Terminal row states — the only ones the outcome ledger may hold.
+var MD_TERMINAL_STATUSES = { completed: 1, failed: 1, skipped: 1, canceled: 1 };
+
+// The single place an outcome is recorded: updateDownloadProgress() calls this
+// for every row transition. Moving an item between buckets (instead of
+// incrementing per transition) is what keeps the summary honest for retried
+// items — see mdSessionOutcomes in service-init.js. A non-terminal write (a
+// retry re-opening the row) drops the item from the ledger: it has no outcome
+// yet.
+function mdNoteOutcome(url, status) {
+    if (!url) return;
+    const next = MD_TERMINAL_STATUSES[status] ? status : null;
+    const prev = mdOutcomeByUrl.get(url) || null;
+    if (prev === next) return;
+    if (prev) mdSessionOutcomes[prev]--;
+    if (next) {
+        mdOutcomeByUrl.set(url, next);
+        mdSessionOutcomes[next]++;
+    } else {
+        mdOutcomeByUrl.delete(url);
+    }
+}
+
+// Session phase as the PAGE reads it. The initiator tab's status panel polls
+// this once a second (mdPollSessionStatus in content.js) rather than deriving a
+// state machine from counters: the terminal truth lives HERE, in
+// checkAllQueuesEmpty, and a page cannot own it.
+//   none     — no session
+//   scan     — the page is still walking its DOM
+//   tail     — the scan is over and work continues with nothing on screen
+//              (measured 319.4 s in the live log 2026-09-14 07:35)
+//   done     — the scan ended and every queue drained naturally
+//   canceled — the user stopped it (never reported as complete)
+function mdSessionPhase() {
+    if (userCanceled) return 'canceled';
+    if (!contentScanDone) return scanInProgress ? 'scan' : 'none';
+    const busy = filterQueue.length + downloadQueue.length
+        + activeFilters + activeDownloads + activeRefererRetries;
+    return busy > 0 ? 'tail' : 'done';
+}
+
+// What the session actually delivered. Built from the ledger, NOT from the row
+// table (capped, evicted) and NOT from transition counters (a failed item that
+// was retried to success would be counted twice). Elapsed is wall-clock from
+// the session start; null when there is no session to measure.
+// Zero the ledger. Called on every new session start — ONE place, so the four
+// counters and the per-url map can never get out of step.
+function mdResetOutcomes() {
+    MD_OUTCOME_KEYS.forEach(function (k) { mdSessionOutcomes[k] = 0; });
+    mdOutcomeByUrl.clear();
+}
+
+// The live ledger as plain numbers (one shape, used by the compact payload and
+// the summary). A copy: callers must not hold a reference to the live object.
+function mdOutcomeCounts() {
+    return {
+        completed: mdSessionOutcomes.completed,
+        failed: mdSessionOutcomes.failed,
+        skipped: mdSessionOutcomes.skipped,
+        canceled: mdSessionOutcomes.canceled
+    };
+}
+
+// The file the session is downloading right now, for the status panel.
+// Derived from the row table (≤100 rows) — the panel must never pull the list.
+// Only a row that is really downloading counts: a queued or filtering item is
+// not "now", and claiming it would be a fact we do not have.
+function mdCurrentItemText() {
+    for (const url in downloadProgress) {
+        const e = downloadProgress[url];
+        if (!e || e.status !== 'downloading') continue;
+        const name = (e.task && e.task.filename)
+            || (typeof e.url === 'string' ? e.url.split('/').pop() : '');
+        if (name) return String(name).slice(0, 60);
+    }
+    return null;
+}
+
+function mdSessionSummary() {
+    // Fields spelled out rather than spread from mdOutcomeCounts(): the smoke
+    // harness cuts single functions out of the source and executes them, so a
+    // summary that only works with its neighbour in scope would not be testable.
+    return {
+        completed: mdSessionOutcomes.completed,
+        failed: mdSessionOutcomes.failed,
+        skipped: mdSessionOutcomes.skipped,
+        canceled: mdSessionOutcomes.canceled,
+        elapsedSec: sessionStartTime ? Math.max(0, Math.round((Date.now() - sessionStartTime) / 1000)) : null,
+        userCanceled: !!userCanceled
+    };
+}
+
+// Snapshot fields come from a store that survives a worker restart, so every
+// number is re-validated on the way in: a non-number, a negative or a NaN must
+// become 0 rather than poison the summary.
+function mdOutcomeCount(v) {
+    const n = Number(v);
+    return isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 function sendToProgressTab(msg) {
     if (!downloadProgressTabId) return;
     // Every push carries the unfinished counts with it: the item pushes alone
@@ -390,6 +490,9 @@ function resetMassDownloadSession() {
     }
     downloadProgress = preserved;
     downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
+    // A new session starts its own ledger (the preserved rows above are history
+    // and stay visible, but they are not outcomes of THIS run).
+    mdResetOutcomes();
     userCanceled = false;
     completionNotified = false;
     // Audit N-12: a tripped circuit breaker must not leak from the previous
@@ -1162,6 +1265,14 @@ function mdBuildSnapshot() {
         scanInProgress: scanInProgress,
         contentScanDone: contentScanDone,
         stats: { found: downloadStats.found, prefiltered: downloadStats.prefiltered, skipped: downloadStats.skipped, downloaded: downloadStats.downloaded },
+        // The ledger, not the rows: a session that spanned a restart must still
+        // report the work done BEFORE it — the rows (≤100) cannot.
+        outcomes: {
+            completed: mdSessionOutcomes.completed,
+            failed: mdSessionOutcomes.failed,
+            skipped: mdSessionOutcomes.skipped,
+            canceled: mdSessionOutcomes.canceled
+        },
         initiatorTab: downloadInitiatorTabId != null ? downloadInitiatorTabId : null,
         hostModes: Object.assign(Object.create(null), refererHostModes),
         // The page's half of the scan diagnostics survives a restart: the walk
@@ -1242,6 +1353,18 @@ function mdApplySnapshot(snap) {
         skipped: Number(st.skipped) || 0,
         downloaded: Number(st.downloaded) || 0
     };
+    // Outcome ledger of the interrupted generation (2026-09-14). Restored from
+    // the snapshot, not replayed from the rows: the table is capped, so a
+    // replay would under-report exactly the runs that need it most. The per-url
+    // map is NOT persisted — it is reseeded below from the restored rows.
+    const oc = snap.outcomes && typeof snap.outcomes === 'object' ? snap.outcomes : {};
+    mdSessionOutcomes = {
+        completed: mdOutcomeCount(oc.completed),
+        failed: mdOutcomeCount(oc.failed),
+        skipped: mdOutcomeCount(oc.skipped),
+        canceled: mdOutcomeCount(oc.canceled)
+    };
+    mdOutcomeByUrl.clear();
     downloadInitiatorTabId = snap.initiatorTab != null ? snap.initiatorTab : null;
     if (snap.hostModes && typeof snap.hostModes === 'object') {
         refererHostModes = Object.create(null);
@@ -1312,6 +1435,16 @@ function mdApplySnapshot(snap) {
             task: task,
             timestamp: row.timestamp || Date.now()
         };
+        // Outcome ledger: seed the per-url map so a retry of a restored row
+        // moves its bucket instead of counting the item twice. A row that was
+        // ALREADY terminal in the snapshot was counted by the interrupted
+        // generation (snap.outcomes) — only the map is seeded. A row this very
+        // restore just failed (a volatile task dropped here) was never counted,
+        // so it is counted now.
+        if (MD_TERMINAL_STATUSES[status]) {
+            if (MD_TERMINAL_STATUSES[row.status]) mdOutcomeByUrl.set(row.url, status);
+            else mdNoteOutcome(row.url, status);
+        }
         restoredRows++;
     });
 
@@ -1513,10 +1646,8 @@ function handleGetDownloadStatus(msg, sendResponse) {
     // reachable through the UI (min 10) but the `||` form silently replaced
     // any falsy value with 100.
     const maxRecords = cachedPrefs.da?.maxProgressRecords != null ? cachedPrefs.da.maxProgressRecords : 100;
-    // sessionStart + worker: the progress tab and the Save Log use them to tell
-    // an owned session from a respawned worker whose state is gone (see above).
-    sendResponse({
-        items: serializeAllProgress(),
+    const phase = mdSessionPhase();
+    const payload = {
         stats: downloadStats,
         maxRecords: maxRecords,
         sessionStart: sessionStartTime,
@@ -1525,8 +1656,28 @@ function handleGetDownloadStatus(msg, sendResponse) {
         // (see mdPendingSnapshot). A frozen queue and a finished session used to
         // render identically — live 2026-09-13 21:52 the owner read a pause as
         // "the downloads are over" while 68 items were still queued.
-        pending: mdPendingSnapshot()
-    });
+        pending: mdPendingSnapshot(),
+        // The phase the PAGE renders (mdSessionPhase): one field instead of
+        // letting the page re-derive the state machine from counters.
+        phase: phase
+    };
+    // The initiator page's status panel polls this once a second. It needs
+    // counters, not the row list: serializeAllProgress() walks every row, so an
+    // unconditioned poll would make the panel the session's largest recurring
+    // allocation (~50 KB/s instead of ~200 B/s). Compact mode is the difference.
+    if (!msg.compact) payload.items = serializeAllProgress();
+    // Compact answers additionally carry the live outcome ledger and the file
+    // being worked on right now: the panel shows counters every second, and
+    // "which item is running" is the question the owner asked in those words.
+    // Four integers and one basename — still never the row list.
+    if (msg.compact) {
+        payload.outcomes = mdOutcomeCounts();
+        payload.current = mdCurrentItemText();
+    }
+    // Terminal phases carry the summary — the panel and the progress tab render
+    // real numbers instead of guessing them from a capped list.
+    if (phase === 'done' || phase === 'canceled') payload.summary = mdSessionSummary();
+    sendResponse(payload);
 }
 
 // --- Download Slot Management ---
@@ -1882,7 +2033,11 @@ function checkAllQueuesEmpty() {
         // not claim "all downloads completed".
         if (downloadProgressTabId && contentScanDone && !userCanceled && !completionNotified) {
             completionNotified = true;
-            sendToProgressTab({ cmd: 'allDownloadsComplete' });
+            // The summary travels with the announcement: "All downloads completed"
+            // on its own was a 5-second line with no numbers, so the page could not
+            // answer "how many, and what failed" even at the one moment where it
+            // knows everything (see mdSessionSummary).
+            sendToProgressTab({ cmd: 'allDownloadsComplete', summary: mdSessionSummary() });
         }
     }
 }
@@ -1965,6 +2120,8 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
     // The single place a row changes anything: the only honest "progress
     // happened" signal there is (see mdPendingSnapshot).
     mdLastProgressAt = Date.now();
+    // Outcome ledger: one call per transition, before the row is replaced.
+    mdNoteOutcome(url, status);
     // P2: rows that die in the filter phase never reach
     // processDownloadQueue, so task.filename was never derived and the
     // progress tab / Save Log showed a raw URL basename ('index.php' for

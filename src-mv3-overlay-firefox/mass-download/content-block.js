@@ -855,6 +855,93 @@
         };
     };
     setTimeout(_mdGalleryInstall, 0);
+
+    // --- After-scan session status (2026-09-14) ----------------------------
+    // Pure text builders for the status panel's tail phase. They read counters
+    // the worker already computed (mdPendingSnapshot / the outcome ledger /
+    // mdSessionSummary) and never estimate anything: the rule is counters only,
+    // and a guessed ETA would be a fact we do not have.
+    var MD_STATUS_POLL_MS = 1000;
+    var MD_STATUS_POLL_SLOW_MS = 3000;
+    var MD_STATUS_BACKOFF_AFTER_MS = 30000;   // identical answers for 30 s -> 3 s
+    var MD_STATUS_GIVE_UP_MS = 300000;        // identical answers for 5 min -> stop
+
+    var _mdCount = function (v) {
+        var n = Number(v);
+        return isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    };
+
+    // "Downloaded 34 · 2 failed · 3 active · 12 queued" — every part is a
+    // counter the worker owns. No denominator: skipped/failed/queued cannot be
+    // turned into "N of TOTAL" without inventing the total.
+    var _mdTailCounters = function (outcomes, pending) {
+        var parts = [];
+        if (outcomes) {
+            parts.push('Downloaded ' + _mdCount(outcomes.completed));
+            if (_mdCount(outcomes.failed) > 0) parts.push(_mdCount(outcomes.failed) + ' failed');
+        }
+        if (pending) {
+            var active = _mdCount(pending.filtering) + _mdCount(pending.downloading) + _mdCount(pending.retries);
+            if (active > 0) parts.push(active + ' active');
+            if (_mdCount(pending.queued) > 0) parts.push(_mdCount(pending.queued) + ' queued');
+        }
+        return parts.join(' · ');
+    };
+
+    // "Can I close this tab?" — the ONLY part of the tail that still needs this
+    // page is the referer retry (it fetches from this page's context). So the
+    // answer is a consequence, not reassurance: with nothing queued and nothing
+    // in flight, nothing is left that could still need the page.
+    var _mdTabSafeToClose = function (pending) {
+        if (!pending) return false;
+        return _mdCount(pending.queued) === 0 && _mdCount(pending.filtering) === 0
+            && _mdCount(pending.downloading) === 0 && _mdCount(pending.retries) === 0;
+    };
+
+    // The background-restart line. Counters only, and only what the recovery
+    // data actually says (how many rows went back into the queue) — nothing is
+    // invented about WHY the generation died; that is a separate investigation
+    // (Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md).
+    var _mdRestartNoteText = function (rec) {
+        var requeued = _mdCount(rec && rec.requeued);
+        return requeued > 0
+            ? 'Background restarted — session recovered, ' + requeued + ' item(s) back in the queue, nothing lost.'
+            : 'Background restarted — session recovered, nothing lost.';
+    };
+
+    var _mdDurationText = function (sec) {
+        var s = Math.max(0, Math.round(Number(sec) || 0));
+        var m = Math.floor(s / 60);
+        return m > 0 ? m + 'm ' + (s % 60) + 's' : s + 's';
+    };
+
+    // The final line: real numbers from the outcome ledger (mdSessionSummary in
+    // service-core.js), which — unlike the capped row table — still knows about
+    // the files that scrolled off the bottom of the list (185 downloaded, 8 rows
+    // on screen in the live log 2026-09-14).
+    var _mdSummaryText = function (summary) {
+        if (!summary) return '';
+        var parts = ['Downloaded ' + _mdCount(summary.completed)];
+        if (_mdCount(summary.failed) > 0) parts.push(_mdCount(summary.failed) + ' failed');
+        if (_mdCount(summary.skipped) > 0) parts.push(_mdCount(summary.skipped) + ' skipped');
+        if (_mdCount(summary.canceled) > 0) parts.push(_mdCount(summary.canceled) + ' canceled');
+        if (summary.elapsedSec != null) parts.push(_mdDurationText(summary.elapsedSec));
+        return parts.join(' · ');
+    };
+
+    // One identity for "the answer changed". `moving` (a row changed within the
+    // last few seconds) counts as change even while every counter stands still —
+    // one large file reports progress without moving a counter, and its download
+    // must not be mistaken for a frozen session (that would slow the poll down
+    // mid-download and, after five minutes, stop watching a live run).
+    var _mdStatusKey = function (phase, outcomes, pending) {
+        var moving = pending && pending.idleSec != null && pending.idleSec <= 5 ? 1 : 0;
+        return [phase, _mdCount(outcomes && outcomes.completed), _mdCount(outcomes && outcomes.failed),
+            _mdCount(outcomes && outcomes.skipped), _mdCount(outcomes && outcomes.canceled),
+            _mdCount(pending && pending.filtering), _mdCount(pending && pending.downloading),
+            _mdCount(pending && pending.queued), _mdCount(pending && pending.retries),
+            moving].join('|');
+    };
     // <<< MASS-DOWNLOAD-HELPERS
 
 
@@ -884,6 +971,26 @@
         downloadAllStatusEl: null,
         downloadAllAudioEl: null,
         ambiguousUrlGroups: [],
+        // After-scan status panel (2026-09-14). The walk ends long before the
+        // WORK does: the worker keeps filtering and downloading for minutes with
+        // nothing on screen (319.4 s in the live log 2026-09-14 07:35), and the
+        // owner could not tell "still running" from "finished", could not see a
+        // background restart, and could not know whether closing the tab was
+        // safe. mdPollSessionStatus below keeps this panel alive through that
+        // tail; mdStartDownloadAll asks before a second scan throws the queue
+        // away (handleOpenDownloadProgress -> resetMassDownloadSession).
+        mdSessionPolling: false,
+        mdSessionPollTimer: null,
+        mdSessionPollKey: null,        // phase+counters identity of the last answer
+        mdSessionPollSameSince: 0,     // when that identity last changed (backoff)
+        mdSessionPollGen: null,        // worker generation of the last answer
+        mdSessionPollNote: '',         // restart banner, kept for the rest of the run
+        mdSessionVisibilityHooked: false,
+        mdSessionConfirmBusy: false,
+        // A displayed "start over?" question owns the panel: without this the
+        // next poll tick would overwrite the question (and its button) one
+        // second later, leaving a dialog the user cannot answer.
+        mdSessionConfirmShown: false,
         // <<< MASS-DOWNLOAD-PROPERTIES
 
 
@@ -896,7 +1003,10 @@
             } else if (key === cfg.keys.downloadAll) {
                 if (!e.isTrusted) { pv = false; return; }
                 if (e.shiftKey || e.ctrlKey) {
-                    PVI.downloadAll(doc);
+                    // Asks the worker first when a session is still running (see
+                    // mdStartDownloadAll): a second scan would cancel the queue
+                    // that is still downloading, and that must not happen silently.
+                    PVI.mdStartDownloadAll(doc);
                     pv = true;
                 } else pv = false;
             // <<< MASS-DOWNLOAD-HOTKEY
@@ -918,12 +1028,24 @@
                     // diagnostic of last resort, and "how far did it get" is the
                     // first question after a cancel.
                     PVI._sendScanDiagnostics('canceled');
-                    PVI._updateDownloadAllStatus('Scan canceled by user');
-                    setTimeout(PVI._stopKeepAwake, 3000);
+                    if (PVI.mdSessionPolling) {
+                        // Cancelled during the tail: the poll reports it with the
+                        // ledger's numbers (mdRenderSessionStatus) — do not blank
+                        // the panel under it after three seconds.
+                        PVI.mdForceStatusTick();
+                    } else {
+                        PVI._updateDownloadAllStatus('Scan canceled by user');
+                        setTimeout(PVI._stopKeepAwake, 3000);
+                    }
+                } else if (PVI.mdSessionPolling) {
+                    // The walk is over but work remains: nothing local to clean,
+                    // but the panel must reflect the cancel now.
+                    PVI.mdForceStatusTick();
                 }
             } else if (d.cmd === 'downloadAll') {
-                if (typeof sendResponse === 'function') sendResponse({ status: 'initiated' });
-                PVI.downloadAll(doc, null, d.sender);
+                // Same gate as the hotkey: the popup's button must not be able to
+                // cancel a running queue without the owner seeing what it costs.
+                PVI.mdStartDownloadAll(doc, sendResponse, d.sender);
             } else if (d.cmd === 'groupAnalysisComplete') {
                 if (PVI.handleGroupAnalysisComplete) {
                     PVI.handleGroupAnalysisComplete(d.processedCount || 0);
@@ -1038,7 +1160,7 @@
             }
             Port.send({ cmd: 'scanDiagnostics', diag: payload });
         },
-        _updateDownloadAllStatus: function (progressText) {
+        _updateDownloadAllStatus: function (progressText, opts) {
             if (!PVI.downloadAllStatusEl) {
                 PVI.downloadAllStatusEl = doc.createElement('div');
                 const style = PVI.downloadAllStatusEl.style;
@@ -1060,11 +1182,46 @@
             }
             PVI.downloadAllStatusEl.textContent = '';
             const warning = doc.createElement('strong');
-            warning.textContent = 'Do not leave this page until scanning is complete!';
+            warning.textContent = (opts && opts.warning)
+                ? String(opts.warning)
+                : 'Do not leave this page until scanning is complete!';
             const line = doc.createElement('div');
             line.style.fontSize = '14px';
             line.textContent = String(progressText == null ? '' : progressText);
             PVI.downloadAllStatusEl.append(warning, doc.createElement('br'), line);
+            // Tail-phase extras (2026-09-14). All optional, so every pre-existing
+            // call — a plain string — renders exactly as before. `note` is the
+            // background-restart banner, `hint` the plain answer to "can I close
+            // this tab", `button` the confirmation that stands between a second
+            // scan and the running queue (see mdStartDownloadAll).
+            if (opts && opts.note) {
+                const note = doc.createElement('div');
+                note.style.fontSize = '13px';
+                note.style.color = '#ffcc80';
+                note.style.marginTop = '6px';
+                note.textContent = String(opts.note);
+                PVI.downloadAllStatusEl.appendChild(note);
+            }
+            if (opts && opts.hint) {
+                const hint = doc.createElement('div');
+                hint.style.fontSize = '13px';
+                hint.style.marginTop = '4px';
+                hint.textContent = String(opts.hint);
+                PVI.downloadAllStatusEl.appendChild(hint);
+            }
+            if (opts && opts.button) {
+                const btn = doc.createElement('button');
+                btn.type = 'button';
+                btn.textContent = String(opts.button.label);
+                btn.style.cssText = 'margin-top:10px;padding:6px 12px;font-size:13px;'
+                    + 'cursor:pointer;border:1px solid #ccc;border-radius:4px;'
+                    + 'background:#fff;color:#111;';
+                btn.onclick = function () {
+                    try { opts.button.onClick(); } catch (e) { console.error('Mass Download confirm failed:', e); }
+                };
+                PVI.downloadAllStatusEl.appendChild(btn);
+            }
+            return PVI.downloadAllStatusEl;
         },
 
         _startKeepAwake: function () {
@@ -1097,6 +1254,213 @@
                     }
                 }, 5000);
             }
+        },
+
+        // --- After-scan session status (2026-09-14) ------------------------
+        // Scan finished, session did not. Stop the audio keep-awake — it existed
+        // to keep THIS PAGE unthrottled while it walked its own DOM, and the walk
+        // is over — and hand the panel to the poll. Before this the panel faded
+        // five seconds after the scan and the rest of the downloads ran with
+        // nothing on screen (319.4 s in the live log 2026-09-14 07:35).
+        mdEnterTail: function (scanDoneText) {
+            if (PVI.downloadAllAudioEl) {
+                PVI.downloadAllAudioEl.pause();
+                PVI.downloadAllAudioEl.remove();
+                PVI.downloadAllAudioEl = null;
+            }
+            PVI._updateDownloadAllStatus(scanDoneText);
+            PVI.mdPollSessionStatus(true);
+        },
+
+        // One compact request a second (handleGetDownloadStatus with compact:true
+        // — counters, never the row list), rendered into the same panel. It
+        // survives a background restart by design: the next tick wakes the
+        // replacement worker, which recovers the session from its snapshot, so
+        // the panel reports the handover instead of freezing on the last number
+        // it saw.
+        //
+        // Cost control (the rule: nothing may grow unbounded): the answer is a
+        // handful of counters; identical answers back the interval off 1 s -> 3 s
+        // after 30 s, and after 5 identical minutes the poll stops and says so.
+        // A hidden tab's own timer throttling adds a second, invisible backoff.
+        mdPollSessionStatus: function (reset) {
+            if (reset) {
+                PVI.mdSessionPollKey = null;
+                PVI.mdSessionPollSameSince = 0;
+                PVI.mdSessionPollGen = null;
+                PVI.mdSessionPollNote = '';
+            }
+            if (!PVI.mdSessionVisibilityHooked) {
+                PVI.mdSessionVisibilityHooked = true;
+                // Background tabs throttle timers (down to ~1/minute after five
+                // minutes hidden), so the panel can be a minute stale when the
+                // owner comes back. One immediate tick on becoming visible makes
+                // the first number they see the current one.
+                doc.addEventListener('visibilitychange', PVI.mdForceStatusTick);
+            }
+            if (PVI.mdSessionPolling) return;
+            PVI.mdSessionPolling = true;
+            PVI.mdSessionTick();
+        },
+
+        // Poll now instead of waiting for the scheduled tick (visibility change,
+        // or a cancel the poll should report with real numbers).
+        mdForceStatusTick: function () {
+            if (!PVI.mdSessionPolling) return;
+            if (doc.hidden) return;
+            if (PVI.mdSessionPollTimer) {
+                clearTimeout(PVI.mdSessionPollTimer);
+                PVI.mdSessionPollTimer = null;
+            }
+            PVI.mdSessionTick();
+        },
+
+        mdStopSessionPoll: function () {
+            PVI.mdSessionPolling = false;
+            if (PVI.mdSessionPollTimer) {
+                clearTimeout(PVI.mdSessionPollTimer);
+                PVI.mdSessionPollTimer = null;
+            }
+        },
+
+        mdSessionTick: function () {
+            PVI.mdSessionPollTimer = null;
+            if (!PVI.mdSessionPolling) return;
+            let intervalMs = MD_STATUS_POLL_MS;
+            const pendingRequest = Port.send({ cmd: 'getDownloadStatus', compact: true }, function (resp) {
+                if (!PVI.mdSessionPolling) return;
+                // No response (worker restarting, tab closing): the next tick is
+                // the retry — a failed tick is not an error state, and Port
+                // already reads runtime.lastError so it stays out of the console.
+                if (resp && resp.phase) {
+                    const key = _mdStatusKey(resp.phase, resp.outcomes, resp.pending);
+                    if (!PVI.mdSessionPollSameSince || key !== PVI.mdSessionPollKey) {
+                        PVI.mdSessionPollKey = key;
+                        PVI.mdSessionPollSameSince = Date.now();
+                    }
+                    const unchangedFor = Date.now() - PVI.mdSessionPollSameSince;
+                    PVI.mdRenderSessionStatus(resp);
+                    if (PVI.mdSessionPolling) {
+                        if (unchangedFor >= MD_STATUS_GIVE_UP_MS) {
+                            PVI.mdStopSessionPoll();
+                            PVI._updateDownloadAllStatus(
+                                'Nothing has changed for 5 minutes — stopped watching.',
+                                { warning: 'Downloads continue in the background.' }
+                            );
+                            return;
+                        }
+                        if (unchangedFor >= MD_STATUS_BACKOFF_AFTER_MS) intervalMs = MD_STATUS_POLL_SLOW_MS;
+                    }
+                }
+                if (PVI.mdSessionPolling) PVI.mdSessionPollTimer = setTimeout(PVI.mdSessionTick, intervalMs);
+            });
+            if (pendingRequest && typeof pendingRequest.catch === 'function') pendingRequest.catch(() => {});
+        },
+
+        mdRenderSessionStatus: function (resp) {
+            const phase = resp.phase;
+            // Terminal: real numbers, then the panel leaves exactly as it used to
+            // (green line, faded out) — but the numbers are now the ledger's.
+            if (phase === 'done' || phase === 'canceled') {
+                const text = _mdSummaryText(resp.summary);
+                // A question about a session that has just ended is moot.
+                PVI.mdSessionConfirmShown = false;
+                PVI.mdStopSessionPoll();
+                PVI._stopKeepAwake((phase === 'canceled' ? 'Stopped. ' : 'Finished. ') + text);
+                return;
+            }
+            // 'none' is also what a JUST-SPAWNED worker answers for the first few
+            // hundred milliseconds — mdRestoreSession runs on a 400 ms timer in
+            // service-core.js, so the session is picked up right after. Reading
+            // that as "the session is gone" would be a lie the poll then acted on,
+            // so it prints a waiting line and keeps watching; a session that really
+            // is gone ends through the normal backoff/give-up path instead.
+            if (phase !== 'tail' && phase !== 'scan') {
+                PVI._updateDownloadAllStatus('Waiting for the background worker…', {
+                    warning: 'Downloads are running in the background.',
+                    note: PVI.mdSessionPollNote
+                });
+                return;
+            }
+            // A pending question owns the panel (see mdStartDownloadAll).
+            if (PVI.mdSessionConfirmShown) return;
+            // A DIFFERENT generation answered: the work changed hands, it did not
+            // stop. Shown once and kept for the rest of the run — a restart is a
+            // fact the owner is entitled to see, not a transient blip.
+            const gen = resp.worker && resp.worker.gen != null ? resp.worker.gen : null;
+            const rec = resp.worker ? resp.worker.recovered : null;
+            if (PVI.mdSessionPollGen == null) {
+                // First answer: a `recovered` record here means the restart
+                // happened during the WALK, before this panel started watching —
+                // the owner is still entitled to see it.
+                if (rec) PVI.mdSessionPollNote = _mdRestartNoteText(rec);
+            } else if (gen != null && gen !== PVI.mdSessionPollGen) {
+                // A different generation answered: the work changed hands, it did
+                // not stop. Kept for the rest of the run — a restart is a fact,
+                // not a transient blip.
+                PVI.mdSessionPollNote = _mdRestartNoteText(rec);
+            }
+            if (gen != null) PVI.mdSessionPollGen = gen;
+
+            const safe = _mdTabSafeToClose(resp.pending);
+            const current = resp.current ? String(resp.current) : '';
+            const line = _mdTailCounters(resp.outcomes, resp.pending) + (current ? ' · now: ' + current : '');
+            PVI._updateDownloadAllStatus(line, {
+                warning: safe
+                    ? 'Downloads are still running — this tab can be closed.'
+                    : 'Downloads are still running — keep this tab open.',
+                hint: safe
+                    ? 'Safe to close: nothing is left that still needs this page.'
+                    : 'Do not close this tab yet: items still in the queue may download through this page.',
+                note: PVI.mdSessionPollNote
+            });
+        },
+
+        // A second scan while one is still running used to start silently:
+        // handleOpenDownloadProgress -> resetMassDownloadSession() drops every
+        // non-terminal row and aborts what is in flight, so the running queue
+        // disappeared with no word to the owner. The start now asks first and
+        // says what would be lost. Files already downloaded are never touched.
+        mdStartDownloadAll: function (downloadDoc, sendResponse, sender) {
+            const targetDoc = downloadDoc || doc;
+            // The walk itself already refuses a second run (downloadAll's own
+            // guard); this is about the TAIL, where the page is idle but the
+            // worker is not.
+            if (PVI.downloadAllActive || PVI.mdSessionConfirmBusy) {
+                if (sendResponse) sendResponse({ status: 'already running' });
+                return;
+            }
+            PVI.mdSessionConfirmBusy = true;
+            const pendingRequest = Port.send({ cmd: 'getDownloadStatus', compact: true }, function (resp) {
+                PVI.mdSessionConfirmBusy = false;
+                const phase = resp && resp.phase;
+                if (phase !== 'tail' && phase !== 'scan') {
+                    PVI.downloadAll(targetDoc, sendResponse, sender);
+                    return;
+                }
+                const pending = (resp && resp.pending) || {};
+                const busy = _mdCount(pending.queued) + _mdCount(pending.filtering)
+                    + _mdCount(pending.downloading) + _mdCount(pending.retries);
+                const done = _mdCount(resp.outcomes && resp.outcomes.completed);
+                if (sendResponse) sendResponse({ status: 'confirm' });
+                PVI.mdSessionConfirmShown = true;
+                PVI._updateDownloadAllStatus(
+                    'Session still running: ' + done + ' downloaded, ' + busy + ' item(s) left.',
+                    {
+                        warning: 'Start a new scan anyway?',
+                        hint: 'Starting over cancels those ' + busy + ' item(s). Files already downloaded are kept.',
+                        button: {
+                            label: 'Start over (cancel the rest)',
+                            onClick: function () {
+                                PVI.mdSessionConfirmShown = false;
+                                PVI.mdStopSessionPoll();
+                                PVI.mdSessionPollNote = '';
+                                PVI.downloadAll(targetDoc, null, sender);
+                            }
+                        }
+                    });
+            });
+            if (pendingRequest && typeof pendingRequest.catch === 'function') pendingRequest.catch(() => {});
         },
 
         filterQueueAsynchronously: function (elementsToFilter) {
@@ -1175,6 +1539,13 @@
                 return;
             }
             PVI.downloadAllActive = true;
+            // A new scan owns the panel from here on: whatever the previous
+            // session's tail poll was showing, it stops now (it is the scan's
+            // own status that must be on screen, and a stale poll would fight
+            // it for the same element).
+            PVI.mdStopSessionPoll();
+            PVI.mdSessionConfirmShown = false;
+            PVI.mdSessionPollNote = '';
             PVI._mdDiagInit();
 
             const allElements = Array.from(doc.querySelectorAll('a[href], img, video, [onclick], button, [role="button"]'));
@@ -1233,7 +1604,9 @@
                         PVI._sendScanDiagnostics('no-groups');
                     }
                     PVI.downloadAllActive = false;
-                    PVI._stopKeepAwake(finalMessage);
+                    // Not the end of the session — only the end of the WALK. The
+                    // panel hands over to the tail poll (mdEnterTail).
+                    PVI.mdEnterTail(finalMessage);
                     if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
                 }
                 return;
@@ -1478,7 +1851,9 @@
             Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound + (processedCount || 0)} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true, sendStats: Port.snapshot() });
 
             PVI.downloadAllActive = false;
-            PVI._stopKeepAwake(finalMessage);
+            // Groups are done, the downloads the worker started are not: the panel
+            // stays and the poll keeps it honest until the worker drains.
+            PVI.mdEnterTail(finalMessage);
             if (PVI.downloadAllSendResponse) PVI.downloadAllSendResponse({ status: 'done' });
         },
         // Stage 5: fetch a filter-rejected URL (403/404) from the page context
