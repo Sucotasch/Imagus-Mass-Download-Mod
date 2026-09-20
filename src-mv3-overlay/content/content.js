@@ -905,21 +905,40 @@
         return isFinite(n) && n > 0 ? Math.floor(n) : 0;
     };
 
+    // Colours for the tail counters (user request through the issue tracker,
+    // 2026-09-21): white = still running, green = downloaded, red = failed.
+    // White is the panel's own colour, so an unknown kind gets '' and inherits
+    // it — the map is closed on purpose rather than "any name paints something".
+    var _mdStatusColor = function (kind) {
+        if (kind === 'done') return '#a5d6a7';   // the same green as the finish line
+        if (kind === 'fail') return '#ef9a9a';   // the red partner of the #ffcc80 note
+        return '';
+    };
+
     // "Downloaded 34 · 2 failed · 3 active · 12 queued" — every part is a
     // counter the worker owns. No denominator: skipped/failed/queued cannot be
     // turned into "N of TOTAL" without inventing the total.
-    var _mdTailCounters = function (outcomes, pending) {
+    //
+    // The parts carry a `kind` for the panel to colour (see _mdStatusColor);
+    // _mdTailCounters is the plain-text view of the SAME parts, so the numbers
+    // have exactly one source and the pre-2026-09-21 callers are unaffected.
+    var _mdTailCounterParts = function (outcomes, pending) {
         var parts = [];
         if (outcomes) {
-            parts.push('Downloaded ' + _mdCount(outcomes.completed));
-            if (_mdCount(outcomes.failed) > 0) parts.push(_mdCount(outcomes.failed) + ' failed');
+            parts.push({ text: 'Downloaded ' + _mdCount(outcomes.completed), kind: 'done' });
+            if (_mdCount(outcomes.failed) > 0) parts.push({ text: _mdCount(outcomes.failed) + ' failed', kind: 'fail' });
         }
         if (pending) {
             var active = _mdCount(pending.filtering) + _mdCount(pending.downloading) + _mdCount(pending.retries);
-            if (active > 0) parts.push(active + ' active');
-            if (_mdCount(pending.queued) > 0) parts.push(_mdCount(pending.queued) + ' queued');
+            if (active > 0) parts.push({ text: active + ' active', kind: '' });
+            if (_mdCount(pending.queued) > 0) parts.push({ text: _mdCount(pending.queued) + ' queued', kind: '' });
         }
-        return parts.join(' · ');
+        return parts;
+    };
+    var _mdTailCounters = function (outcomes, pending) {
+        return _mdTailCounterParts(outcomes, pending).map(function (p) {
+            return p.text;
+        }).join(' · ');
     };
 
     // "Can I close this tab?" — the ONLY part of the tail that still needs this
@@ -5091,6 +5110,22 @@
             const line = doc.createElement('div');
             line.style.fontSize = '14px';
             line.textContent = String(progressText == null ? '' : progressText);
+            // Coloured counters (user request via the issue tracker, 2026-09-21):
+            // `lineParts` renders the SAME numbers as nodes — one span per counter,
+            // painted through _mdStatusColor. The textContent above stays as the
+            // plain-text value, so every other caller (a plain string) renders
+            // exactly as before and nothing is ever built from HTML here.
+            if (opts && Array.isArray(opts.lineParts) && opts.lineParts.length) {
+                line.textContent = '';
+                opts.lineParts.forEach(function (part, i) {
+                    if (i > 0) line.appendChild(doc.createTextNode(' · '));
+                    const span = doc.createElement('span');
+                    const color = _mdStatusColor(part && part.kind);
+                    if (color) span.style.color = color;
+                    span.textContent = String(part && part.text != null ? part.text : '');
+                    line.appendChild(span);
+                });
+            }
             PVI.downloadAllStatusEl.append(warning, doc.createElement('br'), line);
             // Tail-phase extras (2026-09-14). All optional, so every pre-existing
             // call — a plain string — renders exactly as before. `note` is the
@@ -5307,8 +5342,12 @@
 
             const safe = _mdTabSafeToClose(resp.pending);
             const current = resp.current ? String(resp.current) : '';
+            const lineParts = _mdTailCounterParts(resp.outcomes, resp.pending);
+            // The file being fetched right now is not an outcome — it stays white.
+            if (current) lineParts.push({ text: 'now: ' + current, kind: '' });
             const line = _mdTailCounters(resp.outcomes, resp.pending) + (current ? ' · now: ' + current : '');
             PVI._updateDownloadAllStatus(line, {
+                lineParts: lineParts,
                 warning: safe
                     ? 'Downloads are still running — this tab can be closed.'
                     : 'Downloads are still running — keep this tab open.',

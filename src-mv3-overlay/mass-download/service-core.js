@@ -1463,6 +1463,11 @@ function mdApplySnapshot(snap) {
     // item was first picked up — so the keys are released first, or
     // processFilterQueue would drop every one of them as a duplicate.
     requeue.forEach(function (t) {
+        // 2026-09-21: mark the work that came back from a snapshot. Only such a task
+        // may be replaced by a file Chrome already has (see mdAdoptIfAlreadyDownloaded):
+        // the restore is the same session continuing, while a fresh scan is the user
+        // asking for the page again, and refusing THAT would be a feature we rejected.
+        t._restored = true;
         globalProcessedUrls.delete(fileKey(t.url));
         const h = mediaHashKey(t.url);
         if (h) globalProcessedMediaHashes.delete(h);
@@ -2848,12 +2853,69 @@ function armStallWatchdog(task, downloadId) {
     return task._stallTimer;
 }
 
+// 2026-09-21 — the ' (1)' duplicate, measured live.
+//
+// A run left b8e371b4130c1c24212b8ddd2f274af3.png (1061104 bytes, 20:16:03) and
+// b8e371b4130c1c24212b8ddd2f274af3 (1).png (same 1061104 bytes, 20:17:10) beside it:
+// one URL, two generations, and Chrome's own uniquifier naming the second copy. The
+// dying generation HAD saved the file — but its completion was never written down
+// (the snapshot is debounced, and the worker was killed inside that window, so the
+// row came back non-terminal and was re-queued), and the dedup keys are released for
+// re-queued work on purpose (otherwise processFilterQueue would drop every one of
+// them as a duplicate). So the only witness left is Chrome's own history.
+//
+// The question asked here is about the DISK, not about our bookkeeping: is there a
+// COMPLETE download item for this exact URL, with the file still present? If yes, the
+// item is done — adopt it as the result instead of downloading a second copy.
+// Availability is still respected: a file the user deleted comes back with
+// exists === false and IS downloaded again.
+//
+// Scope: restored tasks only. A fresh scan must stay able to re-download a page the
+// user asks for again — that decision was made explicitly and is not revisited here.
+function mdAdoptIfAlreadyDownloaded(task) {
+    const finish = () => {
+        delete task._historyPending;
+        processDownloadQueue();
+    };
+    chrome.downloads.search({ url: task.url }, function (items) {
+        let found = null;
+        try {
+            found = (Array.isArray(items) ? items : []).find(function (i) {
+                return i && i.state === 'complete' && i.exists !== false && i.url === task.url;
+            }) || null;
+        } catch (e) { found = null; }
+        if (!found) { finish(); return; }
+        if (found.mime) task.contentType = found.mime;
+        if (found.fileSize) task.fileSize = found.fileSize;
+        const queued = downloadQueue.indexOf(task);
+        if (queued >= 0) downloadQueue.splice(queued, 1);
+        // updateDownloadProgress is the single funnel: it moves the row AND feeds the
+        // outcome ledger, so the run's totals count this file exactly once.
+        updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
+        downloadStats.downloaded++;
+        sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
+        if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
+        console.info(mdWorkerLabel() + ': adopted an already-finished file for a restored item (no second copy): ' + task.url);
+        finish();
+    });
+}
+
 function processDownloadQueue() {
     let maxConcurrentDownloads = Number(cachedPrefs.da?.maxConcurrentDownloads) || 3;
     if (!Number.isFinite(maxConcurrentDownloads) || maxConcurrentDownloads < 1) maxConcurrentDownloads = 3;
 
     while (activeDownloads < maxConcurrentDownloads && downloadQueue.length > 0) {
         const task = downloadQueue.shift();
+        // A restored task waits for one answer before it is allowed to create a file.
+        // It is put back exactly once, and the loop stops rather than spinning: the
+        // callback resumes this function the moment Chrome answers.
+        if (task._restored && task._historyPending) { downloadQueue.unshift(task); break; }
+        if (task._restored && !task._historyChecked) {
+            task._historyPending = true;
+            downloadQueue.push(task);
+            mdAdoptIfAlreadyDownloaded(task);
+            continue;
+        }
         // Diagnostics: the download span starts at the FIRST real download, not
         // at the first drain attempt (the queue is polled empty between phases).
         mdPhaseStamp('download');

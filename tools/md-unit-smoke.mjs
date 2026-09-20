@@ -141,6 +141,16 @@ function cutVarFn(source, name) {
     return source.slice(start, end + 8);
 }
 
+// A method of the PVI object literal (`        name: function (…) {` … `        },`),
+// for source-level locks on wiring that cannot be executed in isolation (DOM).
+function cutMethodFn(source, name) {
+    const start = source.indexOf(`        ${name}: function (`);
+    assert.ok(start >= 0, `method ${name} not found`);
+    const end = source.indexOf('\n        },', start); // closer indented by 8
+    assert.ok(end > start, `method ${name} has no closer`);
+    return source.slice(start, end);
+}
+
 const cutFnFor = (source) => (name) => {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start >= 0, `function ${name} not found`);
@@ -2231,13 +2241,15 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         const c = contentOf(tree);
         return new Function(`
             ${cutVarFn(c, '_mdCount')}
+            ${cutVarFn(c, '_mdStatusColor')}
+            ${cutVarFn(c, '_mdTailCounterParts')}
             ${cutVarFn(c, '_mdTailCounters')}
             ${cutVarFn(c, '_mdTabSafeToClose')}
             ${cutVarFn(c, '_mdDurationText')}
             ${cutVarFn(c, '_mdSummaryText')}
             ${cutVarFn(c, '_mdStatusKey')}
             ${cutVarFn(c, '_mdRestartNoteText')}
-            return { _mdCount, _mdTailCounters, _mdTabSafeToClose, _mdSummaryText, _mdStatusKey, _mdRestartNoteText };`)();
+            return { _mdCount, _mdStatusColor, _mdTailCounterParts, _mdTailCounters, _mdTabSafeToClose, _mdSummaryText, _mdStatusKey, _mdRestartNoteText };`)();
     };
     for (const tree of trees) {
         const h = helperFactory(tree);
@@ -2250,6 +2262,36 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `STATUS: ${tree} — no estimate may appear in the tail line`);
         assert.strictEqual(h._mdTailCounters(null, null), '',
             `STATUS: ${tree} — an empty answer renders an empty line, not "undefined"`);
+        // COLOURED COUNTERS (owner's request via the issue tracker, 2026-09-21):
+        // "белым сколько сейчас загружается, зеленым сколько загружено, красным —
+        // что не удалось". The kind travels WITH the number, and one closed map
+        // decides what a kind looks like — the same numbers, two views.
+        assert.deepStrictEqual(
+            h._mdTailCounterParts({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 }),
+            [
+                { text: 'Downloaded 34', kind: 'done' },
+                { text: '2 failed', kind: 'fail' },
+                { text: '3 active', kind: '' },
+                { text: '12 queued', kind: '' }
+            ],
+            `STATUS: ${tree} — downloaded carries the green kind, failed the red one, running stays plain`);
+        assert.strictEqual(
+            h._mdTailCounters({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 }),
+            h._mdTailCounterParts({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 })
+                .map((p) => p.text).join(' · '),
+            `STATUS: ${tree} — the plain line is those parts, not a second source of numbers`);
+        assert.deepStrictEqual(h._mdTailCounterParts(null, null), [],
+            `STATUS: ${tree} — nothing to report, nothing to paint`);
+        assert.strictEqual(h._mdStatusColor('done'), '#a5d6a7',
+            `STATUS: ${tree} — green is the finish line's own green, not a new shade`);
+        assert.strictEqual(h._mdStatusColor('fail'), '#ef9a9a',
+            `STATUS: ${tree} — red is the amber note's partner (Material 200 family)`);
+        // White is the panel's own colour: an unknown kind must inherit it rather
+        // than invent a colour (a closed map, not "any name paints something").
+        for (const kind of ['', null, undefined, 'active', 'queued', 'error']) {
+            assert.strictEqual(h._mdStatusColor(kind), '',
+                `STATUS: ${tree} — kind ${String(kind)} must stay white`);
+        }
         // The close-the-tab verdict is a consequence of the worker's own numbers.
         assert.strictEqual(h._mdTabSafeToClose({ queued: 0, filtering: 0, downloading: 0, retries: 0 }), true,
             `STATUS: ${tree} — a drained queue is safe`);
@@ -2300,8 +2342,29 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         assert.strictEqual(summaryText(undefined), '', `STATUS: ${tree} — and no crash on an old worker`);
     }
 
+    // --- LOCKED: wiring of the coloured line ------------------------------------
+    // The colours only exist if the poll renderer HANDS the parts to the panel and
+    // the panel paints them. Both halves are locked, plus the anti-XSS property
+    // that matters here: the line is built from nodes, never from HTML.
+    for (const tree of trees) {
+        const c = contentOf(tree);
+        assert.ok(/lineParts: lineParts,/.test(c),
+            `STATUS: ${tree} — mdRenderSessionStatus must pass the coloured parts to the panel`);
+        assert.ok(/if \(current\) lineParts\.push\(\{ text: 'now: ' \+ current, kind: '' \}\);/.test(c),
+            `STATUS: ${tree} — the file in flight is an outcome-less row: it stays white`);
+        assert.ok(/Array\.isArray\(opts\.lineParts\)/.test(c),
+            `STATUS: ${tree} — the panel must accept lineParts (and keep the plain-string path)`);
+        assert.ok(/span\.style\.color = color;/.test(c),
+            `STATUS: ${tree} — the colour must be applied to a <span>, not injected as markup`);
+        const banner = cutMethodFn(c, '_updateDownloadAllStatus');
+        assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(banner),
+            `STATUS: ${tree} — the status banner is built from nodes only (never HTML)`);
+        assert.ok(/doc\.createTextNode\(' · '\)/.test(banner),
+            `STATUS: ${tree} — the separator is text, so no counter can invent markup`);
+    }
+
     // A copy, not a fork: the two trees carry byte-identical renderers.
-    for (const name of ['_mdTailCounters', '_mdSummaryText', '_mdRestartNoteText', '_mdStatusKey']) {
+    for (const name of ['_mdStatusColor', '_mdTailCounterParts', '_mdTailCounters', '_mdSummaryText', '_mdRestartNoteText', '_mdStatusKey']) {
         assert.strictEqual(
             cutVarFn(contentTexts['src-mv3-overlay-firefox'], name).replace(/\r\n/g, '\n'),
             cutVarFn(contentTexts['src-mv3-overlay'], name).replace(/\r\n/g, '\n'),
@@ -2404,4 +2467,71 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `US: ${tree} — no second hand-written copy of the title may come back`);
     }
     console.log('md-unit-smoke: sieve mirror + userScripts visibility locks hold in both trees');
+}
+
+// ===========================================================================
+// 2026-09-21 — RESTORE-DUP: a restored item must not become a ' (1)' copy.
+//
+// Measured in the live folder: b8e371b4130c1c24212b8ddd2f274af3.png (1061104 B,
+// 20:16:03) and its ' (1)' twin (same 1061104 B, 20:17:10). One URL, two worker
+// generations: the dying one HAD saved the file, but the completion never reached
+// the snapshot (debounced write, worker killed inside the window), so the row came
+// back non-terminal and was re-queued — with its dedup key deliberately released.
+// The fix asks Chrome's own history, for RESTORED tasks only, whether a COMPLETE
+// file for that exact URL already exists, and adopts it instead of downloading a
+// second copy. Availability is respected: exists === false means the user deleted
+// it and it IS downloaded again.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    const cutFnSource = (source, name) => {
+        const start = source.indexOf(`function ${name}(`);
+        assert.ok(start >= 0, `function ${name} not found`);
+        const end = source.indexOf('\n}', start);
+        return source.slice(start, end + 2);
+    };
+    const copies = {};
+    for (const tree of trees) {
+        const core = readNorm(tree, 'mass-download/service-core.js');
+        const helper = cutFnSource(core, 'mdAdoptIfAlreadyDownloaded');
+        const dlQueue = cutFnSource(core, 'processDownloadQueue');
+
+        // The question is about the disk, and the answer must be a COMPLETE item whose
+        // file is still there, for THIS url (Chrome's url filter is not an identity
+        // check we can lean on alone).
+        assert.ok(/i\.state === 'complete'/.test(helper) && /i\.exists !== false/.test(helper)
+            && /i\.url === task\.url/.test(helper),
+            `DUP: ${tree} — adopting a file requires complete + still present + same URL (a deleted file must be re-downloaded)`);
+        // It is a result, so it must travel the standard funnel (row + ledger) and be
+        // counted exactly once, like any other completed download.
+        assert.ok(/updateDownloadProgress\(task\.url, 'completed', 100,/.test(helper),
+            `DUP: ${tree} — the adopted row must go through updateDownloadProgress (single funnel: row AND ledger)`);
+        assert.ok(/downloadStats\.downloaded\+\+/.test(helper) && /sendToProgressTab\(\{ cmd: 'updateStats'/.test(helper),
+            `DUP: ${tree} — and the run counters must count it`);
+        // A task parked for the answer must leave the queue, and the queue must be
+        // resumed exactly once — otherwise the item is either downloaded anyway or
+        // stuck forever.
+        assert.ok(/downloadQueue\.splice\(queued, 1\)/.test(helper),
+            `DUP: ${tree} — the parked task must leave the queue once the answer is 'already done'`);
+        assert.ok(/delete task\._historyPending;\s*\n\s*processDownloadQueue\(\);/.test(helper),
+            `DUP: ${tree} — every path must clear the pending flag and resume the queue (no stall, no spin)`);
+        // Scope: ONLY restored work. A fresh scan may still download a page again.
+        assert.ok(/if \(task\._restored && task\._historyPending\) \{ downloadQueue\.unshift\(task\); break; \}/.test(dlQueue),
+            `DUP: ${tree} — a parked restored task must stop the loop instead of being re-picked (the loop is synchronous)`);
+        assert.ok(/if \(task\._restored && !task\._historyChecked\) \{/.test(dlQueue),
+            `DUP: ${tree} — only RESTORED tasks are verified against the download history`);
+        const guardAt = dlQueue.indexOf('task._restored && !task._historyChecked');
+        const slotAt = dlQueue.indexOf('activeDownloads++');
+        const stampAt = dlQueue.indexOf("mdPhaseStamp('download')");
+        assert.ok(guardAt > 0 && slotAt > guardAt && stampAt > guardAt,
+            `DUP: ${tree} — the check must run BEFORE the slot is claimed and the download is started (that is where files get created)`);
+        assert.ok(/t\._restored = true;/.test(cutFnSource(core, 'mdApplySnapshot')),
+            `DUP: ${tree} — mdApplySnapshot must mark the work it resurrects (the only place the flag can come from)`);
+        copies[tree] = helper;
+    }
+    assert.strictEqual(copies['src-mv3-overlay-firefox'], copies['src-mv3-overlay'],
+        'DUP: the adoption helper must be a copy, not a fork (both trees)');
+    console.log('md-unit-smoke: restore-duplicate locks hold in both trees');
 }
