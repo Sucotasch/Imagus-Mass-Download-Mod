@@ -2314,3 +2314,94 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
 
     console.log('md-unit-smoke: after-scan session status locks hold in both trees');
 }
+
+// ===========================================================================
+// 2026-09-21 — SIEVE mirror + userScripts visibility.
+//
+// Two live failures, one day apart in the log:
+//   (a) "Uncaught (in promise) Error: No sieve repository configured" in the SW
+//       console after a full browser restart. The jsDelivr fallback computed its URL
+//       only while `useMirror` was false, but the fallback re-enters updateSieve WITH
+//       useMirror=true - so the retry had no URL, threw one line into the catch that
+//       was supposed to save the update, and the mirror had never fetched anything.
+//       The selector is now a pure function, and this lock EXECUTES it: a mirror
+//       attempt must have a URL to fetch, whatever the repository.
+//   (b) "the extension stopped working and nothing said why" after a restart with
+//       Chrome's per-extension "Allow User scripts" toggle off - chrome.userScripts
+//       is undefined then, nothing registers, and the only trace was a console line.
+//       The missing API must now reach the user: a title on the toolbar icon, and
+//       the options page (whose banner deep-links to the toggle) once per BROWSER
+//       SESSION, plus a throttled self-heal so flipping the toggle works on the next
+//       page load instead of the next browser restart.
+// ===========================================================================
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    const cutFnSource = (source, name) => {
+        const start = source.indexOf(`function ${name}(`);
+        assert.ok(start >= 0, `function ${name} not found`);
+        const end = source.indexOf('\n}', start);
+        return source.slice(start, end + 2);
+    };
+    const RAW = 'https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt';
+    const CDN = 'https://cdn.jsdelivr.net/gh/kuzn123/Imagus-Sieve-RuBoard@master/update.txt';
+    const copies = {};
+
+    // --- (a) the sieve URL selector: EXECUTED, not described -------------------
+    for (const tree of trees) {
+        const svc = readNorm(tree, 'background/service.js');
+        const { sieveUrlFor } = new Function(
+            `${cutFnSource(svc, 'jsDelivrMirror')}\n${cutFnSource(svc, 'sieveUrlFor')}\nreturn { sieveUrlFor };`
+        )();
+        assert.strictEqual(sieveUrlFor(true, false, RAW), '/data/sieve.json',
+            `SIEVE: ${tree} — a local update reads the bundled sieve`);
+        assert.strictEqual(sieveUrlFor(false, false, RAW), RAW,
+            `SIEVE: ${tree} — the first attempt reads the configured repository`);
+        assert.strictEqual(sieveUrlFor(false, true, RAW), CDN,
+            `SIEVE REGRESSION: ${tree} — the mirror retry must have a URL to fetch (it used to be null, and the retry threw instead of fetching)`);
+        assert.strictEqual(sieveUrlFor(false, true, 'https://example.com/sieve.json'), 'https://example.com/sieve.json',
+            `SIEVE: ${tree} — a non-GitHub repository still leaves the retry something to fetch`);
+        assert.strictEqual(sieveUrlFor(false, true, undefined), null,
+            `SIEVE: ${tree} — "no repository configured" must stay an honest null (the local fallback follows)`);
+        assert.ok(/if \(!local && !useMirror && mirrorUrl\)/.test(svc)
+            && /const mirrorUrl = local \? null : jsDelivrMirror\(sieveRepoUrl\);/.test(svc),
+            `SIEVE: ${tree} — the fallback condition must see a mirror computed INDEPENDENTLY of useMirror`);
+        copies[tree] = {
+            url: cutFnSource(svc, 'sieveUrlFor'),
+            jsd: cutFnSource(svc, 'jsDelivrMirror'),
+        };
+    }
+    assert.strictEqual(copies['src-mv3-overlay-firefox'].url, copies['src-mv3-overlay'].url,
+        'SIEVE: the URL selector must be a copy, not a fork (both trees)');
+    assert.strictEqual(copies['src-mv3-overlay-firefox'].jsd, copies['src-mv3-overlay'].jsd,
+        'SIEVE: jsDelivrMirror must be a copy, not a fork (both trees)');
+
+    // --- (b) the userScripts notice: wiring, because the user is the assertion --
+    for (const tree of trees) {
+        const svc = readNorm(tree, 'background/service.js');
+        assert.ok(/if \(!chrome\.userScripts\) \{\s*\n\s*mdWarnUserScriptsMissing\(/.test(svc),
+            `US: ${tree} — a missing userScripts API must take the VISIBLE path, not a bare console.warn (that was the whole bug)`);
+        const helper = cutFnSource(svc, 'mdWarnUserScriptsMissing');
+        assert.ok(/cfg\.sessionGet\("mdUsOptionsOpened"\)/.test(helper)
+            && /cfg\.sessionSet\(\{ mdUsOptionsOpened: true \}\)/.test(helper),
+            `US: ${tree} — the notice must be once per BROWSER SESSION: storage.session is the one store cleared exactly at the restart that drops the grant`);
+        assert.ok(/chrome\.runtime\.openOptionsPage\(\)/.test(helper),
+            `US: ${tree} — the user must be SHOWN where the toggle is (the options banner deep-links to it)`);
+        assert.ok(/chrome\.action\.setTitle/.test(helper),
+            `US: ${tree} — and it must be readable by hovering the icon, without opening anything`);
+        assert.ok(/mdUsRetryAt = Date\.now\(\) \+ 30_000/.test(helper),
+            `US: ${tree} — the self-heal must be throttled (one attempt per 30 s)`);
+        assert.ok(/if \(mdUsRetryAt && Date\.now\(\) >= mdUsRetryAt\) \{\s*\n\s*mdUsRetryAt = 0;\s*\n\s*registerContentScripts\(\);/.test(svc),
+            `US: ${tree} — flipping the toggle must heal on the next page load, not at the next browser restart`);
+        assert.ok(/mdUsRetryAt = 0;/.test(svc) && /chrome\.action\.setTitle\(\{ title: MD_ACTION_TITLE \}\)/.test(svc),
+            `US: ${tree} — a successful registration disarms the retry and restores the title`);
+        assert.strictEqual((svc.match(/chrome\.action\.setTitle\(\{ title: MD_ACTION_TITLE \}\)/g) || []).length, 2,
+            `US: ${tree} — the title text has ONE owner (MD_ACTION_TITLE) and exactly two call sites`);
+        assert.ok(/const MD_ACTION_TITLE = [^\n]*Click to toggle on this site/.test(svc),
+            `US: ${tree} — MD_ACTION_TITLE must be the definition of that text`);
+        assert.ok(!/setTitle\(\{ title: `\$\{manifest\.name\}/.test(svc),
+            `US: ${tree} — no second hand-written copy of the title may come back`);
+    }
+    console.log('md-unit-smoke: sieve mirror + userScripts visibility locks hold in both trees');
+}

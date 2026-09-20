@@ -2197,6 +2197,22 @@
             var ret, i, j;
             if (PVI.toFunction(rule, "to") === false) return 1;
             if (trg.IMGS_TRG) trg = trg.IMGS_TRG;
+            // UPSTREAM-HARDENING (keep on re-base, 2026-09-21): upstream assumes both
+            // are strings and does `http.length - addr.length`. A live x.com hover
+            // (video post, then an image in the next post) threw
+            // "Cannot read properties of undefined (reading 'slice')" HERE, which
+            // aborts the whole find() mid-flight and leaves the previous media on
+            // screen - the user saw the video from the previous post play again.
+            // "No match" is the honest answer for a caller that handed us nothing,
+            // and the warning names the rule and the caller so the next occurrence
+            // is diagnosable instead of mysterious: param 'link' comes from the
+            // find() n.href call, param 'img' from the getImages one.
+            if (typeof http !== "string" || typeof addr !== "string") {
+                console.warn((cfg.app?.name || "Imagus") + ": replace() got no usable " +
+                    (typeof http !== "string" ? "http prefix" : "address") +
+                    " (rule " + rule?.id + ", param " + param + ", url " + (addr || "") + ") - rule skipped");
+                return 1;
+            }
             http = http.slice(0, http.length - addr.length);
             if (Array.isArray(rule.to)) {
                 ret = [];

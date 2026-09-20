@@ -86,6 +86,22 @@ function jsDelivrMirror(repoUrl) {
     return `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}`;
 }
 
+// Which URL a sieve attempt reads. Pure, so the contract can be executed by the
+// smoke test instead of described in a comment.
+//
+// Why it exists (2026-09-21, live console after a full Chrome restart): the mirror
+// URL used to be computed only while `useMirror` was false, but the fallback
+// re-enters updateSieve WITH useMirror=true - so the retry reached `url = null` and
+// threw "No sieve repository configured" instead of fetching, one line into the
+// catch that was supposed to save the update. The throw sits before the try, so it
+// escaped as an unhandled rejection, and the jsDelivr mirror had therefore never
+// actually fetched anything.
+function sieveUrlFor(local, useMirror, sieveRepoUrl) {
+    if (local) return "/data/sieve.json";
+    if (useMirror) return jsDelivrMirror(sieveRepoUrl) || sieveRepoUrl || null;
+    return sieveRepoUrl || null;
+}
+
 async function updateSieve(local, retryCount = 0, useMirror = false, force = false) {
     const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
@@ -97,9 +113,9 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
     // back instead of fetching a full copy.
     const hasLocalRules = !!curSieve && Object.keys(curSieve).some(k => curSieve[k] && (curSieve[k].link || curSieve[k].img));
 
-    const primaryUrl = local ? "/data/sieve.json" : sieveRepoUrl;
-    const mirrorUrl = (!local && !useMirror) ? jsDelivrMirror(sieveRepoUrl) : null;
-    const url = useMirror ? mirrorUrl : primaryUrl;
+    // The mirror URL must be known on BOTH attempts: it is the retry's whole point.
+    const mirrorUrl = local ? null : jsDelivrMirror(sieveRepoUrl);
+    const url = sieveUrlFor(local, useMirror, sieveRepoUrl);
     if (!url) throw new Error("No sieve repository configured");
 
     try {
@@ -991,9 +1007,49 @@ function keepAlive() {
 }
 
 let optionsOpened = false;
+
+// The badge title, restored the moment user scripts are registered again.
+const MD_ACTION_TITLE = manifest.name + " v" + manifest.version + "\nClick to toggle on this site";
+// Retry gate for the self-heal below: 0 = nothing to heal.
+let mdUsRetryAt = 0;
+
+// 2026-09-21 — "why did it stop working?" after a browser restart.
+//
+// On Chrome 138+ the "Allow User scripts" toggle lives on the extension's OWN
+// details page, and when it is off chrome.userScripts is simply undefined: the
+// content scripts this extension is made of never register, and NOTHING says so.
+// A live probe (ext-dev-loop, Edge 153, fresh profile) showed exactly that state:
+// "chrome.userScripts API not available - user scripts will not be registered".
+//
+// The console warning alone is not enough: the owner had to open the extension's
+// settings by hand to discover the cause, which means a first-time user meets a
+// dead extension and no reason to keep it. So the missing API now does what a
+// first install already does - opens the options page, whose banner deep-links to
+// the toggle - once per BROWSER SESSION (chrome.storage.session, cleared exactly
+// at the restart that re-evaluates the grant), plus a title the user can read by
+// hovering the toolbar icon without opening anything.
+async function mdWarnUserScriptsMissing(why) {
+    console.warn(manifest.name + ": " + why);
+    mdUsRetryAt = Date.now() + 30_000;
+    try {
+        chrome.action.setTitle({ title: manifest.name + ": user scripts are OFF - open Details and enable \"Allow user scripts\"" });
+    } catch {}
+    let already = optionsOpened;
+    try {
+        const got = await cfg.sessionGet("mdUsOptionsOpened");
+        already = already || !!got?.mdUsOptionsOpened;
+        if (!got?.mdUsOptionsOpened) await cfg.sessionSet({ mdUsOptionsOpened: true });
+    } catch {}
+    if (!already) {
+        optionsOpened = true;
+        console.info(manifest.name + ": opening the options page - the user has to allow user scripts for this extension to work at all");
+        chrome.runtime.openOptionsPage().catch(() => {});
+    }
+}
+
 async function registerContentScripts() {
     if (!chrome.userScripts) {
-        console.warn("chrome.userScripts API not available - user scripts will not be registered");
+        mdWarnUserScriptsMissing("chrome.userScripts API not available - user scripts will not be registered");
         return;
     }
     try {
@@ -1025,6 +1081,8 @@ async function registerContentScripts() {
                 js: [{ file: "content/content.js" }],
             },
         ]);
+        mdUsRetryAt = 0;
+        try { chrome.action.setTitle({ title: MD_ACTION_TITLE }); } catch {}
     } catch(error) {
         if (error?.message?.includes("is already registered")) {
             return;
@@ -1219,6 +1277,14 @@ chrome.action.onClicked.addListener(toggleTab);
 
 // update badge on tab update
 chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
+    // Self-heal for a toggle that was off when this worker booted: the user flips
+    // "Allow user scripts", and their next page load re-registers the scripts -
+    // no extension reload required. Throttled to one attempt per 30 s, and armed
+    // only while the API was missing the last time we looked.
+    if (mdUsRetryAt && Date.now() >= mdUsRetryAt) {
+        mdUsRetryAt = 0;
+        registerContentScripts();
+    }
     if (!tab.active) return;
     updateBadge(tabId, tab.url);
 });
@@ -1231,7 +1297,7 @@ chrome.tabs.onActivated.addListener(async function(info) {
 });
 
 
-chrome.action.setTitle({ title: `${manifest.name} v${manifest.version}\nClick to toggle on this site` });
+chrome.action.setTitle({ title: MD_ACTION_TITLE });
 updatePrefs(null, registerContentScripts);
 chrome.runtime.onStartup.addListener(updatePrefs);
 // Diagnostic companion to the worker marker (mdRecordWorkerStart in
