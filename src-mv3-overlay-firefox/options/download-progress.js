@@ -977,8 +977,20 @@
         // on disk and this log could not prove it: the row table is capped and
         // Chrome's recorded name was never captured. Grouping the rows by the
         // name Chrome wrote turns that into one block, in the log itself.
+        // Only THIS RUN's rows. The shipped list also carries rows PRESERVED from
+        // earlier scans (resetMassDownloadSession keeps completed/skipped), and
+        // grouping those together with the current run's rows would report a
+        // "duplicate" that spans two separate user-requested scans — a real second
+        // file on disk, but not evidence of what this run did. On a recovered run the
+        // bound is the interrupted session's own start: sessionStartTime is re-keyed
+        // to the recovering worker, so using it would hide exactly the generations
+        // whose duplicated writes this block exists to name.
+        const runOrigin = (data.worker && data.worker.recovered && data.worker.recovered.sessionStart)
+            || data.sessionStart || 0;
+        const runItems = runOrigin ? items.filter(it => (it.timestamp || 0) >= runOrigin) : items;
+        const olderRows = items.length - runItems.length;
         const nameGroups = {};
-        items.forEach((it, i) => {
+        runItems.forEach((it, i) => {
             const name = it.recordedName || it.filename;
             if (!name) return;
             const key = String(name).toLowerCase();
@@ -997,7 +1009,8 @@
                     + ' ' + (g.it.url || '')));
             });
         } else {
-            lines.push('  No duplicate file names: every listed row wrote a distinct file.');
+            lines.push('  No duplicate file names in this run: every row it wrote has a distinct name'
+                + (olderRows > 0 ? ' (' + olderRows + ' row(s) from earlier runs are excluded from this check).' : '.'));
         }
         lines.push(...mdScanDiagLines(opts && opts.diagnostics));
         lines.push('');

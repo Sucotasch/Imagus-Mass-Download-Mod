@@ -493,6 +493,10 @@ function resetMassDownloadSession() {
     // A new session starts its own ledger (the preserved rows above are history
     // and stay visible, but they are not outcomes of THIS run).
     mdResetOutcomes();
+    // FIX-DUP-2: and its own "what have we written" index. The next query is bounded
+    // by the NEW run's start, so a page the user asks for again is downloaded again
+    // — while the adopted files of a recovered session still count as already here.
+    mdWrittenIndex = null;
     userCanceled = false;
     completionNotified = false;
     // Audit N-12: a tripped circuit breaker must not leak from the previous
@@ -2048,8 +2052,11 @@ function checkAllQueuesEmpty() {
 }
 
 // Serializable view of a progress entry for the progress tab (Audit N-11):
-// the live `task` object carries SW internals (_watchdog timer id, _downloadId,
-// _slotReleased, _id) that must not cross the message boundary.
+// the live `task` object carries SW internals (the watchdog timer id, the
+// _slotReleased/_id bookkeeping, live Blobs and object URLs) that must not cross
+// the message boundary. `_downloadId` is the deliberate exception — it is a plain
+// number, and shipping it as `browserId` is what lets Save Log be compared against
+// chrome://downloads instead of against an inference (LOGFMT-1, 2026-09-21).
 function serializeProgressEntry(entry) {
     const t = entry.task || null;
     return {
@@ -2667,43 +2674,238 @@ function armStallWatchdog(task, downloadId) {
 //
 // Scope: restored tasks only. A fresh scan must stay able to re-download a page the
 // user asks for again — that decision was made explicitly and is not revisited here.
+//
+// FIX-DUP-2 (2026-09-21) — WHY THE QUESTION IS NOW SESSION-WIDE INSTEAD OF PER-URL.
+//
+// Two live runs a few minutes apart bracket the answer: the 10:34 run had FIVE worker
+// generations (four abrupt deaths) and left 36 byte-identical ' (1)' pairs plus 29
+// pictures stored twice — the full-size file written by an older generation and the
+// sample by the restored one; the 11:10 run had ONE generation, no restart, and left
+// 191 files with ZERO duplicates. The duplicates are therefore a RECOVERY phenomenon,
+// and the original per-URL query was structurally unable to see them:
+//   * the bytes may have been handed to Chrome as a blob: URL (the offscreen tier and
+//     the page/referer fetch both do that), and Chrome records the blob: URL — the
+//     http URL is nowhere in its history, so search({url}) could never match;
+//   * a restored task re-runs its candidate chain from the top, so it can land on a
+//     DIFFERENT candidate of the SAME item (the 29 sample/original pairs), whose URL
+//     the older generation never wrote either.
+// One session-scoped index answers all of it: ask Chrome once for everything started
+// in this run, key it by URL AND by the file name Chrome wrote, and match a restored
+// task against its own URL, every candidate of its group, and the name it is about to
+// write. A fresh scan is untouched: its own idle time is included in the query the
+// same way it was in the per-URL one, while a DELETED file (`exists === false`) is
+// still downloaded again — availability stays the authority.
+var mdWrittenIndex = null;              // { origin, at, byUrl: Map, byName: Map }
+var MD_WRITTEN_INDEX_MS = 2000;         // never re-ask Chrome more often than this
+var MD_HISTORY_WAIT_MS = 2000;          // wait this long while a same-item download runs
+var MD_HISTORY_WAIT_TRIES = 3;          // bounded: a stuck download must not pin the queue
+
+// The start of the RUN, not of this worker: mdApplySnapshot re-keys sessionStartTime
+// to the recovering worker (the progress tab would otherwise read the recovered rows
+// as 'lost' forever), so the snapshot's own sessionStart is the only correct lower
+// bound for "what has this run already written".
+function mdSessionOriginMs() {
+    return (mdRecoveredInfo && mdRecoveredInfo.sessionStart) ? mdRecoveredInfo.sessionStart : sessionStartTime;
+}
+
+// Lookup key for a media URL: HD '#' prefix stripped, protocol-relative resolved,
+// fragment dropped, case folded. Chrome stores the URL it fetched; this is what a
+// task's own URLs must be normalized to for the comparison to mean anything.
+function mdWrittenUrlKey(url) {
+    if (typeof url !== 'string' || !url) return '';
+    let u = url.trim().replace(/^#/, '');
+    if (u.indexOf('//') === 0) u = 'https:' + u;
+    try {
+        const parsed = new URL(u);
+        parsed.hash = '';
+        return parsed.href.toLowerCase();
+    } catch (e) { return ''; }
+}
+
+// The name this task is about to write — and ONLY when that name identifies a file.
+// 'full', 'index.php', 'view', 'media'… are shared by every item on such a site (the
+// same list processDownloadQueue uses to decide it must derive a distinctive name),
+// so they must never be treated as file identity.
+function mdTargetName(task) {
+    if (!task) return '';
+    let name = task.filename;
+    if (!name) {
+        try { name = deriveFilename(task.url, task.contentType); } catch (e) { name = ''; }
+    }
+    if (!name) return '';
+    name = String(name).toLowerCase();
+    if (!/\.[a-z0-9]{1,8}$/i.test(name)) return '';
+    // Compare the BASE, not the whole name: 'index.php' and 'full.jpg' are the
+    // shapes such a site hands every item ('view.png', 'media.jpg' …), so the stem
+    // decides — a regex over the full name would have to guess the extension too
+    // (the smoke lock caught exactly that mistake in the first version).
+    const stem = name.slice(0, name.lastIndexOf('.'));
+    if (/^(?:index|full|view|get|image|photo|media|attachment|page|file)$/.test(stem)) return '';
+    return name;
+}
+
+function mdWrittenIndexAdd(byUrl, byName, item) {
+    if (!item) return;
+    const entry = {
+        id: item.id,
+        state: item.state,
+        exists: item.exists !== false,
+        name: mdBasename(item.filename),
+        url: item.url,
+        fileSize: item.fileSize || 0,
+        mime: item.mime || ''
+    };
+    const key = mdWrittenUrlKey(item.url);
+    if (key) byUrl.set(key, entry);
+    const name = entry.name ? String(entry.name).toLowerCase() : '';
+    if (name) byName.set(name, entry);
+}
+
+// Which download, if any, already satisfies this item? PURE (no chrome API), so
+// tools/md-unit-smoke.mjs executes it against a synthetic index:
+//   (a) the task's own URL;
+//   (b) ANY candidate of the same group — the chain may have been re-run and picked
+//       another resolution of the same media (the 29 sample/original pairs);
+//   (c) the file name about to be written — a blob: download carries no http URL at
+//       all, and byName is what makes it visible.
+function mdFindAlreadyWritten(task, index) {
+    if (!task || !index) return null;
+    const urls = [task.url];
+    if (Array.isArray(task._candidates)) {
+        task._candidates.forEach(function (c) {
+            const u = (c && typeof c === 'object') ? c.url : c;
+            if (typeof u === 'string' && u) urls.push(u);
+        });
+    }
+    for (let i = 0; i < urls.length; i++) {
+        const key = mdWrittenUrlKey(urls[i]);
+        if (key && index.byUrl.has(key)) return index.byUrl.get(key);
+    }
+    const name = mdTargetName(task);
+    if (name && index.byName.has(name)) {
+        const byName = index.byName.get(name);
+        // Name identity is WEAKER than URL identity: two hosts can serve different
+        // files under one human name ('banner.png'), and adopting the wrong one
+        // would be worse than the duplicate this check prevents. So the name is
+        // accepted only where the URL cannot speak for itself:
+        //   * the write came from a blob: URL (the offscreen tier / page fetch) —
+        //     Chrome records the blob URL, the http URL is unknowable;
+        //   * or the basename is hash-shaped, which IS content identity on the
+        //     sites that name files after their digest (rule34 and friends).
+        if (mdBlobEntry(byName) || mdHashShapedName(name)) return byName;
+    }
+    return null;
+}
+
+// A download Chrome recorded under a blob: URL — i.e. bytes the mod itself
+// materialized (offscreen document or page-context fetch) before handing them over.
+function mdBlobEntry(entry) {
+    return !!(entry && typeof entry.url === 'string' && entry.url.indexOf('blob:') === 0);
+}
+
+// 'abc123…def.png' — a 16+ char hex stem with a real media extension. Same notion
+// as mediaHashKey(), which the dedup sets already trust as file identity.
+function mdHashShapedName(name) {
+    return /^[0-9a-f]{16,}\.[a-z0-9]{1,8}$/.test(String(name || '').toLowerCase());
+}
+
+// One query per run, cached, and never more often than MD_WRITTEN_INDEX_MS. The
+// query is bounded by the RUN's start, so a fresh scan never sees the previous run's
+// files — which is what keeps "download this page again" working.
+function mdWrittenIndexRefresh(force) {
+    if (!force && mdWrittenIndex && (Date.now() - mdWrittenIndex.at) < MD_WRITTEN_INDEX_MS) {
+        return Promise.resolve(mdWrittenIndex);
+    }
+    const origin = mdSessionOriginMs();
+    const query = {};
+    if (origin) {
+        try { query.startedAfter = new Date(origin).toISOString(); } catch (e) { /* no bound */ }
+    }
+    return new Promise(function (resolve) {
+        try {
+            chrome.downloads.search(query, function (items) {
+                // NF-8: a callback that never reads runtime.lastError makes Chrome log
+                // "Unchecked runtime.lastError" every time the query fails.
+                if (chrome.runtime.lastError) { /* the empty path below handles it */ }
+                const byUrl = new Map(), byName = new Map();
+                (Array.isArray(items) ? items : []).forEach(function (i) {
+                    mdWrittenIndexAdd(byUrl, byName, i);
+                });
+                mdWrittenIndex = { origin: origin, at: Date.now(), byUrl: byUrl, byName: byName };
+                resolve(mdWrittenIndex);
+            });
+        } catch (e) {
+            resolve(mdWrittenIndex);
+        }
+    });
+}
+
+// Called from every terminal 'complete', so a file written by THIS worker is in the
+// index at once — a later restored task must not need another query to see it.
+function mdWrittenIndexNote(url, id, filename, fileSize, mime) {
+    if (!mdWrittenIndex) return;
+    mdWrittenIndexAdd(mdWrittenIndex.byUrl, mdWrittenIndex.byName, {
+        id: id, state: 'complete', exists: true, filename: filename, url: url,
+        fileSize: fileSize, mime: mime
+    });
+}
+
 function mdAdoptIfAlreadyDownloaded(task) {
+    let retry = false;
     const finish = () => {
         delete task._historyPending;
         processDownloadQueue();
     };
-    chrome.downloads.search({ url: task.url }, function (items) {
-        // Every exit from below resumes the queue. `finally` is deliberate: the
-        // adopt path touches the row table, the ledger and the progress tab, and
-        // a throw anywhere in it would otherwise leave the task parked with
-        // _historyPending=true — invisible to the drain loop, forever.
+    mdWrittenIndexRefresh(false).then(function (index) {
+        // Every exit from below resumes the queue. The explicit `retry` flag is
+        // deliberate: the adopt path touches the row table, the ledger and the
+        // progress tab, and a throw anywhere in it would otherwise leave the task
+        // parked with _historyPending=true — invisible to the drain loop, forever —
+        // while the retry branch below must stay parked until its timer fires.
         try {
-            let found = null;
-            try {
-                found = (Array.isArray(items) ? items : []).find(function (i) {
-                    return i && i.state === 'complete' && i.exists !== false && i.url === task.url;
-                }) || null;
-            } catch (e) { found = null; }
+            const found = index ? mdFindAlreadyWritten(task, index) : null;
             if (!found) return;
-            if (found.mime) task.contentType = found.mime;
-            if (found.fileSize) task.fileSize = found.fileSize;
-            // Telemetry: this row was answered by Chrome's history, not by a
-            // download — and the name Chrome holds is the one on disk.
-            task._historyAdopted = true;
-            task._recordedName = mdBasename(found.filename);
-            const queued = downloadQueue.indexOf(task);
-            if (queued >= 0) downloadQueue.splice(queued, 1);
-            // updateDownloadProgress is the single funnel: it moves the row AND feeds the
-            // outcome ledger, so the run's totals count this file exactly once.
-            updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
-            downloadStats.downloaded++;
-            sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
-            if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
-            console.info(mdWorkerLabel() + ': adopted an already-finished file for a restored item (no second copy): ' + task.url);
+            if (found.state === 'in_progress') {
+                // Chrome is writing exactly this file right now: starting our own
+                // download here is the race that produced the 10:34 result — one item,
+                // one log row, two files, the second named ' (1)'. Stay parked and look
+                // again in a moment. The tries are bounded, so a download that never
+                // finishes cannot pin the queue: on the last try the task simply falls
+                // through to the normal download path.
+                const waits = task._historyWaits || 0;
+                if (waits < MD_HISTORY_WAIT_TRIES) {
+                    task._historyWaits = waits + 1;
+                    task._historyChecked = true;    // 'park': the drain loop stops here
+                    task._historyPending = true;
+                    retry = true;
+                    setTimeout(function () {
+                        task._historyChecked = false;   // ask again
+                        delete task._historyPending;
+                        processDownloadQueue();
+                    }, MD_HISTORY_WAIT_MS);
+                    return;
+                }
+            } else if (found.exists) {
+                if (found.mime) task.contentType = found.mime;
+                if (found.fileSize) task.fileSize = found.fileSize;
+                // Telemetry: this row was answered by Chrome's history, not by a
+                // download — and the name Chrome holds is the one on disk.
+                task._historyAdopted = true;
+                task._recordedName = found.name || mdBasename(found.filename);
+                const queued = downloadQueue.indexOf(task);
+                if (queued >= 0) downloadQueue.splice(queued, 1);
+                // updateDownloadProgress is the single funnel: it moves the row AND
+                // feeds the outcome ledger, so the run's totals count this file once.
+                updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
+                downloadStats.downloaded++;
+                sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
+                if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
+                console.info(mdWorkerLabel() + ': adopted a file this run already wrote for a restored item (no second copy): ' + task.url);
+            }
         } catch (e) {
             console.warn(mdWorkerLabel() + ': restore history check failed — downloading instead', e);
         } finally {
-            finish();
+            if (!retry) finish();
         }
     });
 }
@@ -3195,6 +3397,9 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 existingTask._uniqName = !!existingTask._recordedName
                     && !!existingTask._requestedName
                     && existingTask._recordedName.toLowerCase() !== existingTask._requestedName.toLowerCase();
+                // FIX-DUP-2: this file is now part of what the RUN has written, so a
+                // later restored task can be answered from the index without a query.
+                mdWrittenIndexNote(url, delta.id, results[0].filename, results[0].fileSize, mime);
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });

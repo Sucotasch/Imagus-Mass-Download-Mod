@@ -2583,17 +2583,40 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
     };
     const copies = {};
     const guards = {};
+    const matchers = {};
     for (const tree of trees) {
         const core = readNorm(tree, 'mass-download/service-core.js');
         const helper = cutFnSource(core, 'mdAdoptIfAlreadyDownloaded');
         const dlQueue = cutFnSource(core, 'processDownloadQueue');
 
-        // The question is about the disk, and the answer must be a COMPLETE item whose
-        // file is still there, for THIS url (Chrome's url filter is not an identity
-        // check we can lean on alone).
-        assert.ok(/i\.state === 'complete'/.test(helper) && /i\.exists !== false/.test(helper)
-            && /i\.url === task\.url/.test(helper),
-            `DUP: ${tree} — adopting a file requires complete + still present + same URL (a deleted file must be re-downloaded)`);
+        // The question is about the disk, and since FIX-DUP-2 it is asked ONCE for the
+        // whole RUN: a session-scoped index (bounded by the run's start, so a fresh
+        // scan still re-downloads a page on request) keyed by URL AND by the name
+        // Chrome wrote. The old per-URL query was structurally blind to two live
+        // shapes: a blob: download (Chrome records the blob URL, the http URL is
+        // nowhere) and a chain re-run that picked ANOTHER candidate of the same item
+        // (the 10:34 sample/original pairs).
+        const refresh = cutFnSource(core, 'mdWrittenIndexRefresh');
+        assert.ok(/chrome\.downloads\.search\(query,/.test(refresh) && /startedAfter/.test(refresh),
+            `DUP: ${tree} — the history question must be ONE session-scoped query (startedAfter the run's start)`);
+        assert.ok(/if \(chrome\.runtime\.lastError\)/.test(refresh),
+            `DUP: ${tree} — NF-8: the search callback must consume runtime.lastError`);
+        // The bound must be the RUN's start, not this worker's: mdApplySnapshot re-keys
+        // sessionStartTime to the recovering worker, so using it would hide everything
+        // the killed generation wrote — i.e. exactly the files this check exists for.
+        assert.ok(/mdRecoveredInfo && mdRecoveredInfo\.sessionStart/.test(cutFnSource(core, 'mdSessionOriginMs')),
+            `DUP: ${tree} — the query bound must be the snapshot's session start (the run), not the worker's own`);
+        // And a file written by THIS worker must land in the index immediately.
+        assert.ok(/mdWrittenIndexNote\(url, delta\.id, results\[0\]\.filename/.test(core),
+            `DUP: ${tree} — a completed download must be added to the index at once`);
+        assert.ok(/mdWrittenIndex = null;/.test(cutFnSource(core, 'resetMassDownloadSession')),
+            `DUP: ${tree} — a new scan must drop the index (otherwise a re-scan would adopt its own previous files)`);
+        assert.ok(/const found = index \? mdFindAlreadyWritten\(task, index\) : null;/.test(helper),
+            `DUP: ${tree} — the decision must come from the pure matcher (executed below), not from a URL comparison inline`);
+        assert.ok(/found\.state === 'in_progress'/.test(helper) && /MD_HISTORY_WAIT_TRIES/.test(helper),
+            `DUP: ${tree} — a file Chrome is STILL WRITING must be waited for: racing it is exactly the ' (1)' copy`);
+        assert.ok(/\} else if \(found\.exists\) \{/.test(helper),
+            `DUP: ${tree} — a deleted file (exists === false) must fall through to a real download`);
         // It is a result, so it must travel the standard funnel (row + ledger) and be
         // counted exactly once, like any other completed download.
         assert.ok(/updateDownloadProgress\(task\.url, 'completed', 100,/.test(helper),
@@ -2607,8 +2630,10 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `DUP: ${tree} — the parked task must leave the queue once the answer is 'already done'`);
         assert.ok(/delete task\._historyPending;\s*\n\s*processDownloadQueue\(\);/.test(helper),
             `DUP: ${tree} — every path must clear the pending flag and resume the queue (no stall, no spin)`);
-        assert.ok(/\} finally \{\n            finish\(\);/.test(helper),
-            `DUP: ${tree} — the resume must be unconditional: a throw inside the adopt path must not strand a parked task`);
+        assert.ok(/\} finally \{\n            if \(!retry\) finish\(\);/.test(helper),
+            `DUP: ${tree} — the resume must be unconditional EXCEPT the parked retry (whose own timer resumes it): a throw inside the adopt path must not strand a parked task`);
+        assert.ok(/if \(waits < MD_HISTORY_WAIT_TRIES\)/.test(helper) && /task\._historyWaits = waits \+ 1;/.test(helper),
+            `DUP: ${tree} — the wait loop must be BOUNDED, or a stuck download would pin the queue forever`);
         // Scope: ONLY restored work. A fresh scan may still download a page again.
         // The branch lives in the pure mdHistoryGuard so the sequence is executable
         // below — and, above all, TERMINATING. 2026-09-21 it was not: the flag was
@@ -2672,13 +2697,83 @@ return iterations;
         drive(fresh, function () {});
         assert.strictEqual(fresh.length, 0, `DUP: ${tree} — a fresh-scan task goes straight to the download`);
 
+        // --- EXECUTION: the matcher itself, against a synthetic index -------------
+        // Pure, so it runs here exactly as the worker runs it. Every case below is a
+        // shape seen in the live logs; the two that FAILED before FIX-DUP-2 are marked.
+        const matchSrc = cutFnSource(core, 'mdFindAlreadyWritten')
+            + '\n' + cutFnSource(core, 'mdTargetName')
+            + '\n' + cutFnSource(core, 'mdWrittenUrlKey')
+            + '\n' + cutFnSource(core, 'mdBlobEntry')
+            + '\n' + cutFnSource(core, 'mdHashShapedName')
+            + '\n' + cutFnSource(core, 'mdBasename');
+        const matcher = new Function('deriveFilename', `${matchSrc}; return { find: mdFindAlreadyWritten, name: mdTargetName, key: mdWrittenUrlKey };`)(
+            () => '');
+        const idx = (entries) => {
+            const byUrl = new Map(), byName = new Map();
+            for (const e of entries) {
+                const key = matcher.key(e.url);
+                if (key) byUrl.set(key, e);
+                if (e.name) byName.set(String(e.name).toLowerCase(), e);
+            }
+            return { byUrl, byName };
+        };
+        const entry = (o) => Object.assign({ state: 'complete', exists: true, id: 7 }, o);
+        const A = 'https://wimg.rule34.xxx/images/4906/abc123def456abc123def456abc123de.png';
+        const SAMPLE = 'https://wimg.rule34.xxx/samples/4906/sample_abc123def456abc123def456abc123de.jpg';
+        // (a) the same URL, written in another generation. Case and the HD '#'
+        // prefix are the two spellings the mod itself produces for one file.
+        assert.strictEqual(matcher.find({ url: A }, idx([entry({ url: A })])).id, 7,
+            `DUP-2: ${tree} — an exact URL match must be adopted`);
+        assert.strictEqual(matcher.find({ url: '#' + A }, idx([entry({ url: A })])).id, 7,
+            `DUP-2: ${tree} — the HD '#' prefix must not hide the file that was written`);
+        assert.strictEqual(matcher.find({ url: A.toUpperCase() }, idx([entry({ url: A })])).id, 7,
+            `DUP-2: ${tree} — URL case must not create a second copy`);
+        // (b) the SAME ITEM through another candidate: the older generation wrote the
+        // original, the restored chain now wants the sample. This is the 29-pair shape.
+        const cand = { _candidates: [{ url: SAMPLE, isHd: false }], url: A };
+        assert.strictEqual(matcher.find(cand, idx([entry({ url: SAMPLE })])).id, 7,
+            `DUP-2: ${tree} — a candidate of the same group already on disk must be adopted (not a second resolution of the same picture)`);
+        // (c) a blob: download — the file exists but the http URL is NOT in the history.
+        // This is the case the per-URL query could never see.
+        const blobEntry = entry({ url: 'blob:chrome-extension://abc/xyz', name: 'abc123def456abc123def456abc123de.png' });
+        assert.strictEqual(matcher.find({ url: A, filename: 'abc123def456abc123def456abc123de.png' }, idx([blobEntry])).id, 7,
+            `DUP-2: ${tree} — a blob: download must be found by the file name it wrote`);
+        // (c2) a plain human name from an HTTP download is NOT identity: two hosts can
+        // serve DIFFERENT files under 'banner.png', and adopting the wrong one would be
+        // worse than the duplicate this check prevents.
+        assert.strictEqual(matcher.find({ url: 'https://a.tld/x/banner.png', filename: 'banner.png' },
+            idx([entry({ url: 'https://b.tld/y/banner.png', name: 'banner.png' })])), null,
+            `DUP-2: ${tree} — a plain same-name HTTP write must not be adopted (wrong-file risk)`);
+        // (c3) …while a hash-shaped name IS content identity, exactly as the dedup sets
+        // already assume for rule34-style names.
+        assert.strictEqual(matcher.find(
+            { url: 'https://wimg.rule34.xxx/samples/4906/sample_abc.jpg', filename: 'abc123def456abc123def456abc123de.png' },
+            idx([entry({ url: 'https://other.tld/0/abc123def456abc123def456abc123de.png', name: 'abc123def456abc123def456abc123de.png' })])).id, 7,
+            `DUP-2: ${tree} — a hash-shaped name is content identity and must be adopted`);
+        // (d) name identity only counts when the name identifies a file: 'full' and
+        // 'index.php' are shared by every item on such a site.
+        assert.strictEqual(matcher.name({ url: 'https://x.tld/media/slug.1/full', filename: 'full' }), '',
+            `DUP-2: ${tree} — a front-controller name must never be treated as file identity`);
+        assert.strictEqual(matcher.name({ url: 'https://x.tld/a.php', filename: 'index.php' }), '',
+            `DUP-2: ${tree} — neither must 'index.php'`);
+        assert.strictEqual(matcher.find({ url: A, filename: 'full.png' }, idx([entry({ url: 'blob:x', name: 'full.png' })])), null,
+            `DUP-2: ${tree} — an ambiguous name must not adopt anything`);
+        // (e) an unrelated item is never adopted, and neither is an unparsable URL.
+        assert.strictEqual(matcher.find({ url: 'https://other.tld/zzz.png' }, idx([entry({ url: A })])), null,
+            `DUP-2: ${tree} — another item's file must not be adopted`);
+        assert.strictEqual(matcher.find({ url: 'not a url' }, idx([entry({ url: A })])), null,
+            `DUP-2: ${tree} — an unparsable URL must be a miss, not a crash`);
+
         copies[tree] = helper;
         guards[tree] = cutFnSource(core, 'mdHistoryGuard');
+        matchers[tree] = matchSrc;
     }
     assert.strictEqual(copies['src-mv3-overlay-firefox'], copies['src-mv3-overlay'],
         'DUP: the adoption helper must be a copy, not a fork (both trees)');
     assert.strictEqual(guards['src-mv3-overlay-firefox'], guards['src-mv3-overlay'],
         'DUP: the history guard must be a copy, not a fork (both trees) — one contract, one behaviour');
+    assert.strictEqual(matchers['src-mv3-overlay-firefox'], matchers['src-mv3-overlay'],
+        'DUP-2: the written-file matcher must be a copy, not a fork (both trees)');
     console.log('md-unit-smoke: restore-duplicate locks hold in both trees');
 }
 
