@@ -1032,7 +1032,16 @@ async function mdWarnUserScriptsMissing(why) {
     console.warn(manifest.name + ": " + why);
     mdUsRetryAt = Date.now() + 30_000;
     try {
-        chrome.action.setTitle({ title: manifest.name + ": user scripts are OFF - open Details and enable \"Allow user scripts\"" });
+        // 2026-09-21: the wording is per-platform, because this branch is reachable on
+        // Firefox too (measured live, 155.0.1: with userScripts declared optional and
+        // not granted, this notice opened the options page). Firefox has no Details
+        // page and no "Allow user scripts" toggle — the grant is requested on our own
+        // options page, whose banner already branches on `platform` — so telling a
+        // Firefox user to find a Chrome toggle is worse than saying nothing.
+        const usHint = platform === "firefox"
+            ? "open the extension's settings and enable the User Scripts permission"
+            : "open Details and enable \"Allow user scripts\"";
+        chrome.action.setTitle({ title: manifest.name + ": user scripts are OFF - " + usHint });
     } catch {}
     let already = optionsOpened;
     try {

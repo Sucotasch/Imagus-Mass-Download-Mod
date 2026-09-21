@@ -2520,8 +2520,42 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `US: ${tree} — MD_ACTION_TITLE must be the definition of that text`);
         assert.ok(!/setTitle\(\{ title: `\$\{manifest\.name\}/.test(svc),
             `US: ${tree} — no second hand-written copy of the title may come back`);
+        // 2026-09-21: the branch is reachable on Firefox too (measured live on 155.0.1:
+        // with userScripts optional and ungranted the notice opened the options page),
+        // and Firefox has neither a Details page nor an "Allow user scripts" toggle.
+        assert.ok(/const usHint = platform === "firefox"/.test(helper) && /User Scripts permission/.test(helper),
+            `US: ${tree} — the notice must name THIS platform's way to grant user scripts`);
+        assert.ok(/open Details and enable/.test(helper),
+            `US: ${tree} — and Chrome must keep its own wording`);
     }
     console.log('md-unit-smoke: sieve mirror + userScripts visibility locks hold in both trees');
+}
+
+// ===========================================================================
+// 2026-09-21 — the options page must survive being opened before `cfg` lands.
+//
+// Found by the NEW Firefox backend of ext-dev-loop (probe.mjs --browser firefox),
+// which is the only channel that shows it — Firefox's own stderr carried:
+//   JavaScript error: moz-extension://<uuid>/options/options.js, line 349:
+//   TypeError: can't access property "mOrig", cfg.keys is undefined
+// in 4 of 4 fresh-profile runs (and NOT on a warm profile, i.e. a startup race).
+// The page is opened by our own "user scripts are OFF" notice while the browser is
+// still starting, `cfg` arrives asynchronously via cfg_get, and the zoom-key hint
+// line read the GLOBAL cfg.keys.
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    const readNorm = (tree, rel) =>
+        readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+    for (const tree of trees) {
+        const opt = readNorm(tree, 'options/options.js');
+        assert.ok(/const fzKeys = cfg\.keys \|\| \{\};/.test(opt),
+            `OPTIONS: ${tree} — the zoom-key hints must not assume cfg.keys is loaded yet (the startup race threw on Firefox and aborted that init)`);
+        assert.ok(!/\[cfg\.keys\.mOrig/.test(opt),
+            `OPTIONS: ${tree} — no unguarded cfg.keys.mOrig read may come back`);
+        assert.ok(/const fzExtra = \[fzKeys\.mOrig, fzKeys\.mFit, fzKeys\.mFitBoth, fzKeys\.mFitW, fzKeys\.mFitH, fzKeys\.mZoomLock\]/.test(opt),
+            `OPTIONS: ${tree} — the hint line must be fed by the guarded object`);
+    }
+    console.log('md-unit-smoke: the options page tolerates an unloaded cfg (both trees)');
 }
 
 // ===========================================================================

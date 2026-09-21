@@ -346,7 +346,15 @@ var load = function () {
         sieveRepoInput.value = sieveRepoInput.defValue = cfg.sieveRepository;
     }
 
-    const fzExtra = [cfg.keys.mOrig, cfg.keys.mFit, cfg.keys.mFitBoth, cfg.keys.mFitW, cfg.keys.mFitH, cfg.keys.mZoomLock].filter(Boolean).map(k => `<b>${k}</b>`).join(", ");
+    // 2026-09-21 (found by the Firefox harness, not by reading): `cfg` is filled
+    // ASYNCHRONOUSLY (`Port.send({cmd:"cfg_get", …})`), and this page is opened by our
+    // own "user scripts are OFF" notice while the browser is still starting — on
+    // Firefox the background is an event page that has to cold-start, so the answer can
+    // arrive after this line runs. Measured: `TypeError: can't access property "mOrig",
+    // cfg.keys is undefined` in 4 of 4 fresh-profile Firefox runs, aborting the rest of
+    // this init. One spelling for both trees; the keys are optional, not assumed.
+    const fzKeys = cfg.keys || {};
+    const fzExtra = [fzKeys.mOrig, fzKeys.mFit, fzKeys.mFitBoth, fzKeys.mFitW, fzKeys.mFitH, fzKeys.mZoomLock].filter(Boolean).map(k => `<b>${k}</b>`).join(", ");
     document.querySelector("label[for='keys_hz-fullZm'] .extra").innerHTML = fzExtra ? ", " + fzExtra : "";
 };
 
