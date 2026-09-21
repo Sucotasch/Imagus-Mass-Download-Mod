@@ -507,9 +507,11 @@
 
             var loadViaPageFetch = function (m) {
                 var url = m.dataset.mdSrc;
+                var sameOrigin = false;
+                try { sameOrigin = new URL(url, document.baseURI).origin === location.origin; } catch (e) { sameOrigin = false; }
                 var controller = new AbortController();
                 var timeoutId = setTimeout(function () { controller.abort(); }, 30000);
-                fetch(url, { credentials: 'include', signal: controller.signal })
+                fetch(url, { credentials: sameOrigin ? 'include' : 'omit', signal: controller.signal })
                     .then(function (r) {
                         if (!r.ok) throw new Error('HTTP ' + r.status);
                         return r.blob();
