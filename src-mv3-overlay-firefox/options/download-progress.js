@@ -309,13 +309,17 @@
         // oldest goes first inside each group. Keep the status set identical to
         // the SW's (the smoke test compares the two spellings).
         const finished = { completed: 1, skipped: 1, failed: 1, canceled: 1 };
+        // 2026-09-21: same rank as mdEvictOldestRows in the worker. A superseded
+        // candidate is not an outcome — another candidate replaced it — and the
+        // live 2026-09-20 run let 44 of those consume the window while completed
+        // rows were evicted, so the page read as "nothing was downloaded".
+        // 0 = replaced attempt (dropped first), 1 = finished, 2 = live (kept).
+        const rank = (r) => ((r && r.superseded) ? 0 : (finished[r && r.status] ? 1 : 2));
         const keys = Object.keys(downloadItems);
         if (keys.length > maxProgressRecords) {
             const sorted = keys.sort((a, b) => {
                 const sa = downloadItems[a], sb = downloadItems[b];
-                const fa = finished[sa.status] ? 0 : 1;
-                const fb = finished[sb.status] ? 0 : 1;
-                return fa - fb || (sa.timestamp || 0) - (sb.timestamp || 0);
+                return rank(sa) - rank(sb) || (sa.timestamp || 0) - (sb.timestamp || 0);
             });
             sorted.slice(0, keys.length - maxProgressRecords).forEach(k => delete downloadItems[k]);
         }
@@ -359,6 +363,12 @@
             note += ' The scan totals (downloaded=, skipped=) are in the Saved Log.';
         }
         note += ' Alternate candidate URLs that a later candidate replaced are listed as skipped (they are not missing files).';
+        // 2026-09-21: say the ORDER out loud. A run fails in a burst at the end
+        // (every item burns its whole candidate chain before giving up), so a
+        // newest-first list put nothing but failures on screen and the run read
+        // as "nothing downloaded" although the files were there.
+        note += ' Rows are grouped: running first, then downloaded, then failed, then retired'
+            + ' (replaced candidates / canceled) — newest first inside each group.';
         return note;
     }
 
@@ -497,10 +507,15 @@
     function mdSessionSummaryText(summary) {
         if (!summary || typeof summary !== 'object') return '';
         const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
-        const parts = ['Downloaded ' + n(summary.completed)];
-        if (n(summary.failed)) parts.push(n(summary.failed) + ' failed');
-        if (n(summary.skipped)) parts.push(n(summary.skipped) + ' skipped');
-        if (n(summary.canceled)) parts.push(n(summary.canceled) + ' canceled');
+        // Units spelled out (owner report 2026-09-21): `downloaded` counts FILES,
+        // the other three count ITEMS. One item whose chain of 9 candidate URLs
+        // all 404'd is ONE failure — and the walk can produce items the grid has
+        // no preview for — so the failure number legitimately exceeds the
+        // preview count and must not read as "nothing was downloaded".
+        const parts = ['Downloaded ' + n(summary.completed) + ' file(s)'];
+        if (n(summary.failed)) parts.push(n(summary.failed) + ' item(s) failed');
+        if (n(summary.skipped)) parts.push(n(summary.skipped) + ' item(s) skipped');
+        if (n(summary.canceled)) parts.push(n(summary.canceled) + ' item(s) canceled');
         const sec = Number(summary.elapsedSec);
         if (Number.isFinite(sec) && sec >= 0) {
             const m = Math.floor(sec / 60);
@@ -571,6 +586,22 @@
         return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // The window is finite, so its ORDER decides what the page says. Live first
+    // (the answer to "what is happening now"), then the proof of delivery, then
+    // the failures (actionable — they carry Retry), then retired rows: replaced
+    // candidates and user cancels, kept only so Retry stays reachable.
+    // Pure (no DOM, no chrome) so the harness EXECUTES it. Uses the same terminal
+    // status set as the worker's eviction rule.
+    const MD_TERMINAL = { completed: 1, failed: 1, skipped: 1, canceled: 1 };
+    function mdRowRank(item) {
+        if (!item) return 3;
+        if (item.superseded) return 3;
+        if (item.status === 'completed') return 1;
+        if (item.status === 'failed') return 2;
+        if (MD_TERMINAL[item.status]) return 3;   // skipped (filter) / canceled
+        return 0;                                 // pending / scanning / downloading
+    }
+
     function renderTable() {
         const items = Object.values(downloadItems);
 
@@ -585,8 +616,10 @@
             return;
         }
 
-        // Sort by timestamp (newest first)
-        items.sort((a, b) => b.timestamp - a.timestamp);
+        // Grouped by mdRowRank (2026-09-21), newest first inside each group.
+        // Chronological-only order was the reason a burst of end-of-run failures
+        // could hide every completed row.
+        items.sort((a, b) => mdRowRank(a) - mdRowRank(b) || b.timestamp - a.timestamp);
 
         progressBody.innerHTML = items.map(item => `
       <tr data-id="${escapeHtml(item.id)}">

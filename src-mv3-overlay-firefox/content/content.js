@@ -915,18 +915,34 @@
         return '';
     };
 
-    // "Downloaded 34 · 2 failed · 3 active · 12 queued" — every part is a
-    // counter the worker owns. No denominator: skipped/failed/queued cannot be
-    // turned into "N of TOTAL" without inventing the total.
+    // "Downloaded 34 file(s) · 2 item(s) failed · 3 active · 12 queued" — every
+    // part is a counter the worker owns. No denominator: skipped/failed/queued
+    // cannot be turned into "N of TOTAL" without inventing the total.
+    //
+    // 2026-09-21 (owner report: "что считается за failed, почему такое большое
+    // число"): the two units are NOT the same and the bare numbers hid it.
+    // `downloaded` counts FILES saved; `failed` counts ITEMS whose every
+    // candidate URL 404'd — one preview is one item even when its chain tried
+    // nine URLs, and the walk can produce items the grid has no preview for. The
+    // number was right and read as inflated; now the label says which unit it is.
     //
     // The parts carry a `kind` for the panel to colour (see _mdStatusColor);
     // _mdTailCounters is the plain-text view of the SAME parts, so the numbers
     // have exactly one source and the pre-2026-09-21 callers are unaffected.
+    // `title` is the same rule as a tooltip on the one counter that gets
+    // misread, so the explanation is available where the doubt happens.
     var _mdTailCounterParts = function (outcomes, pending) {
         var parts = [];
         if (outcomes) {
-            parts.push({ text: 'Downloaded ' + _mdCount(outcomes.completed), kind: 'done' });
-            if (_mdCount(outcomes.failed) > 0) parts.push({ text: _mdCount(outcomes.failed) + ' failed', kind: 'fail' });
+            parts.push({ text: 'Downloaded ' + _mdCount(outcomes.completed) + ' file(s)', kind: 'done' });
+            if (_mdCount(outcomes.failed) > 0) {
+                parts.push({
+                    text: _mdCount(outcomes.failed) + ' item(s) failed',
+                    kind: 'fail',
+                    title: 'Items whose every candidate URL failed. One preview is one item, '
+                        + 'even when its chain tried nine URLs — this is not a count of URLs.'
+                });
+            }
         }
         if (pending) {
             var active = _mdCount(pending.filtering) + _mdCount(pending.downloading) + _mdCount(pending.retries);
@@ -974,10 +990,12 @@
     // on screen in the live log 2026-09-14).
     var _mdSummaryText = function (summary) {
         if (!summary) return '';
-        var parts = ['Downloaded ' + _mdCount(summary.completed)];
-        if (_mdCount(summary.failed) > 0) parts.push(_mdCount(summary.failed) + ' failed');
-        if (_mdCount(summary.skipped) > 0) parts.push(_mdCount(summary.skipped) + ' skipped');
-        if (_mdCount(summary.canceled) > 0) parts.push(_mdCount(summary.canceled) + ' canceled');
+        // Same units as the live tail (see _mdTailCounterParts): files saved vs
+        // items that ended without a file.
+        var parts = ['Downloaded ' + _mdCount(summary.completed) + ' file(s)'];
+        if (_mdCount(summary.failed) > 0) parts.push(_mdCount(summary.failed) + ' item(s) failed');
+        if (_mdCount(summary.skipped) > 0) parts.push(_mdCount(summary.skipped) + ' item(s) skipped');
+        if (_mdCount(summary.canceled) > 0) parts.push(_mdCount(summary.canceled) + ' item(s) canceled');
         if (summary.elapsedSec != null) parts.push(_mdDurationText(summary.elapsedSec));
         return parts.join(' · ');
     };
@@ -5122,6 +5140,10 @@
                     const span = doc.createElement('span');
                     const color = _mdStatusColor(part && part.kind);
                     if (color) span.style.color = color;
+                    // The unit rule travels with the number (not HTML — a title
+                    // attribute on the node), so the doubt "why so many failed?"
+                    // is answered where it appears.
+                    if (part && part.title) span.title = String(part.title);
                     span.textContent = String(part && part.text != null ? part.text : '');
                     line.appendChild(span);
                 });

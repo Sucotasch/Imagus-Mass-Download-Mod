@@ -2112,11 +2112,17 @@ function mdEvictOldestRows(table, maxRecords) {
     const keys = Object.keys(table);
     if (keys.length <= maxRecords) return;
     const finished = { completed: 1, skipped: 1, failed: 1, canceled: 1 };
+    // 2026-09-21: a SUPERSEDED candidate is the least valuable row there is. The
+    // item did not fail — another candidate replaced it, and the same story is
+    // kept in the terminal row's `attempts` (Save Log). The live 2026-09-20 run
+    // put 44 attempt rows in the window while 18 completed rows were evicted, so
+    // the page read as "nothing was downloaded at all".
+    // Rank: 0 = superseded attempt (dropped first), 1 = finished outcome,
+    // 2 = live row (dropped last — its updates must keep landing somewhere).
+    const rank = (r) => ((r && r.superseded) ? 0 : (finished[r && r.status] ? 1 : 2));
     const sorted = keys.sort((a, b) => {
         const sa = table[a], sb = table[b];
-        const fa = finished[sa.status] ? 0 : 1;
-        const fb = finished[sb.status] ? 0 : 1;
-        return fa - fb || (sa.timestamp || 0) - (sb.timestamp || 0);
+        return rank(sa) - rank(sb) || (sa.timestamp || 0) - (sb.timestamp || 0);
     });
     sorted.slice(0, keys.length - maxRecords).forEach(k => delete table[k]);
 }
@@ -2868,7 +2874,10 @@ function mdSupersedeAttempt(url, reason, task) {
 // really had alternatives (group rows, _candidateCount > 1) get the suffix.
 function mdItemFailedText(task, base) {
     const n = (task && task._candidateCount != null) ? task._candidateCount : 0;
-    return n > 1 ? base + ' — all ' + n + ' candidate URLs failed' : base;
+    // "one failed item, not N": the banner and the tab count ITEMS, and a reader
+    // who sees "all 9 candidate URLs failed" reads it as nine losses for one
+    // picture (owner report 2026-09-20). The count is one, and now it says so.
+    return n > 1 ? base + ' — all ' + n + ' candidate URLs failed (1 item, not ' + n + ')' : base;
 }
 
 // Stage 5b/5c: when the current URL fails the browser-context download (dead

@@ -1196,8 +1196,44 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `ROWS: ${tree} — the tab runs its own cap on its own copy and must use the SAME rule as the worker`);
         assert.ok(!/completed: 0/.test(coreCode) && !/completed: 0/.test(tabCode),
             `ROWS REGRESSION: ${tree} — the completed-first eviction order must not return`);
-        assert.ok(/fa - fb \|\| \(sa\.timestamp \|\| 0\) - \(sb\.timestamp \|\| 0\)/.test(cutFnFrom(core, 'mdEvictOldestRows')),
-            `ROWS: ${tree} — a finished row goes before a live one, oldest first`);
+        // 2026-09-21 (live log 09-20): 44 SUPERSEDED candidate attempts sat in the
+        // window while completed rows were evicted, so the page read as "nothing
+        // was downloaded". A replaced candidate is not an outcome — it goes first,
+        // before any finished row, and a live row goes last (its updates must keep
+        // landing somewhere). The SAME expression must sit in the tab's own cap.
+        const RANK = 'const rank = (r) => ((r && r.superseded) ? 0 : (finished[r && r.status] ? 1 : 2));';
+        assert.ok(cutFnFrom(core, 'mdEvictOldestRows').includes(RANK)
+            && /rank\(sa\) - rank\(sb\) \|\| \(sa\.timestamp \|\| 0\) - \(sb\.timestamp \|\| 0\)/.test(cutFnFrom(core, 'mdEvictOldestRows')),
+            `ROWS: ${tree} — a replaced candidate drops first, then the oldest finished row, and a live row last`);
+        assert.ok(tabCode.includes(RANK),
+            `ROWS: ${tree} — the tab's own cap must drop another candidate's replaced attempts first too`);
+        // The visible window's ORDER is part of the answer (mdRowRank, executed
+        // below): a run fails in a burst at the end, so chronological-only order
+        // filled the screen with failures. Locked here, executed in the tab block.
+        assert.ok(/function mdRowRank\(/.test(tabCode)
+            && /items\.sort\(\(a, b\) => mdRowRank\(a\) - mdRowRank\(b\) \|\| b\.timestamp - a\.timestamp\)/.test(cutFnBalanced(tab, 'renderTable')),
+            `ROWS: ${tree} — renderTable must order the window by mdRowRank, newest first inside a group`);
+        assert.ok(/Rows are grouped: running first/.test(cutFnBalanced(tab, 'mdListNoteText')),
+            `ROWS: ${tree} — the note must state the order, or a grouped list looks shuffled`);
+        // EXECUTED, on the shape of the live 2026-09-20 run (100 rows: 44 replaced
+        // candidates, 37 failures, 18 completed): every failure sits after every
+        // delivery, and a replaced candidate sits with the retired rows — never
+        // counted as a failure and never above a file that really downloaded.
+        const rowRank = new Function(
+            "const MD_TERMINAL = { completed: 1, failed: 1, skipped: 1, canceled: 1 };\n"
+            + `${cutFnBalanced(tab, 'mdRowRank')}\nreturn mdRowRank;`)();
+        const rankLive = rowRank({ status: 'downloading' });
+        const rankDone = rowRank({ status: 'completed' });
+        const rankFailed = rowRank({ status: 'failed' });
+        const rankRetired = rowRank({ status: 'skipped' });
+        assert.ok(rankLive < rankDone && rankDone < rankFailed && rankFailed < rankRetired,
+            `ROWS: ${tree} — the window must show running, then downloaded, then failed, then retired`);
+        assert.strictEqual(rowRank({ status: 'skipped', superseded: true }), rankRetired,
+            `ROWS: ${tree} — a replaced candidate is retired, never mixed in with failures`);
+        assert.strictEqual(rowRank({ status: 'canceled' }), rankRetired,
+            `ROWS: ${tree} — a cancel is the user's verdict, not a delivery and not a bug`);
+        assert.strictEqual(rowRank(null), rankRetired,
+            `ROWS: ${tree} — an empty row cannot push a real delivery down`);
         // A capped window must SAY that it is a window, or its counts read as bugs.
         assert.ok(/Rows in this log: /.test(tabCode) && /da\.maxProgressRecords/.test(tabCode),
             `ROWS: ${tree} — the Saved Log must name the row cap next to the scan totals`);
@@ -1277,6 +1313,10 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `SUPERSEDE: ${tree} — all 9 exhausted-chain sites + the definition must use mdItemFailedText`);
         assert.ok(/all ' \+ n \+ ' candidate URLs failed/.test(cutFnFrom(core, 'mdItemFailedText')),
             `SUPERSEDE: ${tree} — the terminal row must say how many candidates died`);
+        // 2026-09-21 (owner report): "all 9 candidate URLs failed" was read as nine
+        // losses for one picture. The row now names the unit: ONE item.
+        assert.ok(/\(1 item, not ' \+ n \+ '\)/.test(cutFnFrom(core, 'mdItemFailedText')),
+            `SUPERSEDE: ${tree} — the row must say the loss is ONE item, not N URLs`);
         assert.ok(/if \(task\) task\._attempts = recordCandidateAttempt\(task, reason\);/.test(cutFnFrom(core, 'advanceToNextCandidate')),
             `SUPERSEDE: ${tree} — the LAST candidate's attempt must enter the chain (the rows no longer carry it)`);
         assert.ok(cutFnFrom(core, 'mdSupersedeAttempt').includes("if (prog && prog.status === 'canceled') return;"),
@@ -2254,10 +2294,15 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
     for (const tree of trees) {
         const h = helperFactory(tree);
         // Counters only: no denominator, no ETA — the owner's rule.
+        // UNITS ARE PART OF THE NUMBER (owner report 2026-09-21: "что считается за
+        // failed, почему такое большое число"): `downloaded` counts FILES saved,
+        // `failed` counts ITEMS whose every candidate 404'd — one preview is one
+        // item even when its chain tried nine URLs. The bare numbers hid that, and
+        // 37 files beside 37 failures over 42 previews read as a broken counter.
         assert.strictEqual(
             h._mdTailCounters({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 }),
-            'Downloaded 34 · 2 failed · 3 active · 12 queued',
-            `STATUS: ${tree} — the tail line is counters, nothing else`);
+            'Downloaded 34 file(s) · 2 item(s) failed · 3 active · 12 queued',
+            `STATUS: ${tree} — the tail line is counters with their units, nothing else`);
         assert.ok(!/of \d|ETA|remaining|~/.test(h._mdTailCounters({ completed: 1 }, { queued: 1 })),
             `STATUS: ${tree} — no estimate may appear in the tail line`);
         assert.strictEqual(h._mdTailCounters(null, null), '',
@@ -2269,12 +2314,16 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         assert.deepStrictEqual(
             h._mdTailCounterParts({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 }),
             [
-                { text: 'Downloaded 34', kind: 'done' },
-                { text: '2 failed', kind: 'fail' },
+                { text: 'Downloaded 34 file(s)', kind: 'done' },
+                {
+                    text: '2 item(s) failed', kind: 'fail',
+                    title: 'Items whose every candidate URL failed. One preview is one item, '
+                        + 'even when its chain tried nine URLs — this is not a count of URLs.'
+                },
                 { text: '3 active', kind: '' },
                 { text: '12 queued', kind: '' }
             ],
-            `STATUS: ${tree} — downloaded carries the green kind, failed the red one, running stays plain`);
+            `STATUS: ${tree} — downloaded carries the green kind, failed the red one (+ the unit rule as a title), running stays plain`);
         assert.strictEqual(
             h._mdTailCounters({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 }),
             h._mdTailCounterParts({ completed: 34, failed: 2 }, { filtering: 0, downloading: 3, queued: 12, retries: 0 })
@@ -2303,8 +2352,8 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `STATUS: ${tree} — unknown state must not be sold as safe`);
         // The final line: real totals, wall-clock duration.
         assert.strictEqual(h._mdSummaryText({ completed: 185, failed: 11, skipped: 81, elapsedSec: 222 }),
-            'Downloaded 185 · 11 failed · 81 skipped · 3m 42s',
-            `STATUS: ${tree} — the summary must render the ledger and the duration`);
+            'Downloaded 185 file(s) · 11 item(s) failed · 81 item(s) skipped · 3m 42s',
+            `STATUS: ${tree} — the summary must render the ledger (with its units) and the duration`);
         assert.strictEqual(h._mdSummaryText(null), '',
             `STATUS: ${tree} — an older worker ships no summary: print nothing`);
         // Backoff identity: a live download with still counters must not look frozen.
@@ -2332,8 +2381,8 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         const summaryText = new Function(
             `${cutFnBalanced(tabText, 'mdSessionSummaryText')}\nreturn mdSessionSummaryText;`)();
         const text = summaryText({ completed: 185, failed: 11, skipped: 81, canceled: 0, elapsedSec: 222 });
-        assert.ok(/Downloaded 185/.test(text) && /11 failed/.test(text) && /3m 42s/.test(text),
-            `STATUS: ${tree} — the tab summary must print the real totals`);
+        assert.ok(/Downloaded 185 file\(s\)/.test(text) && /11 item\(s\) failed/.test(text) && /3m 42s/.test(text),
+            `STATUS: ${tree} — the tab summary must print the real totals with their units`);
         assert.ok(/capped/.test(text),
             `STATUS: ${tree} — and must say WHY it differs from the grid above (the list is a window)`);
         assert.ok(/^Stopped — /.test(summaryText({ completed: 4, failed: 0, elapsedSec: 5, userCanceled: true })),
@@ -2361,6 +2410,8 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `STATUS: ${tree} — the status banner is built from nodes only (never HTML)`);
         assert.ok(/doc\.createTextNode\(' · '\)/.test(banner),
             `STATUS: ${tree} — the separator is text, so no counter can invent markup`);
+        assert.ok(/if \(part && part\.title\) span\.title = String\(part\.title\);/.test(c),
+            `STATUS: ${tree} — the unit rule must reach the DOM as a title attribute (still no HTML)`);
     }
 
     // A copy, not a fork: the two trees carry byte-identical renderers.
@@ -2374,6 +2425,10 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         cutFnBalanced(tabTexts['src-mv3-overlay-firefox'], 'mdSessionSummaryText'),
         cutFnBalanced(tabTexts['src-mv3-overlay'], 'mdSessionSummaryText'),
         'STATUS: the tab summary renderer must be a copy, not a fork (both trees)');
+    assert.strictEqual(
+        cutFnBalanced(tabTexts['src-mv3-overlay-firefox'], 'mdRowRank'),
+        cutFnBalanced(tabTexts['src-mv3-overlay'], 'mdRowRank'),
+        'ROWS: mdRowRank must be a copy, not a fork (both trees)');
 
     console.log('md-unit-smoke: after-scan session status locks hold in both trees');
 }
