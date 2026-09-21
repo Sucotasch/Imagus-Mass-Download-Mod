@@ -710,6 +710,11 @@ function handleMessage(message, sender, sendResponse) {
                     // Where the time went (phases) and where the items died
                     // (counters) — null when the session produced no diagnostics.
                     scanDiagnostics: mdScanDiagnosticsForLog(),
+                    // 2026-09-21 (duplicate hunt): the UNCAPPED terminal ledger.
+                    // The item table below is capped at da.maxProgressRecords (the
+                    // 10:34 run shipped 100 of 296 rows), and the dropped rows are
+                    // exactly where the evidence for the ' (1)' duplicates lived.
+                    outcomes: mdOutcomesForLog(),
                     version: chrome.runtime.getManifest().version,
                     sessionStart: sessionStartTime,
                     // Worker identity: lets Save Log prove "the worker answering

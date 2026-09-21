@@ -2836,3 +2836,122 @@ return mdSaveViaOffscreen(msg);
     delete globalThis.__save1;
     console.log('md-unit-smoke: single-save offscreen locks hold (Chrome-only delta)');
 }
+
+// ── LOGFMT-1: the duplicate fingerprint must survive a refactor ─────────────
+//
+// Why this lock exists: the 2026-09-21 10:34 run left 297 files on disk with 36
+// byte-identical ' (1)' pairs and 29 pictures stored twice (sample + original),
+// while the log showed ONE row per URL — the evidence needed to name the cause
+// (the name Chrome ACTUALLY wrote) was never captured, so the only way to find
+// the duplicates was a five-minute walk over the download folder. These fields
+// and the two log sections are what make the next log answer it by itself.
+{
+    const trees = ['src-mv3-overlay', 'src-mv3-overlay-firefox'];
+    for (const tree of trees) {
+        const core = readFileSync(join(repoRoot, tree, 'mass-download/service-core.js'), 'utf8');
+        const serialize = cutFnFrom(core, 'serializeProgressEntry');
+        // The requested name (ours) and the recorded name (Chrome's) must BOTH
+        // ship: only their difference reveals the ' (1)' second copy.
+        assert.ok(/requestedName: t \? \(t\._requestedName/.test(serialize),
+            `LOGFMT-1: ${tree} — serializeProgressEntry must ship the requested target name`);
+        assert.ok(/recordedName: t \? \(t\._recordedName/.test(serialize),
+            `LOGFMT-1: ${tree} — serializeProgressEntry must ship the name Chrome actually wrote`);
+        assert.ok(/uniqName:/.test(serialize) && /browserId:/.test(serialize),
+            `LOGFMT-1: ${tree} — the duplicate marker and the Chrome download id must ship too`);
+        assert.ok(/restored:/.test(serialize) && /historyAdopted:/.test(serialize),
+            `LOGFMT-1: ${tree} — a row must say whether it came from a snapshot / from history`);
+        // mdOutcomesForLog is the UNCAPPED ledger: the row table is capped at
+        // da.maxProgressRecords, and the dropped rows are where such evidence hides.
+        const ledger = cutFnFrom(core, 'mdOutcomesForLog');
+        assert.ok(/mdOutcomeByUrl\.forEach/.test(ledger),
+            `LOGFMT-1: ${tree} — the log's terminal list must come from the ledger, not the capped row table`);
+        // Both ends of the fingerprint: the SW writes the fields, the tab reads them.
+        assert.ok(/existingTask\._recordedName = mdBasename\(results\[0\]\.filename\)/.test(core),
+            `LOGFMT-1: ${tree} — a completed download must record Chrome's file name`);
+        assert.ok(/task\._requestedName = mdBasename\(filename\)/.test(core),
+            `LOGFMT-1: ${tree} — the download start must record the name we asked for`);
+        // mdBasename is pure: execute it rather than trusting the cut text.
+        const cutBase = cutFnFrom(core, 'mdBasename');
+        const basename = new Function(`${cutBase}; return mdBasename;`)();
+        assert.strictEqual(basename('C:\\dir\\a (1).png'), 'a (1).png',
+            `LOGFMT-1: ${tree} — Windows path basename`);
+        assert.strictEqual(basename('/home/u/a.png'), 'a.png',
+            `LOGFMT-1: ${tree} — POSIX path basename`);
+        assert.strictEqual(basename(null), null, `LOGFMT-1: ${tree} — no path, no name (never "undefined" in the log)`);
+    }
+    const tab = readFileSync(join(repoRoot, 'src-mv3-overlay/options/download-progress.js'), 'utf8');
+    assert.ok(/DUPLICATE FILE NAMES/.test(tab),
+        'LOGFMT-1: the log must group rows by written name and name the duplicates itself');
+    assert.ok(/Terminal items, uncapped/.test(tab),
+        'LOGFMT-1: the log must list the uncapped ledger (the row cap hid the evidence)');
+    assert.ok(/adopted from Chrome\\'s download history/.test(tab),
+        'LOGFMT-1: the Recovered line must report how many items history rescued');
+    console.log('md-unit-smoke: duplicate-hunt logging locks hold (LOGFMT-1)');
+}
+
+// ── SAVE-2: an UNANSWERED offscreen delivery is not a refusal ───────────────
+//
+// The live complaint (2026-09-21): single saves on pixiv "work, then fail with
+// 'Failed to fetch', on the same page and the same picture". The progress tab
+// registers chrome.runtime.onMessage and ignores commands it does not know, so
+// while it is open (the default) a message the CLOSED offscreen document never
+// received comes back as a silent `undefined` instead of a rejection — and the
+// old code read that as "the tier refused" and fell back to the page fetch that
+// a Referer-gated CDN can never satisfy. The document also self-closes after
+// 30 s idle while the worker's cached setup promise stays resolved, so success
+// and failure alternated by construction. Executed here: an undefined answer
+// must be retried (and the stale cache dropped), while the fire-and-forget
+// revoke must NOT resurrect a document for a URL that died with it.
+{
+    const core = readFileSync(join(repoRoot, 'src-mv3-overlay/mass-download/service-core.js'), 'utf8');
+    const sendSrc = cutFnFrom(core, 'mdOffscreenSend');
+    assert.ok(/MD_OFFSCREEN_SEND_MS/.test(sendSrc) && /mdOffscreenSetup = null/.test(sendSrc),
+        'SAVE-2: the send must drop the stale setup and retry on a bounded ladder');
+
+    const drive = (answers, revive) => {
+        let calls = 0, ensures = 0;
+        const chromeStub = {
+            runtime: {
+                sendMessage: function () {
+                    const a = answers[Math.min(calls, answers.length - 1)];
+                    calls++;
+                    return a instanceof Error ? Promise.reject(a) : Promise.resolve(a);
+                }
+            }
+        };
+        const body = 'var MD_OFFSCREEN_SEND_MS = [1, 1, 1];\nvar mdOffscreenSetup = Promise.resolve(true);\n'
+            + sendSrc + '\nreturn mdOffscreenSend({ cmd: "mdOffscreenFetch" }, 0'
+            + (revive === false ? ', false' : '') + ');';
+        const p = new Function('chrome', 'mdOffscreenEnsure', body)(chromeStub, function () {
+            ensures++;
+            return Promise.resolve(true);
+        });
+        return { p: p, stats: () => ({ calls: calls, ensures: ensures }) };
+    };
+
+    (async () => {
+        // (a) a silent `undefined` (open progress tab / closed document) is not an answer
+        const a = drive([undefined, { ok: true, objectUrl: 'blob:x' }]);
+        const resA = await a.p;
+        assert.strictEqual(resA.ok, true, 'SAVE-2: an unanswered delivery must be retried, not reported as a refusal');
+        assert.strictEqual(a.stats().calls, 2, 'SAVE-2: exactly one retry for one silent answer');
+        assert.strictEqual(a.stats().ensures, 1, 'SAVE-2: the stale setup cache must be dropped and the document recreated');
+
+        // (b) a real rejection (no receiver at all) behaves the same way
+        const b = drive([new Error('Could not establish connection'), { ok: true }]);
+        assert.strictEqual((await b.p).ok, true, 'SAVE-2: a rejected delivery (document gone) must be retried too');
+        assert.strictEqual(b.stats().ensures, 1, 'SAVE-2: and recreate the document once');
+
+        // (c) the revoke is fire-and-forget: never recreate a document to tell it
+        // about an object URL that died with the document
+        const c = drive([undefined], false);
+        await c.p.then(() => assert.fail('SAVE-2: a revoke with no document must settle as a failure'), () => {});
+        assert.strictEqual(c.stats().ensures, 0, 'SAVE-2: a revoke must never recreate the offscreen document');
+
+        // (d) the ladder is bounded: an always-silent document must not loop forever
+        const d = drive([undefined]);
+        await d.p.then(() => assert.fail('SAVE-2: a permanently silent document must end in a rejection'), () => {});
+        assert.strictEqual(d.stats().calls, 4, 'SAVE-2: one initial send + the three ladder steps, then stop');
+        console.log('md-unit-smoke: offscreen delivery locks hold (SAVE-2)');
+    })();
+}

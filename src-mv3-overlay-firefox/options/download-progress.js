@@ -913,6 +913,10 @@
                 + (rc.rows || 0) + ' row(s), ' + (rc.requeued || 0) + ' re-queued, '
                 + (rc.adopted || 0) + ' in-flight download(s) adopted, '
                 + (rc.droppedVolatile || 0) + ' needing a manual Retry (page-fetch/temporary URL lost)'
+                // 2026-09-21: how many items the history check recognised as already
+                // on disk (DUP-1). 0 with a non-zero re-queued count is itself a
+                // finding: the resume path re-downloaded everything it restored.
+                + ', ' + (rc.rescued || 0) + ' adopted from Chrome\'s download history (no second copy)'
                 + '; interrupted session start ' + fmtTs(rc.sessionStart)
                 + ', interrupted worker ' + fmtTs(rc.workerStart));
             // GEN-3: the one fact the dead generation could not report about
@@ -968,6 +972,33 @@
             lines.push('  so the item is accounted for by its terminal row (completed, or one failed row if no candidate worked).');
             lines.push('  Their own URL and last reason are kept above; the full chain is in the terminal row\'s "attempts" line.');
         }
+        // 2026-09-21 (duplicate hunt): the run's own answer to "did we write the
+        // same file twice?". The 10:34 run left 36 byte-identical ' (1)' pairs
+        // on disk and this log could not prove it: the row table is capped and
+        // Chrome's recorded name was never captured. Grouping the rows by the
+        // name Chrome wrote turns that into one block, in the log itself.
+        const nameGroups = {};
+        items.forEach((it, i) => {
+            const name = it.recordedName || it.filename;
+            if (!name) return;
+            const key = String(name).toLowerCase();
+            if (!nameGroups[key]) nameGroups[key] = [];
+            nameGroups[key].push({ n: i + 1, it: it });
+        });
+        const dupNames = Object.keys(nameGroups).filter(k => nameGroups[k].length > 1);
+        if (dupNames.length > 0) {
+            lines.push('  DUPLICATE FILE NAMES: ' + dupNames.length + ' name(s) were written more than once in this run.');
+            lines.push('  Chrome appends " (1)" instead of overwriting, so every name below is a SECOND file on disk.');
+            dupNames.forEach(k => {
+                lines.push('    ' + k + ':');
+                nameGroups[k].forEach(g => lines.push('      [' + String(g.n).padStart(3, '0') + '] '
+                    + String(g.it.status || '-') + ' id=' + (g.it.browserId != null ? g.it.browserId : '-')
+                    + ' recorded="' + (g.it.recordedName || '-') + '" requested="' + (g.it.requestedName || g.it.filename || '-') + '"'
+                    + ' ' + (g.it.url || '')));
+            });
+        } else {
+            lines.push('  No duplicate file names: every listed row wrote a distinct file.');
+        }
         lines.push(...mdScanDiagLines(opts && opts.diagnostics));
         lines.push('');
         lines.push('Items:');
@@ -995,11 +1026,41 @@
                 lines.push('      attempts: ' + chain);
             }
             if (it.filename) lines.push('      file: ' + it.filename);
+            // 2026-09-21 (duplicate hunt): what Chrome ACTUALLY wrote. When it
+            // differs from what we asked for, Chrome found the name taken and
+            // appended ' (1)' — i.e. this row produced a second file on disk.
+            if (it.browserId != null) lines.push('      browser id: ' + it.browserId);
+            if (it.uniqName || (it.recordedName && it.filename && it.recordedName !== it.filename)) {
+                lines.push('      browser wrote: ' + (it.recordedName || '-') + (it.uniqName
+                    ? '  <-- DUPLICATE NAME: the requested name already existed, Chrome did not overwrite'
+                    : ''));
+            }
+            if (it.restored || it.historyAdopted) {
+                lines.push('      restored: yes'
+                    + (it.historyAdopted ? ' - answered from Chrome\'s download history, no second copy written' : '')
+                    + (it.uniqName ? '' : ''));
+            }
             if (it.contentType) lines.push('      type: ' + it.contentType);
             if (it.referer) lines.push('      referer: ' + it.referer);
             if (it.elementInfo) lines.push('      element: <' + it.elementInfo.tag + '> ' + (it.elementInfo.src || ''));
             if (it.error) lines.push('      error: ' + it.error);
         });
+        // 2026-09-21 (duplicate hunt): the UNCAPPED ledger, as "status url".
+        // The item table above is capped at da.maxProgressRecords, and in the
+        // 10:34 run the rows that carried the evidence were exactly the ones the
+        // cap dropped (100 shipped of 296 completed). This list never drops one.
+        const outcomes = Array.isArray(data.outcomes) ? data.outcomes : [];
+        if (outcomes.length > 0) {
+            const hist = {};
+            outcomes.forEach(o => { hist[o.status] = (hist[o.status] || 0) + 1; });
+            lines.push('');
+            lines.push('Terminal items, uncapped (' + outcomes.length + ' of the session\'s ledger: '
+                + Object.keys(hist).map(s => s + '=' + hist[s]).join(', ')
+                + (outcomes.length > items.length ? ', ' + (outcomes.length - items.length) + ' beyond the row cap' : '')
+                + ') — one line per item; "missing" here with a row above means the row was evicted:');
+            outcomes.slice().sort((a, b) => String(a.status).localeCompare(String(b.status)))
+                .forEach(o => lines.push('  ' + String(o.status || '-').padEnd(10) + ' ' + (o.url || '-')));
+        }
         return lines.join('\r\n');
     }
 

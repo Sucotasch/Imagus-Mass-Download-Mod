@@ -2078,8 +2078,52 @@ function serializeProgressEntry(entry) {
         attempts: t && Array.isArray(t._attempts) ? t._attempts.slice() : null,
         // 2026-09-12: an attempt row that a later candidate replaced (see
         // mdSupersedeAttempt). The tab keeps its Retry button alive.
-        superseded: !!(t && t._superseded)
+        superseded: !!(t && t._superseded),
+        // 2026-09-21 — the duplicate-hunt fields.
+        //
+        // The 10:34 run is the proof of why they are needed: 297 files on disk,
+        // 36 byte-identical ' (1)' pairs, 29 pictures stored twice (sample AND
+        // original), while the log showed ONE row per URL and nothing else.
+        // "One row, two files" is invisible without the name Chrome ACTUALLY
+        // wrote: `requestedName` is ours, `recordedName` is Chrome's — it appends
+        // ' (1)' when the target name already exists in the folder — and the two
+        // differing IS the fingerprint of a duplicate file. `browserId` ties the
+        // row to Chrome's own history entry so Save Log can be compared against
+        // chrome://downloads instead of against my inference.
+        requestedName: t ? (t._requestedName || null) : null,
+        recordedName: t ? (t._recordedName || null) : null,
+        uniqName: !!(t && t._uniqName),
+        browserId: t && t._downloadId != null ? t._downloadId : null,
+        // Which rows came back from a snapshot (DUP-1 scope) and which were
+        // answered by Chrome's history instead of a download.
+        restored: !!(t && t._restored),
+        historyAdopted: !!(t && t._historyAdopted)
     };
+}
+
+// Basename of a filesystem path ('C:\\dir\\a (1).png' -> 'a (1).png').
+// Used only for the duplicate telemetry above; a null/empty path yields null so
+// the log prints nothing rather than "undefined".
+function mdBasename(p) {
+    if (typeof p !== 'string' || !p) return null;
+    const parts = p.split(/[\\/]/);
+    return parts[parts.length - 1] || null;
+}
+
+// The UNCAPPED terminal ledger, for Save Log.
+//
+// `serializeAllProgress()` walks the row table, which is capped by
+// da.maxProgressRecords (100): the 10:34 run counted 296 completed rows and
+// shipped 100, so the rows that carried the evidence (the duplicate pairs) were
+// exactly the ones dropped. mdOutcomeByUrl is the outcome ledger — one entry per
+// URL for the whole session, never evicted — so the log can list every terminal
+// item as "status url" regardless of the row cap.
+function mdOutcomesForLog() {
+    const out = [];
+    try {
+        mdOutcomeByUrl.forEach(function (status, url) { out.push({ url: url, status: status }); });
+    } catch (e) { /* ledger missing: an older worker, or a very early save */ }
+    return out;
 }
 
 function serializeAllProgress() {
@@ -2643,6 +2687,10 @@ function mdAdoptIfAlreadyDownloaded(task) {
             if (!found) return;
             if (found.mime) task.contentType = found.mime;
             if (found.fileSize) task.fileSize = found.fileSize;
+            // Telemetry: this row was answered by Chrome's history, not by a
+            // download — and the name Chrome holds is the one on disk.
+            task._historyAdopted = true;
+            task._recordedName = mdBasename(found.filename);
             const queued = downloadQueue.indexOf(task);
             if (queued >= 0) downloadQueue.splice(queued, 1);
             // updateDownloadProgress is the single funnel: it moves the row AND feeds the
@@ -2804,6 +2852,9 @@ function processDownloadQueue() {
                 releaseDownloadSlot(task);
             } else {
                 task._downloadId = downloadId;
+                // The requested target name, kept for the duplicate telemetry
+                // (see serializeProgressEntry): what we ASKED Chrome to write.
+                task._requestedName = mdBasename(filename);
                 downloadIdToTask.set(downloadId, task);
                 updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
                 // Gradient watchdog (see armStallWatchdog): 60 s of complete
@@ -3135,6 +3186,15 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 // the Save Log like HEAD/GET-validated ones do.
                 if (mime) existingTask.contentType = mime;
                 if (results[0].fileSize) existingTask.fileSize = results[0].fileSize;
+                // 2026-09-21 (duplicate hunt): record what Chrome WROTE, not what
+                // we asked for. Chrome appends ' (1)' to a target name that
+                // already exists in the folder, so recorded !== requested is the
+                // fingerprint of a second copy appearing beside the first — the
+                // 36 pairs of the 10:34 run.
+                existingTask._recordedName = mdBasename(results[0].filename);
+                existingTask._uniqName = !!existingTask._recordedName
+                    && !!existingTask._requestedName
+                    && existingTask._recordedName.toLowerCase() !== existingTask._requestedName.toLowerCase();
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });

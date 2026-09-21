@@ -2083,8 +2083,52 @@ function serializeProgressEntry(entry) {
         attempts: t && Array.isArray(t._attempts) ? t._attempts.slice() : null,
         // 2026-09-12: an attempt row that a later candidate replaced (see
         // mdSupersedeAttempt). The tab keeps its Retry button alive.
-        superseded: !!(t && t._superseded)
+        superseded: !!(t && t._superseded),
+        // 2026-09-21 — the duplicate-hunt fields.
+        //
+        // The 10:34 run is the proof of why they are needed: 297 files on disk,
+        // 36 byte-identical ' (1)' pairs, 29 pictures stored twice (sample AND
+        // original), while the log showed ONE row per URL and nothing else.
+        // "One row, two files" is invisible without the name Chrome ACTUALLY
+        // wrote: `requestedName` is ours, `recordedName` is Chrome's — it appends
+        // ' (1)' when the target name already exists in the folder — and the two
+        // differing IS the fingerprint of a duplicate file. `browserId` ties the
+        // row to Chrome's own history entry so Save Log can be compared against
+        // chrome://downloads instead of against my inference.
+        requestedName: t ? (t._requestedName || null) : null,
+        recordedName: t ? (t._recordedName || null) : null,
+        uniqName: !!(t && t._uniqName),
+        browserId: t && t._downloadId != null ? t._downloadId : null,
+        // Which rows came back from a snapshot (DUP-1 scope) and which were
+        // answered by Chrome's history instead of a download.
+        restored: !!(t && t._restored),
+        historyAdopted: !!(t && t._historyAdopted)
     };
+}
+
+// Basename of a filesystem path ('C:\\dir\\a (1).png' -> 'a (1).png').
+// Used only for the duplicate telemetry above; a null/empty path yields null so
+// the log prints nothing rather than "undefined".
+function mdBasename(p) {
+    if (typeof p !== 'string' || !p) return null;
+    const parts = p.split(/[\\/]/);
+    return parts[parts.length - 1] || null;
+}
+
+// The UNCAPPED terminal ledger, for Save Log.
+//
+// `serializeAllProgress()` walks the row table, which is capped by
+// da.maxProgressRecords (100): the 10:34 run counted 296 completed rows and
+// shipped 100, so the rows that carried the evidence (the duplicate pairs) were
+// exactly the ones dropped. mdOutcomeByUrl is the outcome ledger — one entry per
+// URL for the whole session, never evicted — so the log can list every terminal
+// item as "status url" regardless of the row cap.
+function mdOutcomesForLog() {
+    const out = [];
+    try {
+        mdOutcomeByUrl.forEach(function (status, url) { out.push({ url: url, status: status }); });
+    } catch (e) { /* ledger missing: an older worker, or a very early save */ }
+    return out;
 }
 
 function serializeAllProgress() {
@@ -2236,11 +2280,51 @@ function mdOffscreenEnsure() {
 
 // The offscreen listener registers while the document loads, so the first
 // delivery can race createDocument's resolution — retry it a couple of times.
-function mdOffscreenSend(msg, attempts) {
-    return chrome.runtime.sendMessage(msg).catch(function (e) {
-        if (attempts <= 0) throw e;
-        return new Promise(function (resolve) { setTimeout(resolve, 150); })
-            .then(function () { return mdOffscreenSend(msg, attempts - 1); });
+//
+// 2026-09-21 — the intermittent "single save works, then fails with 'Failed to
+// fetch' on the same page and the same picture". Two failure shapes, and the old
+// code only handled one of them:
+//   1) NO receiver  -> sendMessage REJECTS ("Could not establish connection").
+//      Happens while the document is still loading, and — the frequent case —
+//      after it CLOSED ITSELF: offscreen/offscreen.js self-closes after 30 s of
+//      idle, and this worker's cached mdOffscreenSetup stays resolved across
+//      that (a worker easily outlives 30 s). The throw dropped the cache, so the
+//      NEXT save recreated the document and worked: successes and failures
+//      alternated by construction.
+//   2) a receiver that does NOT answer -> sendMessage RESOLVES WITH undefined.
+//      That is what an OPEN PROGRESS TAB causes: it registers
+//      chrome.runtime.onMessage (download-progress.js) and ignores commands it
+//      does not know, so with the tab open (the default setting!) a message the
+//      closed offscreen document never received came back as a silent
+//      `undefined`. The old code read that as "the tier refused" and fell back
+//      to the page-context fetch, which a Referer-gated CDN can never satisfy
+//      — the alert the user saw. No exception was thrown, so nothing was even
+//      retried.
+// A delivery now counts only when an ANSWER arrived; otherwise the cached setup
+// is dropped, the document is (re)created, and the message is retried on a
+// small growing ladder (150/300/600 ms — bounded, and only ever paid when the
+// document really is gone).
+//
+// `revive === false` is for fire-and-forget messages (the object-URL revoke):
+// recreating a document just to tell it about a URL that died with it would be
+// pure waste.
+var MD_OFFSCREEN_SEND_MS = [150, 300, 600];
+
+function mdOffscreenSend(msg, step, revive) {
+    return chrome.runtime.sendMessage(msg).then(function (res) {
+        if (res === undefined || res === null) {
+            throw new Error('no answer from the offscreen document');
+        }
+        return res;
+    }).catch(function (e) {
+        if (revive === false || step >= MD_OFFSCREEN_SEND_MS.length) throw e;
+        // The cached promise says nothing about whether the document is still
+        // alive (see 1 above): throw it away and build one, then try again.
+        mdOffscreenSetup = null;
+        return mdOffscreenEnsure().then(function (ok) {
+            if (!ok) throw e;
+            return new Promise(function (resolve) { setTimeout(resolve, MD_OFFSCREEN_SEND_MS[step]); });
+        }).then(function () { return mdOffscreenSend(msg, step + 1); });
     });
 }
 
@@ -2257,7 +2341,7 @@ function mdOffscreenSend(msg, attempts) {
 const MD_OFFSCREEN_ANSWER_MS = 180 * 1000;
 
 function mdOffscreenFetchBounded(msg) {
-    const send = mdOffscreenSend(msg, 2);
+    const send = mdOffscreenSend(msg, 0);
     return new Promise(function (resolve, reject) {
         let settled = false;
         const timer = setTimeout(function () {
@@ -2288,7 +2372,7 @@ function mdOffscreenFetchBounded(msg) {
 // blob URL dies with the document anyway.
 function mdOffscreenRevokeObjectUrl(objectUrl) {
     if (!objectUrl) return;
-    mdOffscreenSend({ cmd: 'mdOffscreenRevoke', objectUrl: objectUrl }, 0)
+    mdOffscreenSend({ cmd: 'mdOffscreenRevoke', objectUrl: objectUrl }, 0, false)
         .catch(function () { /* document gone */ });
 }
 
@@ -2975,6 +3059,10 @@ function mdAdoptIfAlreadyDownloaded(task) {
             if (!found) return;
             if (found.mime) task.contentType = found.mime;
             if (found.fileSize) task.fileSize = found.fileSize;
+            // Telemetry: this row was answered by Chrome's history, not by a
+            // download — and the name Chrome holds is the one on disk.
+            task._historyAdopted = true;
+            task._recordedName = mdBasename(found.filename);
             const queued = downloadQueue.indexOf(task);
             if (queued >= 0) downloadQueue.splice(queued, 1);
             // updateDownloadProgress is the single funnel: it moves the row AND feeds the
@@ -3122,6 +3210,9 @@ function processDownloadQueue() {
                 releaseDownloadSlot(task);
             } else {
                 task._downloadId = downloadId;
+                // The requested target name, kept for the duplicate telemetry
+                // (see serializeProgressEntry): what we ASKED Chrome to write.
+                task._requestedName = mdBasename(filename);
                 downloadIdToTask.set(downloadId, task);
                 updateDownloadProgress(task.url, 'downloading', 0, null, downloadId, task);
                 // Gradient watchdog (see armStallWatchdog): 60 s of complete
@@ -3453,6 +3544,15 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 // the Save Log like HEAD/GET-validated ones do.
                 if (mime) existingTask.contentType = mime;
                 if (results[0].fileSize) existingTask.fileSize = results[0].fileSize;
+                // 2026-09-21 (duplicate hunt): record what Chrome WROTE, not what
+                // we asked for. Chrome appends ' (1)' to a target name that
+                // already exists in the folder, so recorded !== requested is the
+                // fingerprint of a second copy appearing beside the first — the
+                // 36 pairs of the 10:34 run.
+                existingTask._recordedName = mdBasename(results[0].filename);
+                existingTask._uniqName = !!existingTask._recordedName
+                    && !!existingTask._requestedName
+                    && existingTask._recordedName.toLowerCase() !== existingTask._requestedName.toLowerCase();
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
