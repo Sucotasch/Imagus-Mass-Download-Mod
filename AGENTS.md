@@ -355,6 +355,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 |-----|----------|
 | `Docs/MASS_DOWNLOAD_STRATEGY.md` | Overlay design, entry points, re-base procedure |
 | `Docs/MASS_DOWNLOAD_ALGORITHM.md` | Two-phase algorithm, heuristics, circuit breaker |
+| `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` | Where a scan's seconds go (facts vs estimates, labelled): fixed inter-element waits 43.6–46.0 s of a 171.9 s walk, `walk=` is an upper bound on the walk, and the unmeasured resolve delay / serial resolve as the bigger lever |
 | `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` | Dev guide: §2 = verified status of every residual (all closed but R-07), §14 = Imagus engine internals (hover→find→resolve→set, sieve resolver, mod's capture) + commit-sourced lessons since v2026.7.25.2, §15 = Firefox overlay reality (dead event page → v2026.8.20.9 fixes) |
 | `Docs/UPSTREAM_820_INTEGRATION_PLAN.md` | Upstream v2026.8.20 integration / re-base checklist (both overlay trees) |
 | `knowledge.md` (repo root) | Condensed project knowledge: layout, commands, conventions, gotchas |

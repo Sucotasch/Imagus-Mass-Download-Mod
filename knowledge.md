@@ -99,6 +99,7 @@ ReDoS in stop-word matching (escape keywords, try/catch); media-ext regex bugs (
 - `Docs/PLAN_SESSION_STATUS_UI_2026-09-14.md` — the after-scan status panel: decisions, design, per-file changes, resource bounds
 - `Docs/MASS_DOWNLOAD_STRATEGY.md` — overlay design, entry points, re-base procedure
 - `Docs/MASS_DOWNLOAD_ALGORITHM.md` — two-phase algorithm, heuristics, circuit breaker, candidate chains
+- `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` — where a scan's seconds go, computed from the 12:15 log + the code: fixed inter-element waits are 43.6–46.0 s of the 171.9 s walk (25–27 %); `walk=` is an UPPER bound on the walk (on the groups path it includes the worker's group-analysis wait); the resolve path's deliberate delay (50 ms or `hz.delay`=300 ms) and the fully serial resolve (one in flight while the worker allows `maxConcurrentFilters`=5) are the bigger, still UNMEASURED lever. Every claim is labelled ФАКТ / РАСЧЁТ / ОЦЕНКА / НАБЛЮДЕНИЕ — read those labels before quoting a number.
 - `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` — post-audit dev guide (§14 = Imagus engine internals: hover→find→resolve→set)
 - `Docs/HASH_PREFIX_CONVENTION.md` — `#`-prefixed HD URL convention
 - `Docs/FIREFOX_OVERLAY.md` — Firefox deltas (only when working in the FF tree)
