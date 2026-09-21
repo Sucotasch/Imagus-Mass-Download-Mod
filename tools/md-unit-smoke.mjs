@@ -608,6 +608,140 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             assert.ok(!cSrc.includes('PVI.res_owner = d.params.rule;'),
                 `BT-01: ${tree} must not store the owner as the rule OBJECT (dead comparison)`);
         }
+
+        // --- 2026-09-21 live: the two scan START paths ----------------------------
+        // FIX-1: the popup's button did nothing and the console said
+        // "Uncaught ReferenceError: sendResponse is not defined" — the host
+        // declared `onMessage: function (d)` while its downloadAll branch (inside
+        // the mirrored MESSAGES section) passed `sendResponse`/`d.sender`. The
+        // branch is mirrored into content-block.js, the signature is NOT, so
+        // nothing else keeps the two in step: lock it here.
+        // FIX-2: the confirm probe is a round trip and the busy flag was cleared
+        // only by its answer — one lost answer locked the start out of the page
+        // for good. Executed below on the real method text with a fake clock.
+        // FIX-3: `walk=` was stamped after the worker's group analysis, so it
+        // carried the analysis wait (this is what made `walk=171.9 s` read as the
+        // walk). The stamp must sit at the walk's own end, before the handover.
+        for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+            const cSrc = readFileSync(join(repoRoot, `${tree}/content/content.js`), 'utf8');
+
+            assert.ok(/onMessage: function \(d, sender, sendResponse\)/.test(cSrc),
+                `FIX-1: ${tree} must declare the listener's own sender/sendResponse`);
+            assert.ok(cSrc.includes('if (PVI.mdStartDownloadAll(doc, sendResponse, sender)) return true;'),
+                `FIX-1: ${tree} must forward them and hold the channel only while an answer is pending`);
+            assert.ok(!cSrc.includes('PVI.mdStartDownloadAll(doc, sendResponse, d.sender)'),
+                `FIX-1: ${tree} must not read the sender off the message (d.sender is always undefined)`);
+
+            // cutMethodFn cuts at the `\n` of the method's closing line (CRLF in
+            // these trees), so the text it returns stops one line short of the
+            // method's own `}`. Every earlier caller was a text assert; this one
+            // EXECUTES the text, so the closer is put back.
+            const start = cutMethodFn(cSrc, 'mdStartDownloadAll') + '\n        }';
+            assert.ok(start.includes('let confirmTimer = setTimeout(function () {'),
+                `FIX-2: ${tree} must arm a watchdog for the confirm probe`);
+            assert.ok(start.includes('const clearConfirm = function () {'),
+                `FIX-2: ${tree} must clear the flag through ONE function`);
+            assert.ok(start.includes('pendingRequest.catch(function () { clearConfirm(); })'),
+                `FIX-2: ${tree} must clear the flag when the send itself fails`);
+            assert.ok(start.indexOf('return false;') > -1
+                && start.indexOf('return false;') < start.indexOf('PVI.mdSessionConfirmBusy = true;'),
+                `FIX-2: ${tree} must report the refusal synchronously (no async answer)`);
+
+            const walk = cutMethodFn(cSrc, 'processNextInQueue');
+            const stampAt = walk.indexOf('tWalkMs = Date.now() - PVI.downloadAllDiag._walkStart');
+            const handoverAt = walk.indexOf("cmd: 'resolveAndDownloadGroups'");
+            assert.ok(stampAt > -1 && handoverAt > stampAt,
+                `FIX-3: ${tree} must stamp tWalkMs at the walk's end, BEFORE the group handover`);
+            assert.ok(!/tWalkMs\s*=/.test(cutMethodFn(cSrc, 'handleGroupAnalysisComplete')),
+                `FIX-3: ${tree} must not re-stamp tWalkMs after the worker's analysis`);
+
+            // Executed: real method text, stub PVI/Port, fake clock. Every branch
+            // must leave the page able to start a scan again.
+            const drive = function (opts) {
+                const timers = [];
+                const pvi = {
+                    downloadAllActive: !!opts.active,
+                    mdSessionConfirmBusy: false,
+                    started: 0,
+                    warnShown: false,
+                    downloadAll: function () { pvi.started++; },
+                    _updateDownloadAllStatus: function () {},
+                    mdStopSessionPoll: function () {},
+                    mdSessionConfirmShown: false,
+                    mdSessionPollNote: '',
+                };
+                const port = {
+                    sent: 0,
+                    send: function (msg, cb) {
+                        port.sent++;
+                        if (opts.mode === 'reject') {
+                            // A real rejected Promise settles in a microtask; this
+                            // synchronous thenable proves the same wiring (the
+                            // `.catch(clearConfirm)` handler) inside the sync lock.
+                            return { catch: function (c) { c(); } };
+                        }
+                        if (opts.mode === 'silent') { port.answer = cb; return Promise.resolve(); }
+                        cb(opts.answer);
+                        return Promise.resolve();
+                    },
+                };
+                const answers = [];
+                const fn = new Function('PVI', 'Port', 'cfg', 'doc', 'setTimeout', 'clearTimeout', 'console',
+                    'return (' + '{' + start + '}' + ').mdStartDownloadAll;')(
+                    pvi, port, { app: { name: 'test' } }, {},
+                    function (f) { timers.push(f); return timers.length; },
+                    function (id) { if (id) timers[id - 1] = null; },
+                    { warn: function () { pvi.warnShown = true; } }
+                );
+                return {
+                    fn: fn,
+                    pvi: pvi,
+                    port: port,
+                    answers: answers,
+                    fireTimers: function () { timers.forEach(function (t) { if (t) t(); }); },
+                };
+            };
+
+            // (a) a live session: refused on the spot, synchronously
+            const a = drive({ active: true });
+            assert.strictEqual(a.fn({}, function (r) { a.answers.push(r); }, null), false,
+                `FIX-1: ${tree} must answer a refusal synchronously (channel closes at once)`);
+            assert.deepStrictEqual(a.answers, [{ status: 'already running' }],
+                `FIX-1: ${tree} must never refuse in silence`);
+            assert.strictEqual(a.port.sent, 0, `FIX-1: ${tree} must not probe the worker when it already refuses`);
+
+            // (b) the answer never comes: the watchdog must re-arm the start
+            const b = drive({ mode: 'silent' });
+            assert.strictEqual(b.fn({}, function (r) { b.answers.push(r); }, null), true,
+                `FIX-1: ${tree} must keep the channel open while its answer is pending`);
+            assert.strictEqual(b.pvi.mdSessionConfirmBusy, true, `FIX-2: ${tree} sets the flag while probing`);
+            b.fireTimers();
+            assert.strictEqual(b.pvi.mdSessionConfirmBusy, false,
+                `FIX-2: ${tree} must clear the flag when the answer never arrives`);
+            assert.deepStrictEqual(b.answers, [{ status: 'no-answer' }],
+                `FIX-2: ${tree} must tell the caller instead of leaving it waiting`);
+            assert.ok(b.pvi.warnShown, `FIX-2: ${tree} must say in the console why the start is armed again`);
+            assert.strictEqual(b.fn({}, null, null), true, `FIX-2: ${tree} must accept a start after the watchdog`);
+
+            // (c) the send itself fails (dead extension context): the callback
+            // never runs, so only the catch can clear the flag
+            const c = drive({ mode: 'reject' });
+            assert.strictEqual(c.fn({}, null, null), true, `FIX-1: ${tree} returns true while pending`);
+            assert.strictEqual(c.pvi.mdSessionConfirmBusy, false,
+                `FIX-2: ${tree} must clear the flag when the send fails`);
+
+            // (d) a real answer clears it and starts the scan exactly once
+            const d = drive({ mode: 'answer', answer: { phase: 'idle' } });
+            d.fn({}, null, null);
+            assert.strictEqual(d.pvi.mdSessionConfirmBusy, false,
+                `FIX-2: ${tree} must clear the flag when the answer arrives`);
+            assert.strictEqual(d.pvi.started, 1, `FIX-1: ${tree} must start the scan exactly once`);
+            // ...and the NEXT start is not blocked by a leftover flag
+            assert.strictEqual(d.fn({}, null, null), true,
+                `FIX-2: ${tree} must not leave the next start blocked`);
+            assert.strictEqual(d.pvi.started, 2, `FIX-1: ${tree} must still accept a later scan`);
+            console.log(`md-unit-smoke: scan-start locks hold (${tree})`);
+        }
         // The fix lives in the ENGINE part of onMessage, outside the five
         // mirrored marker sections — content-block.js must NOT mirror it.
         assert.ok(!readFileSync(join(repoRoot, 'src-mv3-overlay/mass-download/content-block.js'), 'utf8')
@@ -2199,7 +2333,12 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `STATUS: ${tree} — the confirmation must say what is cancelled and what is kept`);
         assert.ok(/PVI\.mdStartDownloadAll\(doc\);/.test(content),
             `STATUS: ${tree} — the hotkey must use the gated start`);
-        assert.ok(/PVI\.mdStartDownloadAll\(doc, sendResponse, d\.sender\);/.test(content),
+        // 2026-09-21: this lock pinned `d.sender` and so CERTIFIED the bug — it
+        // checked the sending side of the handoff while the receiving side
+        // (`onMessage: function (d)`) never declared the names, and the button
+        // died with "sendResponse is not defined" (see the FIX-1 locks above,
+        // which check both ends).
+        assert.ok(/PVI\.mdStartDownloadAll\(doc, sendResponse, sender\)/.test(content),
             `STATUS: ${tree} — and so must the popup path`);
         assert.ok(!/PVI\.downloadAll\(doc\);\n\s+pv = true;/.test(content),
             `STATUS REGRESSION: ${tree} — the hotkey must not bypass the confirmation`);

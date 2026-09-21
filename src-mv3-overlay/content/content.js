@@ -4647,7 +4647,12 @@
             }
         },
 
-        onMessage: function (d) {
+        // MASS-DOWNLOAD: the 2nd/3rd arguments belong to the listener itself —
+        // `sender` and `sendResponse`, passed by the `downloadAll` branch below.
+        // Leaving them out of this signature (as it was until 2026-09-21) makes
+        // that branch die with "sendResponse is not defined" before the scan can
+        // start. See the branch for the full story.
+        onMessage: function (d, sender, sendResponse) {
             if (!d) return;
             if (d.cmd === "resolved") {
                 var trg = PVI.resolving[d.id] || PVI.TRG;
@@ -4855,7 +4860,17 @@
             } else if (d.cmd === 'downloadAll') {
                 // Same gate as the hotkey: the popup's button must not be able to
                 // cancel a running queue without the owner seeing what it costs.
-                PVI.mdStartDownloadAll(doc, sendResponse, d.sender);
+                // `sender`/`sendResponse` are THIS listener's own 2nd/3rd
+                // arguments, so the host's `onMessage: function (d, sender,
+                // sendResponse)` has to declare them — otherwise this line dies
+                // with "sendResponse is not defined" and the button starts
+                // nothing at all (live 2026-09-21: the popup reported "Scan
+                // initiated", the page never began, and the worker logged its own
+                // false "Failed to send downloadAll to content script" because
+                // nobody answered). The channel is held open only while an answer
+                // is still to come: mdStartDownloadAll returns true exactly then
+                // (it asks the worker about a live session first).
+                if (PVI.mdStartDownloadAll(doc, sendResponse, sender)) return true;
             } else if (d.cmd === 'groupAnalysisComplete') {
                 if (PVI.handleGroupAnalysisComplete) {
                     PVI.handleGroupAnalysisComplete(d.processedCount || 0);
@@ -5392,11 +5407,32 @@
             // worker is not.
             if (PVI.downloadAllActive || PVI.mdSessionConfirmBusy) {
                 if (sendResponse) sendResponse({ status: 'already running' });
-                return;
+                return false;
             }
             PVI.mdSessionConfirmBusy = true;
-            const pendingRequest = Port.send({ cmd: 'getDownloadStatus', compact: true }, function (resp) {
+            // The probe below is a round trip, so the flag must not outlive it.
+            // It used to be cleared ONLY inside the answer callback: one lost
+            // answer kept it true for the rest of the page's life and every
+            // later Ctrl+Q / popup click exited at the guard above in silence —
+            // no scan could be started again until the page was reloaded. The
+            // watchdog and every failure path clear it through one function, and
+            // the popup is answered instead of left waiting.
+            let confirmTimer = setTimeout(function () {
+                confirmTimer = null;
+                if (!PVI.mdSessionConfirmBusy) return;
                 PVI.mdSessionConfirmBusy = false;
+                if (sendResponse) sendResponse({ status: 'no-answer' });
+                console.warn(cfg.app?.name + ': no answer to getDownloadStatus — the scan can be started again.');
+            }, 8000);
+            const clearConfirm = function () {
+                if (confirmTimer) {
+                    clearTimeout(confirmTimer);
+                    confirmTimer = null;
+                }
+                PVI.mdSessionConfirmBusy = false;
+            };
+            const pendingRequest = Port.send({ cmd: 'getDownloadStatus', compact: true }, function (resp) {
+                clearConfirm();
                 const phase = resp && resp.phase;
                 if (phase !== 'tail' && phase !== 'scan') {
                     PVI.downloadAll(targetDoc, sendResponse, sender);
@@ -5424,7 +5460,15 @@
                         }
                     });
             });
-            if (pendingRequest && typeof pendingRequest.catch === 'function') pendingRequest.catch(() => {});
+            // A dead extension context rejects instead of answering, and the
+            // callback above then never runs: without this the flag would stay
+            // set forever, which is the same silent lock-out.
+            if (pendingRequest && typeof pendingRequest.catch === 'function') {
+                pendingRequest.catch(function () { clearConfirm(); });
+            }
+            // The answer arrives from the callback above, after this returns:
+            // tell the caller (onMessage) to keep the response channel open.
+            return true;
         },
 
         filterQueueAsynchronously: function (elementsToFilter) {
@@ -5548,6 +5592,18 @@
                     const statusMessage = `Scan complete. Found ${PVI.downloadAllFound} direct items. Analyzing ${PVI.ambiguousUrlGroups.length} complex items...`;
                     PVI._updateDownloadAllStatus(statusMessage);
                     Port.send({ cmd: 'updateStatus', status: statusMessage, done: false });
+
+                    // The WALK ends here — the groups become the worker's job
+                    // from this line on, and the worker's analysis can take
+                    // minutes. Stamp it now, not when the analysis reports back:
+                    // `walk=` is read as this page's walk (it is what the walk
+                    // costs the owner), and the analysis has its own phase stamp
+                    // on the worker side. Until 2026-09-21 the stamp sat in
+                    // handleGroupAnalysisComplete, so `walk=` carried the
+                    // analysis wait inside it.
+                    if (PVI.downloadAllDiag) {
+                        PVI.downloadAllDiag.tWalkMs = Date.now() - PVI.downloadAllDiag._walkStart;
+                    }
 
                     Port.send({
                         cmd: 'resolveAndDownloadGroups',
@@ -5802,11 +5858,11 @@
             // Audit N-05: after a user cancel the SW loop still finishes and
             // sends this message — do not claim "Analysis complete" then.
             if (!PVI.downloadAllActive) return;
-            // The walk is over on this path too: close the last segment and ship
-            // the numbers. (The groups path is the slow one — the worker may
-            // have taken minutes over them, and that time is NOT in tWalkMs.)
+            // Ship the numbers (the walk's own time was already stamped when the
+            // groups were handed over — see processNextInQueue). NOT re-stamped
+            // here: the worker's analysis time is not walk time, and stamping it
+            // here is exactly how `walk=` came to include it (fixed 2026-09-21).
             if (PVI.downloadAllDiag) {
-                PVI.downloadAllDiag.tWalkMs = Date.now() - PVI.downloadAllDiag._walkStart;
                 PVI._sendScanDiagnostics('groups-analyzed');
             }
             const finalMessage = `Analysis complete. Found ${PVI.downloadAllFound + (processedCount || 0)} total items.`;

@@ -87,6 +87,8 @@ Inline sections (see `mass-download/content-block.js` for the canonical copy):
 
 When re-applying onto a new upstream: merge upstream `content.js`, then re-insert marked blocks from `content-block.js`.
 
+**The listener signature is NOT in a marked block — check it after every re-base.** The `downloadAll` branch (marked, in section 4) uses the listener's own `sender`/`sendResponse`, so the host must declare `onMessage: function (d, sender, sendResponse)`. With `function (d)` the branch dies with `sendResponse is not defined`, the popup's button starts nothing while still reporting "Scan initiated", and the SW logs a false "Failed to send downloadAll to content script" (live 2026-09-21, fixed in `2026.9.21.4`). `md-marker-check` cannot see this: it byte-syncs the five sections only. `tools/md-unit-smoke.mjs` holds the wiring locks for both ends of that handoff.
+
 ### Gallery Save (unmarked inline section)
 
 `_mdGalleryInstall` wraps `PVI.gallery` (checkboxes + Select all / Save Selected / Save All bar on the grid). Lives in an **unmarked** section (`=== Gallery Save ===`) near the top of the IIFE — it is NOT inside the 5 marker pairs, but IS mirrored in `content-block.js` and checked by `tools/md-marker-check.mjs` only via the HELPERS section boundaries. SW delta is diagnostics-only: Save feeds **proven** album URLs straight into `downloadMass` (loader-proven `mdOk` cells bypass the extension gate — extension-less media pages like XenForo `…/full` download; `blob:` stays excluded); page-links without a preview are resolved through the engine with **serialized** resolutions (`_mdSerialized` — the engine has ONE shared resolver timer) + negative-cache reset before each Save; unresolved items are reported via `reportSkippedItem` (skipped rows in the progress tab + Save Log); sends are chunked 25 per 10ms.
@@ -332,6 +334,11 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 - Mass-download filename always undefined — derive from URL pathname
 - AbortError marked as canceled instead of timeout — split by `scanInProgress`
 - `clearAll` incomplete — calls `handleStopScanning()` first
+
+**Scan start / handshake (fixed 2026-09-21, v2026.9.21.4):**
+- `PVI.onMessage` must declare `(d, sender, sendResponse)` — its `downloadAll` branch reads them; `function (d)` kills the popup's button with `sendResponse is not defined`
+- `mdSessionConfirmBusy` must not outlive its probe — clear it on the answer, on send failure, and on an 8 s watchdog (otherwise Ctrl+Q is dead in that page until reload)
+- `tWalkMs` must be stamped at the walk's own end (group handover in `processNextInQueue`), never in `handleGroupAnalysisComplete` — otherwise `walk=` prints the worker's analysis as walk time
 
 **Upstream fixes (keep during re-base):**
 - `find()` length check, `rotate()` null guard, `grantUrls` object `.map`
