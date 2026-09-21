@@ -307,6 +307,22 @@ URL, работавший минуту назад) не говорит, ЧТО �
   **Важно:** `mdTryOffscreenDownload` как есть звать нельзя — он пишет строки в
   `downloadProgress` и увеличивает `downloadStats.skipped` (это часть mass-download-сессии).
   Нужен тонкий вариант «fetch+download без учёта прогресса», общий код — вынести в параметр.
+
+  > **СДЕЛАНО 2026-09-21 (SAVE-1), с одним изменением против плана.** План предлагал вставлять
+  > проверку и в `case "download"`, и в interrupt-хуке. Сделано **только в interrupt-хуке**
+  > (`chrome.downloads.onChanged`), и это лучший вариант: там уже доказано, что браузерная
+  > загрузка не прошла, поэтому ни один хост, у которого она работает, не начинает платить за
+  > offscreen-фетч; а решение принимает `mdSaveViaOffscreen(msg)` — новая тонкая функция
+  > (без строки прогресса, без счётчиков, без очередей; парковка `_offscreenDone`, гейты
+  > `mdOffscreenSupported` / `mdDnrRequestFor` / живое правило / `mdOffscreenEnsure`). Успех
+  > отдаёт object URL в `download(msg, {id: msg.tabId}, msg.sendResponse)`; имя файла берётся из
+  > **оригинального CDN-URL** (blob-URL не имя). Любой отказ/ошибка → прежний путь страницы
+  > без изменений. `cleanup()` переехал **до** асинхронной попытки: `state` и `error` приходят
+  > отдельными дельтами, и без этого один downloadId мог дать две попытки фетча.
+  > **Живая проверка (Edge 153, чистый scratch-профиль, `chrome.downloads.search`):**
+  > `blob:chrome-extension://…` → `md-probe-p0.jpg`, `state: complete`, `image/jpeg`,
+  > **543078 B** — реальный оригинал pixiv, который раньше кончался алертом. В FF-дереве
+  > `mdSaveViaOffscreen` отсутствует (нативная дельта FF Fix 2) — замок блока SAVE-1 это проверяет.
 - **D3 [FF-only].** Отдельной правки не требуется: в FF-дереве `download()` уже передаёт
   `headers: [{name:'Referer', …}]` (FF 70+), и это документированная дельта.
 - **Честно:** я **не** утверждаю, что «у upstream это работает, а у нас сломано» — в upstream тот
@@ -318,6 +334,19 @@ URL, работавший минуту назад) не говорит, ЧТО �
 прогресса **нет**, `downloadStats` не меняется; (b) правило не активно ⇒ старый путь;
 (c) ошибка offscreen ⇒ возврат к старому пути, `sendResponse` не теряется;
 (d) `tab.incognito` доходит до `params.incognito`.
+
+> **Сделано 2026-09-21:** блок **SAVE-1** в `tools/md-unit-smoke.mjs` — и текстовые локи, и
+> **исполнение** настоящей `mdSaveViaOffscreen` на заглушках: (a) не-registry хост → false и
+> НОЛЬ фетчей; (b) правило не живо → false; (c) `mdOffscreenSupported()===false` (Firefox) →
+> false; (d) registry + живое правило → true, ровно один фетч исходного URL, ровно одна
+> загрузка с object URL, именем `123241937_p0.jpg` из URL, `alterDownload === false`,
+> `_objectUrlScope === 'offscreen'`; (e) повторный вердикт того же пункта → false (одна попытка);
+> (f) фетч отказал (403) → false и НИ ОДНОЙ своей загрузки (значит, старый путь); (g) `tooLarge` →
+> то же; (h) offscreen-документ не создался → false. Плюс локи на то, что тир не касается
+> сессии (`updateDownloadProgress`/`downloadStats`/`downloadQueue` в теле нет) и что порядок
+> «cleanup до асинхронной попытки» сохранён. `mutation-check`: 5 мутаций SAVE-1, все кусаются.
+> Пункт (d) плана (`tab.incognito`) реализован не был и не нужен: путь Chrome-only, при таком
+> вызове `download()` FF-ветка `params.incognito = tab.incognito` не исполняется.
 
 ---
 

@@ -51,6 +51,8 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 
 Всё остальное (content.js + маркеры, mass-download, options, локали, sieve) — **семантически байт-в-байт как в Chrome-дереве** (Audit N-20).
 
+> **Chrome-only код, которого в FF-дереве нет — и это правильно (обновлено 2026-09-21).** В FF-копии `mass-download/service-core.js` **отсутствует весь offscreen-тир**: `mdOffscreenSupported/Ensure/Send/FetchBounded/RevokeObjectUrl`, `mdTryOffscreenDownload` и `mdSaveViaOffscreen` (одиночное сохранение с ховер-панели / хоткея на Referer-закрытом CDN, SAVE-1). В FF-копии `background/service.js` нет вызова `mdSaveViaOffscreen` в ветке `downloads.onChanged` и нет приёма `msg._objectUrl` в `download()`. Причина одна: **FF Fix 2** — Firefox 70+ разрешает `headers: [{name:"Referer"}]` в `downloads.download`, поэтому FF проходит гейт нативно и тир ему не нужен. Отсюда следствие для ре-бейза: эти два файла отличаются от Chrome-копий **всегда** (они и так канонические по `md-ff-delta`), а правило «байт-в-байт» относится к FF-правкам поверх Chrome-кода, не к Chrome-only коду. Тест-замок `md-unit-smoke` (блок SAVE-1) **требует** отсутствия `mdSaveViaOffscreen` в обоих файлах FF-дерева — если он появится, дельта поехала.
+
 > **N-20 (2026-08-18):** `diff -rq` между деревьями показывает **16 файлов**, хотя осмысленная дельта — ровно 3 файла выше. Остальные 13 (`_locales/*/messages.json` × 11, `lib/videojs_mod.js`, `lib/videojs_mod.css`) отличаются **только переносами строк** (CRLF в FF-дереве vs LF в Chrome) — содержимое после нормализации идентично. Поэтому проверка §5 шаг 5 должна игнорировать CRLF: `git diff --no-index --ignore-cr-at-eol` или `diff -rq` после `dos2unix`. Не «чинить» это заменой переносов во всём FF-дереве — шумный дифф без функционального эффекта.
 
 ## 3. Установка и тест
@@ -80,7 +82,7 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 1. Сделать re-base Chrome-дерева (`Docs/MASS_DOWNLOAD_STRATEGY.md`).
 2. `cp -r src-mv3-overlay/* src-mv3-overlay-firefox/` (кроме `manifest.json` FF-дерева — сохранить).
 3. Восстановить FF-манифест: обновить `version`, сверить разрешения с новым upstream `manifest_firefox.json`.
-4. Заново применить кодовые дельты: `mdAck` + Referer-headers в `download()` (service.js), `incognito` + Referer-headers в `processDownloadQueue` (service-core.js), массив `background.scripts` (манифест) — grep `Firefox note` / `platform === "firefox"` / `FF Fix` в `mass-download/` и `background/`. Строку importScripts в service.js НЕ возвращать (FF event page её не имеет).
+4. Заново применить кодовые дельты: `mdAck` + Referer-headers в `download()` (service.js), `incognito` + Referer-headers в `processDownloadQueue` (service-core.js), массив `background.scripts` (манифест) — grep `Firefox note` / `platform === "firefox"` / `FF Fix` в `mass-download/` и `background/`. Строку importScripts в service.js НЕ возвращать (FF event page её не имеет). **И наоборот:** Chrome-only код (offscreen-тир, вызов `mdSaveViaOffscreen` в `downloads.onChanged`, приём `msg._objectUrl` в `download()`) из FF-дерева **не копировать** — после `cp -r` шага 2 его надо оттуда удалить (замок блока SAVE-1 в `md-unit-smoke` это проверяет).
 5. Сверка дельты: `git diff --no-index --ignore-cr-at-eol src-mv3-overlay src-mv3-overlay-firefox` (или `diff -rq` после нормализации CRLF) — должно быть ровно 3 файла + отсутствие `manifest_firefox.json`. Плоский `diff -rq` показывает 13 лишних файлов из-за CRLF-шума (N-20) — не считать это расхождением.
 6. Smoke §3.
 
@@ -94,4 +96,4 @@ PVI.onMessage → downloadAll / stopScanning / groupAnalysisComplete
 
 ---
 
-*Документ создан при порте на overlay-философию (2026-08-17). При изменении FF-дельты — обнови §2. Обновлено 2026-09-10: FF Fix 1 (мёртвый event page из-за importScripts → background.scripts-массив) и FF Fix 2 (нативный Referer-заголовок в downloads.download). Подробности и вердикт живого теста Chrome v2026.8.20.8 — REPORT_GALLERY_BATCH_2026-09-06.md §26.*
+*Документ создан при порте на overlay-философию (2026-08-17). При изменении FF-дельты — обнови §2. Обновлено 2026-09-10: FF Fix 1 (мёртвый event page из-за importScripts → background.scripts-массив) и FF Fix 2 (нативный Referer-заголовок в downloads.download). Подробности и вердикт живого теста Chrome v2026.8.20.8 — REPORT_GALLERY_BATCH_2026-09-06.md §26. Обновлено 2026-09-21: зафиксирован Chrome-only код, которого в FF-дереве нет по построению (offscreen-тир + SAVE-1 в `downloads.onChanged`), и что замок теста требует его отсутствия.*

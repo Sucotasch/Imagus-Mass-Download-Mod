@@ -2398,6 +2398,83 @@ async function mdTryOffscreenDownload(task) {
     }
 }
 
+// SAVE-1 (2026-09-21, plan §D2 of Docs/PLAN_96_FOLLOWUP_2026-09-13.md) — the
+// SINGLE save (hover toolbar / hotkey) on a Referer-gated CDN, which the mass
+// path never had to solve twice: its candidate chain already owns an offscreen
+// tier, while the single save fell through to the page-context fetch that a
+// cross-origin i.pximg.net response can never satisfy (no CORS headers), so the
+// user got an alert reading "Download failed: Failed to fetch" and no file.
+//
+// Same mechanism, deliberately OUTSIDE the mass-download session: no progress
+// row, no downloadStats, no size/type policy (the user asked for THIS file —
+// exactly what upstream's save does), no session/slot bookkeeping. The bytes are
+// fetched by the extension-origin offscreen document (no CORS, and the same DNR
+// rule sets the Referer) and handed to chrome.downloads as its object URL.
+//
+// Called by background/service.js from the downloads.onChanged interrupt, i.e.
+// only for a download that Chrome itself refused — and only after the first
+// failure, so a host where the plain download works never enters here.
+// Resolves true when the item was handed to a new download (the caller then just
+// cleans up the interrupted entry), false when the caller must run its existing
+// page-context fallback. Never rejects.
+//
+// Trade-off accepted: the fetch shares MD_OFFSCREEN_ANSWER_MS, so a STALLED
+// transfer lets the old path's alert arrive minutes later instead of instantly.
+// A shorter ceiling for the save path would cut real 30 MiB originals on a slow
+// line — and those are exactly the files a user saves by hand.
+async function mdSaveViaOffscreen(msg) {
+    try {
+        if (!msg || typeof msg.url !== 'string' || !msg.url) return false;
+        if (!mdOffscreenSupported()) return false;               // Chrome only
+        if (msg._offscreenDone) return false;                    // one shot per item
+        if (!mdDnrRequestFor(msg.url, msg.referer)) return false; // registry hosts only
+        // The ensure inside case "download" is fire-and-forget; by the time Chrome
+        // reports the interrupt the rule is normally live, and a still-missing one
+        // is installed here before the verdict (idempotent, overwrites its slot).
+        try { await mdDnrEnsureForTask(msg); } catch (_) { /* best-effort, as there */ }
+        if (!mdDnrRuleActiveFor(msg.url, msg.referer)) return false;
+        if (!(await mdOffscreenEnsure())) return false;
+        msg._offscreenDone = true; // set BEFORE the attempt: no retry loops
+        let res;
+        try {
+            res = await mdOffscreenFetchBounded({ cmd: 'mdOffscreenFetch', url: msg.url, referer: msg.referer || '' });
+        } catch (e) {
+            mdOffscreenSetup = null; // it may have self-closed — recreate next time
+            console.warn(manifest.name + ': single-save offscreen fetch failed', e);
+            return false;
+        }
+        if (!res || !res.ok || !res.objectUrl) {
+            console.warn(manifest.name + ': single-save offscreen fetch refused: '
+                + ((res && res.error) || 'no object URL'));
+            return false;
+        }
+        // The name must come from the ORIGINAL CDN url: download() can derive
+        // nothing from a blob: URL, and the page-fetch path (which sets urlName
+        // in the content script) is exactly what we are replacing.
+        if (!msg.urlName) {
+            try {
+                const pathname = new URL(msg.url).pathname;
+                msg.urlName = pathname.substring(pathname.lastIndexOf('/') + 1) || undefined;
+            } catch (_) { /* no name: Chrome names the file from the blob */ }
+        }
+        // The payload goes in its own field, NOT in _objectUrl: download() stores
+        // _objectUrl itself for the revoke routing, and a later page-fetch fallback
+        // re-enters download() with the SAME msg object — a payload left behind
+        // there would be downloaded again instead of the page's fresh blob.
+        msg._offscreenObjectUrl = res.objectUrl;
+        msg._objectUrlScope = 'offscreen';
+        // A real download again: download() must register it, so an interrupt of
+        // THIS one resumes the ordinary handler (which then sees _offscreenDone
+        // and falls back to the page instead of fetching twice).
+        msg.alterDownload = false;
+        download(msg, { id: msg.tabId }, msg.sendResponse);
+        return true;
+    } catch (e) {
+        console.warn(manifest.name + ': single-save offscreen tier error', e);
+        return false;
+    }
+}
+
 // Stage 5: the filter phase hit a hard 403/404 (host wants a real
 // browser context) — retry through the page: the content script fetches with
 // auto cookies/Referer and returns a blob, which we download from an object
@@ -2884,26 +2961,48 @@ function mdAdoptIfAlreadyDownloaded(task) {
         processDownloadQueue();
     };
     chrome.downloads.search({ url: task.url }, function (items) {
-        let found = null;
+        // Every exit from below resumes the queue. `finally` is deliberate: the
+        // adopt path touches the row table, the ledger and the progress tab, and
+        // a throw anywhere in it would otherwise leave the task parked with
+        // _historyPending=true — invisible to the drain loop, forever.
         try {
-            found = (Array.isArray(items) ? items : []).find(function (i) {
-                return i && i.state === 'complete' && i.exists !== false && i.url === task.url;
-            }) || null;
-        } catch (e) { found = null; }
-        if (!found) { finish(); return; }
-        if (found.mime) task.contentType = found.mime;
-        if (found.fileSize) task.fileSize = found.fileSize;
-        const queued = downloadQueue.indexOf(task);
-        if (queued >= 0) downloadQueue.splice(queued, 1);
-        // updateDownloadProgress is the single funnel: it moves the row AND feeds the
-        // outcome ledger, so the run's totals count this file exactly once.
-        updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
-        downloadStats.downloaded++;
-        sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
-        if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
-        console.info(mdWorkerLabel() + ': adopted an already-finished file for a restored item (no second copy): ' + task.url);
-        finish();
+            let found = null;
+            try {
+                found = (Array.isArray(items) ? items : []).find(function (i) {
+                    return i && i.state === 'complete' && i.exists !== false && i.url === task.url;
+                }) || null;
+            } catch (e) { found = null; }
+            if (!found) return;
+            if (found.mime) task.contentType = found.mime;
+            if (found.fileSize) task.fileSize = found.fileSize;
+            const queued = downloadQueue.indexOf(task);
+            if (queued >= 0) downloadQueue.splice(queued, 1);
+            // updateDownloadProgress is the single funnel: it moves the row AND feeds the
+            // outcome ledger, so the run's totals count this file exactly once.
+            updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
+            downloadStats.downloaded++;
+            sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
+            if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
+            console.info(mdWorkerLabel() + ': adopted an already-finished file for a restored item (no second copy): ' + task.url);
+        } catch (e) {
+            console.warn(mdWorkerLabel() + ': restore history check failed — downloading instead', e);
+        } finally {
+            finish();
+        }
     });
+}
+
+// The whole restore-dedup decision as DATA, so the drain loop cannot mis-order it
+// and the sequence can be executed by tools/md-unit-smoke.mjs:
+//   'check'   — a restored task whose history has not been asked about yet: park it
+//               and ask exactly once (the caller sets _historyChecked + _historyPending).
+//   'park'    — asked, answer still on its way: the synchronous loop must not re-pick
+//               it (it would re-ask) and must stop instead of spinning.
+//   'proceed' — everything else, including every task of a fresh scan: download it.
+function mdHistoryGuard(task) {
+    if (!task || task._restored !== true) return 'proceed';
+    if (task._historyChecked !== true) return 'check';
+    return task._historyPending === true ? 'park' : 'proceed';
 }
 
 function processDownloadQueue() {
@@ -2915,8 +3014,19 @@ function processDownloadQueue() {
         // A restored task waits for one answer before it is allowed to create a file.
         // It is put back exactly once, and the loop stops rather than spinning: the
         // callback resumes this function the moment Chrome answers.
-        if (task._restored && task._historyPending) { downloadQueue.unshift(task); break; }
-        if (task._restored && !task._historyChecked) {
+        // Stage-restore contract (DUP-1), as one pure call so the sequence is
+        // provable and, above all, TERMINATING: 'check' is the only way into a
+        // history question, and asking sets _historyChecked — the answer always
+        // resumes the loop through mdAdoptIfAlreadyDownloaded's callback.
+        // 2026-09-21: the flag was READ here and never written anywhere, so a
+        // restored item was parked by its own answer, re-picked, parked again…
+        // forever: nothing downloaded, the panel stayed on 'Scanning', and the
+        // Save Log showed queued=4 with NOTHING in flight (the live log of
+        // 2026-09-21T09-27-34, worker gen 3 recovering a 4-row session).
+        const history = mdHistoryGuard(task);
+        if (history === 'park') { downloadQueue.unshift(task); break; }
+        if (history === 'check') {
+            task._historyChecked = true;
             task._historyPending = true;
             downloadQueue.push(task);
             mdAdoptIfAlreadyDownloaded(task);

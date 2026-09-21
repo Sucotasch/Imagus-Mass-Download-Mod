@@ -2629,26 +2629,48 @@ function mdAdoptIfAlreadyDownloaded(task) {
         processDownloadQueue();
     };
     chrome.downloads.search({ url: task.url }, function (items) {
-        let found = null;
+        // Every exit from below resumes the queue. `finally` is deliberate: the
+        // adopt path touches the row table, the ledger and the progress tab, and
+        // a throw anywhere in it would otherwise leave the task parked with
+        // _historyPending=true — invisible to the drain loop, forever.
         try {
-            found = (Array.isArray(items) ? items : []).find(function (i) {
-                return i && i.state === 'complete' && i.exists !== false && i.url === task.url;
-            }) || null;
-        } catch (e) { found = null; }
-        if (!found) { finish(); return; }
-        if (found.mime) task.contentType = found.mime;
-        if (found.fileSize) task.fileSize = found.fileSize;
-        const queued = downloadQueue.indexOf(task);
-        if (queued >= 0) downloadQueue.splice(queued, 1);
-        // updateDownloadProgress is the single funnel: it moves the row AND feeds the
-        // outcome ledger, so the run's totals count this file exactly once.
-        updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
-        downloadStats.downloaded++;
-        sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
-        if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
-        console.info(mdWorkerLabel() + ': adopted an already-finished file for a restored item (no second copy): ' + task.url);
-        finish();
+            let found = null;
+            try {
+                found = (Array.isArray(items) ? items : []).find(function (i) {
+                    return i && i.state === 'complete' && i.exists !== false && i.url === task.url;
+                }) || null;
+            } catch (e) { found = null; }
+            if (!found) return;
+            if (found.mime) task.contentType = found.mime;
+            if (found.fileSize) task.fileSize = found.fileSize;
+            const queued = downloadQueue.indexOf(task);
+            if (queued >= 0) downloadQueue.splice(queued, 1);
+            // updateDownloadProgress is the single funnel: it moves the row AND feeds the
+            // outcome ledger, so the run's totals count this file exactly once.
+            updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
+            downloadStats.downloaded++;
+            sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
+            if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
+            console.info(mdWorkerLabel() + ': adopted an already-finished file for a restored item (no second copy): ' + task.url);
+        } catch (e) {
+            console.warn(mdWorkerLabel() + ': restore history check failed — downloading instead', e);
+        } finally {
+            finish();
+        }
     });
+}
+
+// The whole restore-dedup decision as DATA, so the drain loop cannot mis-order it
+// and the sequence can be executed by tools/md-unit-smoke.mjs:
+//   'check'   — a restored task whose history has not been asked about yet: park it
+//               and ask exactly once (the caller sets _historyChecked + _historyPending).
+//   'park'    — asked, answer still on its way: the synchronous loop must not re-pick
+//               it (it would re-ask) and must stop instead of spinning.
+//   'proceed' — everything else, including every task of a fresh scan: download it.
+function mdHistoryGuard(task) {
+    if (!task || task._restored !== true) return 'proceed';
+    if (task._historyChecked !== true) return 'check';
+    return task._historyPending === true ? 'park' : 'proceed';
 }
 
 function processDownloadQueue() {
@@ -2660,8 +2682,19 @@ function processDownloadQueue() {
         // A restored task waits for one answer before it is allowed to create a file.
         // It is put back exactly once, and the loop stops rather than spinning: the
         // callback resumes this function the moment Chrome answers.
-        if (task._restored && task._historyPending) { downloadQueue.unshift(task); break; }
-        if (task._restored && !task._historyChecked) {
+        // Stage-restore contract (DUP-1), as one pure call so the sequence is
+        // provable and, above all, TERMINATING: 'check' is the only way into a
+        // history question, and asking sets _historyChecked — the answer always
+        // resumes the loop through mdAdoptIfAlreadyDownloaded's callback.
+        // 2026-09-21: the flag was READ here and never written anywhere, so a
+        // restored item was parked by its own answer, re-picked, parked again…
+        // forever: nothing downloaded, the panel stayed on 'Scanning', and the
+        // Save Log showed queued=4 with NOTHING in flight (the live log of
+        // 2026-09-21T09-27-34, worker gen 3 recovering a 4-row session).
+        const history = mdHistoryGuard(task);
+        if (history === 'park') { downloadQueue.unshift(task); break; }
+        if (history === 'check') {
+            task._historyChecked = true;
             task._historyPending = true;
             downloadQueue.push(task);
             mdAdoptIfAlreadyDownloaded(task);

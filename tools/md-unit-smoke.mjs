@@ -2582,6 +2582,7 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         return source.slice(start, end + 2);
     };
     const copies = {};
+    const guards = {};
     for (const tree of trees) {
         const core = readNorm(tree, 'mass-download/service-core.js');
         const helper = cutFnSource(core, 'mdAdoptIfAlreadyDownloaded');
@@ -2606,21 +2607,232 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
             `DUP: ${tree} — the parked task must leave the queue once the answer is 'already done'`);
         assert.ok(/delete task\._historyPending;\s*\n\s*processDownloadQueue\(\);/.test(helper),
             `DUP: ${tree} — every path must clear the pending flag and resume the queue (no stall, no spin)`);
+        assert.ok(/\} finally \{\n            finish\(\);/.test(helper),
+            `DUP: ${tree} — the resume must be unconditional: a throw inside the adopt path must not strand a parked task`);
         // Scope: ONLY restored work. A fresh scan may still download a page again.
-        assert.ok(/if \(task\._restored && task\._historyPending\) \{ downloadQueue\.unshift\(task\); break; \}/.test(dlQueue),
-            `DUP: ${tree} — a parked restored task must stop the loop instead of being re-picked (the loop is synchronous)`);
-        assert.ok(/if \(task\._restored && !task\._historyChecked\) \{/.test(dlQueue),
-            `DUP: ${tree} — only RESTORED tasks are verified against the download history`);
-        const guardAt = dlQueue.indexOf('task._restored && !task._historyChecked');
+        // The branch lives in the pure mdHistoryGuard so the sequence is executable
+        // below — and, above all, TERMINATING. 2026-09-21 it was not: the flag was
+        // read in the drain loop and written NOWHERE, so a restored item was parked
+        // by its own answer, re-picked, asked again… forever. Nothing downloaded, the
+        // panel stayed on 'Scanning', and the Save Log of the 09:27:34 run showed
+        // `queued=4` with NOTHING in flight (worker gen 3 recovering 4 rows).
+        assert.ok(/const history = mdHistoryGuard\(task\);/.test(dlQueue)
+            && /if \(history === 'park'\) \{ downloadQueue\.unshift\(task\); break; \}/.test(dlQueue)
+            && /if \(history === 'check'\) \{/.test(dlQueue),
+            `DUP: ${tree} — the drain loop must branch on the guard (ask / park / proceed)`);
+        assert.ok(/task\._historyChecked = true;/.test(dlQueue),
+            `DUP: ${tree} — asking the history question must MARK it asked; the missing write is the stall that froze every restored run`);
+        const guardAt = dlQueue.indexOf('const history = mdHistoryGuard(task);');
         const slotAt = dlQueue.indexOf('activeDownloads++');
         const stampAt = dlQueue.indexOf("mdPhaseStamp('download')");
         assert.ok(guardAt > 0 && slotAt > guardAt && stampAt > guardAt,
             `DUP: ${tree} — the check must run BEFORE the slot is claimed and the download is started (that is where files get created)`);
         assert.ok(/t\._restored = true;/.test(cutFnSource(core, 'mdApplySnapshot')),
             `DUP: ${tree} — mdApplySnapshot must mark the work it resurrects (the only place the flag can come from)`);
+
+        // --- EXECUTION: one restored task, one answer, no second question ----------
+        // The guard branch is lifted VERBATIM out of processDownloadQueue and driven
+        // as the real loop would drive it. Observables: did it ask (stub called,
+        // queue kept the task), did the pass AFTER the answer proceed (queue drained
+        // — a parked task would be back in it), and how many iterations it burned.
+        const parkBlock = /const history = mdHistoryGuard\(task\);[\s\S]*?\n        \}/.exec(dlQueue);
+        assert.ok(parkBlock, `DUP: ${tree} — the guard branch could not be cut out of processDownloadQueue`);
+        const drive = new Function('downloadQueue', 'mdAdoptIfAlreadyDownloaded', `
+${cutFnSource(core, 'mdHistoryGuard')}
+let iterations = 0;
+while (downloadQueue.length > 0 && iterations++ < 8) {
+    const task = downloadQueue.shift();
+${parkBlock[0]}
+    break;
+}
+return iterations;
+`);
+        const queue = [{ _restored: true }];
+        const asked = [];
+        const firstIterations = drive(queue, function (t) { asked.push(t); });
+        assert.strictEqual(asked.length, 1, `DUP: ${tree} — a restored task must be asked about exactly once`);
+        assert.strictEqual(queue.length, 1, `DUP: ${tree} — the parked task goes back into the queue for the answer`);
+        assert.strictEqual(queue[0]._historyChecked, true,
+            `DUP: ${tree} — the question must be marked asked here, or the next pass asks it again (endless park/resume)`);
+        assert.ok(firstIterations <= 3, `DUP: ${tree} — asking must not spin the loop (${firstIterations} iterations)`);
+        // The answer arrives (mdAdoptIfAlreadyDownloaded's finish: pending cleared,
+        // queue resumed). It must NOT re-ask, and the item must reach the download.
+        delete queue[0]._historyPending;
+        drive(queue, function (t) { asked.push(t); });
+        assert.strictEqual(queue.length, 0,
+            `DUP: ${tree} — after the answer the item must proceed to the download (a task still in the queue is the 2026-09-21 freeze)`);
+        assert.strictEqual(asked.length, 1, `DUP: ${tree} — the download history is asked once per task, never per pass`);
+        // Third flag state — asked, answer still on its way — parks instead of
+        // re-picking: the drain loop is synchronous and would re-ask immediately.
+        const parked = { _restored: true, _historyChecked: true, _historyPending: true };
+        drive([parked], function () {});
+        assert.strictEqual(parked._historyChecked, true, `DUP: ${tree} — an in-flight question changes nothing about the flags`);
+        // And a fresh-scan task never enters the machinery at all.
+        const fresh = [{}];
+        drive(fresh, function () {});
+        assert.strictEqual(fresh.length, 0, `DUP: ${tree} — a fresh-scan task goes straight to the download`);
+
         copies[tree] = helper;
+        guards[tree] = cutFnSource(core, 'mdHistoryGuard');
     }
     assert.strictEqual(copies['src-mv3-overlay-firefox'], copies['src-mv3-overlay'],
         'DUP: the adoption helper must be a copy, not a fork (both trees)');
+    assert.strictEqual(guards['src-mv3-overlay-firefox'], guards['src-mv3-overlay'],
+        'DUP: the history guard must be a copy, not a fork (both trees) — one contract, one behaviour');
     console.log('md-unit-smoke: restore-duplicate locks hold in both trees');
+}
+
+// ===========================================================================
+// 2026-09-21 — SAVE-1: the SINGLE save (hover toolbar / hotkey) on a
+// Referer-gated CDN.
+//
+// Chrome refuses an extension-initiated download of an i.pximg.net file (the
+// downloads request never carries the Referer — md-dnr.js STATES this), so the
+// existing fallback asks the PAGE for the bytes; a cross-origin response without
+// CORS headers can never satisfy that, and the user saw the alert "Download
+// failed: Failed to fetch" with no file (already diagnosed in
+// Docs/PLAN_96_FOLLOWUP_2026-09-13.md §D2, never implemented).
+//
+// The extension-origin offscreen document is the mechanism this project has
+// ALREADY proven for the mass path (62 `OFFSCREEN/200` completed rows across 3
+// saved logs). Here it runs OUTSIDE the session on purpose: no progress row, no
+// counters, no size policy — the user asked for THIS file, which is what
+// upstream's save does. Chrome-only: Firefox's downloads API carries the Referer
+// natively, so its tree must NOT carry the tier (asserted below).
+// ===========================================================================
+{
+    const CHROME_CORE = 'src-mv3-overlay/mass-download/service-core.js';
+    const CHROME_SVC = 'src-mv3-overlay/background/service.js';
+    const FF_CORE = 'src-mv3-overlay-firefox/mass-download/service-core.js';
+    const FF_SVC = 'src-mv3-overlay-firefox/background/service.js';
+    const readNorm = (rel) =>
+        readFileSync(join(repoRoot, rel), 'utf8').replace(/\r\n/g, '\n');
+    const cutFn = (source, name) => {
+        const start = source.indexOf(`function ${name}(`);
+        assert.ok(start >= 0, `SAVE-1: function ${name} not found`);
+        const end = source.indexOf('\n}', start);
+        // `async` is part of the declaration: the helper is awaited below.
+        const head = source.slice(Math.max(0, start - 6), start).endsWith('async ') ? 'async ' : '';
+        return head + source.slice(start, end + 2);
+    };
+    const core = readNorm(CHROME_CORE);
+    const svc = readNorm(CHROME_SVC);
+    const helper = cutFn(core, 'mdSaveViaOffscreen');
+
+    // --- the delta must stay a DELTA: Firefox needs no tier --------------------
+    assert.ok(!/mdSaveViaOffscreen/.test(readNorm(FF_CORE))
+        && !/mdSaveViaOffscreen/.test(readNorm(FF_SVC)),
+        'SAVE-1: the offscreen single-save tier is Chrome-only — the FF tree\'s downloads API carries the Referer itself');
+
+    // --- the gates: every one of them is a reason the tier must stay OFF ------
+    assert.ok(/if \(!mdOffscreenSupported\(\)\) return false;/.test(helper),
+        'SAVE-1: no offscreen API (or Firefox) means no tier');
+    assert.ok(/if \(msg\._offscreenDone\) return false;/.test(helper),
+        'SAVE-1: one attempt per item — a second one would fetch the file twice');
+    assert.ok(/if \(!mdDnrRequestFor\(msg\.url, msg\.referer\)\) return false;/.test(helper),
+        'SAVE-1: registry hosts only (i.pximg.net family) — every other host keeps the plain path');
+    assert.ok(/mdDnrEnsureForTask\(msg\)/.test(helper) && /if \(!mdDnrRuleActiveFor\(msg\.url, msg\.referer\)\) return false;/.test(helper),
+        'SAVE-1: the Referer rule must be LIVE before the fetch, or the fetch 403s like everything else');
+    assert.ok(/mdOffscreenFetchBounded\(\{ cmd: 'mdOffscreenFetch'/.test(helper),
+        'SAVE-1: the bounded tier fetch (the one the mass path uses) is the carrier');
+    // --- the result must become a real download -------------------------------
+    assert.ok(/msg\._offscreenObjectUrl = res\.objectUrl;/.test(helper) && /msg\._objectUrlScope = 'offscreen';/.test(helper),
+        'SAVE-1: the object URL must be handed over in its OWN field AND tagged for revoke routing (a payload in _objectUrl would be re-used by a later page-fetch fallback)');
+    assert.ok(/msg\.alterDownload = false;/.test(helper)
+        && /download\(msg, \{ id: msg\.tabId \}, msg\.sendResponse\);/.test(helper),
+        'SAVE-1: the success path re-enters download() as a real download (registered, tracked, revocable)');
+    // --- and it must NOT touch the mass-download session ----------------------
+    assert.ok(!/updateDownloadProgress|downloadStats|downloadQueue/.test(helper),
+        'SAVE-1: no progress row, no counters, no queue — a single save is not a scan');
+
+    // --- wiring in the interrupt handler --------------------------------------
+    const interruptAt = svc.indexOf('request alternative download method');
+    assert.ok(interruptAt > 0, 'SAVE-1: the alterDownload interrupt branch not found');
+    const interrupt = svc.slice(interruptAt);
+    const cleanupAt = svc.indexOf('cleanup();', interruptAt);
+    const tierAt = svc.indexOf('mdSaveViaOffscreen(msg).then', interruptAt);
+    assert.ok(cleanupAt > 0 && tierAt > cleanupAt,
+        'SAVE-1: the entry must leave downloadItems BEFORE the async attempt (state and error arrive as separate deltas — a second verdict would fetch twice)');
+    assert.ok(/mdSaveViaOffscreen\(msg\)\.then\(function \(handled\) \{\n\s*if \(!handled\) fallBackToPageFetch\(\);/.test(svc),
+        'SAVE-1: the page fetch stays the fallback, and only for a tier that did NOT handle the item');
+    assert.ok(/const fallBackToPageFetch = \(\) => \{\n\s*msg\.alterDownload = true;/.test(svc),
+        'SAVE-1: the fallback is exactly the old path (alterDownload + rule ensure + response to the page)');
+    assert.ok(/if \(msg\._objectUrlScope === 'offscreen'\) \{[\s\S]{0,220}mdOffscreenRevokeObjectUrl\(msg\._objectUrl\);/.test(svc),
+        'SAVE-1: the offscreen-created URL must be revoked by the document that made it (same routing as the mass path)');
+    assert.ok(/const objectUrl = msg\.blob \? URL\.createObjectURL\(msg\.blob\) : \(msg\._offscreenObjectUrl \|\| null\);/.test(svc),
+        'SAVE-1: download() must accept the offscreen object URL as its payload');
+    assert.ok(/delete msg\._offscreenObjectUrl;/.test(svc),
+        'SAVE-1: the payload must be CONSUMED once — the page-fetch fallback re-enters download() with the same msg object and must download msg.url, not a stale offscreen URL');
+
+    // --- EXECUTION: the real helper, with the tier stubbed ---------------------
+    const driveSave = (opts) => {
+        globalThis.__save1 = { download: [], fetched: [] };
+        const factory = new Function('msg', `
+const platform = 'chrome';
+const manifest = { name: 'test' };
+let mdOffscreenSetup = null;
+function mdOffscreenSupported() { return ${opts.supported}; }
+function mdOffscreenEnsure() { return Promise.resolve(${opts.ensure}); }
+function mdDnrRequestFor() { return ${opts.registry} ? { host: 'i.pximg.net', referer: 'https://www.pixiv.net/' } : null; }
+function mdDnrEnsureForTask() { return Promise.resolve(true); }
+function mdDnrRuleActiveFor() { return ${opts.rule} ? { host: 'i.pximg.net' } : null; }
+function mdOffscreenFetchBounded(m) { globalThis.__save1.fetched.push(m); return Promise.resolve(${JSON.stringify(opts.res)}); }
+function download(m, tab) {
+    globalThis.__save1.download.push({ target: m._offscreenObjectUrl || m._objectUrl || null,
+        name: m.urlName || null, alter: m.alterDownload === true,
+        scope: m._objectUrlScope || null, tabId: tab && tab.id });
+}
+${cutFn(core, 'mdSaveViaOffscreen')}
+return mdSaveViaOffscreen(msg);
+`);
+        return factory;
+    };
+    const PIXIV = 'https://i.pximg.net/img-original/img/2024/10/12/00/01/26/123241937_p0.jpg';
+    const OK = { ok: true, objectUrl: 'blob:chrome-extension://x/abc', size: 530300, contentType: 'image/jpeg' };
+
+    await (async () => {
+        // (a) a host the registry does not know: untouched behaviour, no fetch
+        let call = driveSave({ supported: true, ensure: true, registry: false, rule: true, res: OK })({ url: 'https://cdn.example.com/a.jpg' });
+        assert.strictEqual(await call, false, 'SAVE-1: a non-registry host must never enter the tier');
+        assert.strictEqual(globalThis.__save1.fetched.length, 0, 'SAVE-1: and it must not cost a fetch');
+        // (b) registry host whose rule is not live: refuse rather than fetch a 403
+        call = driveSave({ supported: true, ensure: true, registry: true, rule: false, res: OK })({ url: PIXIV });
+        assert.strictEqual(await call, false, 'SAVE-1: without a LIVE Referer rule the fetch is a guaranteed 403');
+        // (c) Firefox (no offscreen API): the branch is dead there
+        call = driveSave({ supported: false, ensure: true, registry: true, rule: true, res: OK })({ url: PIXIV });
+        assert.strictEqual(await call, false, 'SAVE-1: on Firefox the tier does not exist (the FF downloads API carries the Referer)');
+        // (d) the happy path: pixiv, live rule -> one fetch, one download of the blob URL
+        const msg = { url: PIXIV };
+        call = driveSave({ supported: true, ensure: true, registry: true, rule: true, res: OK })(msg);
+        assert.strictEqual(await call, true, 'SAVE-1: a registry host with a live rule must be handled by the tier');
+        assert.strictEqual(globalThis.__save1.fetched.length, 1, 'SAVE-1: exactly one fetch per save');
+        assert.strictEqual(globalThis.__save1.fetched[0].url, PIXIV,
+            'SAVE-1: the ORIGINAL url is fetched (not a blob, not the page)');
+        assert.strictEqual(globalThis.__save1.download.length, 1, 'SAVE-1: the bytes must end in a real download');
+        assert.strictEqual(globalThis.__save1.download[0].target, OK.objectUrl,
+            'SAVE-1: the download target is the offscreen document\'s object URL');
+        assert.strictEqual(globalThis.__save1.download[0].name, '123241937_p0.jpg',
+            'SAVE-1: the file name comes from the CDN url, not from the blob URL');
+        assert.strictEqual(globalThis.__save1.download[0].alter, false,
+            'SAVE-1: it is a REAL download, so download() registers and tracks it');
+        assert.strictEqual(globalThis.__save1.download[0].scope, 'offscreen',
+            'SAVE-1: tagged so the object URL is revoked by the offscreen document');
+        // (e) the one-shot rule: the same message must never be fetched twice
+        assert.strictEqual(msg._offscreenDone, true, 'SAVE-1: the attempt must be marked as made');
+        assert.strictEqual(await driveSave({ supported: true, ensure: true, registry: true, rule: true, res: OK })(msg), false,
+            'SAVE-1: a second verdict for the same item must not fetch it again');
+        // (f) a refused/failed fetch hands the item back to the old path
+        const fail = driveSave({ supported: true, ensure: true, registry: true, rule: true, res: { ok: false, error: 'HTTP 403', status: 403 } })({ url: PIXIV });
+        assert.strictEqual(await fail, false, 'SAVE-1: a refused fetch must fall back, not fail the save');
+        assert.strictEqual(globalThis.__save1.download.length, 0, 'SAVE-1: and it must not start a download of its own');
+        // (g) a too-large body is a policy refusal, i.e. the same fallback
+        const big = driveSave({ supported: true, ensure: true, registry: true, rule: true, res: { ok: false, error: 'Too large for offscreen fetch', tooLarge: true } })({ url: PIXIV });
+        assert.strictEqual(await big, false, 'SAVE-1: over the 32 MiB tier cap the page path is tried');
+        // (h) a document that cannot be created leaves everything as it was
+        const nodoc = driveSave({ supported: true, ensure: false, registry: true, rule: true, res: OK })({ url: PIXIV });
+        assert.strictEqual(await nodoc, false, 'SAVE-1: no offscreen document means no tier');
+    })();
+
+    delete globalThis.__save1;
+    console.log('md-unit-smoke: single-save offscreen locks hold (Chrome-only delta)');
 }

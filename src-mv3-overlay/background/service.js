@@ -880,8 +880,15 @@ async function download(msg, tab, sendResponse) {
     }
 
     // Audit U-02: keep the object URL so it can be revoked once the download
-    // reaches a terminal state (see onChanged below).
-    const objectUrl = msg.blob ? URL.createObjectURL(msg.blob) : null;
+    // reaches a terminal state (see onChanged below). SAVE-1: msg._offscreenObjectUrl
+    // is the single-save offscreen retry's payload — a blob: URL created in the
+    // offscreen document (mdSaveViaOffscreen, mass-download/service-core.js),
+    // already materialized, so nothing is created for it here. It is CONSUMED here
+    // on purpose: if this download is refused too, the page-fetch fallback re-enters
+    // this function with the same msg object, and it must then download msg.url (the
+    // page's fresh blob), not a stale — by then revoked — offscreen URL.
+    const objectUrl = msg.blob ? URL.createObjectURL(msg.blob) : (msg._offscreenObjectUrl || null);
+    delete msg._offscreenObjectUrl;
     const params = {
         url: objectUrl || msg.url,
         filename: filename || undefined,
@@ -923,7 +930,13 @@ chrome.downloads.onChanged.addListener(function (delta) {
     // Audit U-02/U-03: clean up entries and object URLs on terminal states;
     // cancel/erase get callbacks so chrome.runtime.lastError stays checked.
     const cleanup = () => {
-        if (msg._objectUrl) URL.revokeObjectURL(msg._objectUrl);
+        if (msg._objectUrlScope === 'offscreen') {
+            // The offscreen document is the only context that can revoke a URL it
+            // created — same routing as the mass path (releaseDownloadSlot).
+            mdOffscreenRevokeObjectUrl(msg._objectUrl);
+        } else if (msg._objectUrl) {
+            URL.revokeObjectURL(msg._objectUrl);
+        }
         delete downloadItems[delta.id];
     };
 
@@ -948,15 +961,35 @@ chrome.downloads.onChanged.addListener(function (delta) {
         });
 
         // request alternative download method
-        msg.alterDownload = true;
-        // Fix E (pixiv 403, 2026-09-10): a SERVER_FORBIDDEN interrupt on a
-        // registry host means the rule was not yet installed when the
-        // download started (popup-save before any scan) — ensure it now so
-        // the alterDownload fetch below passes the gate. Registry-scoped,
-        // idempotent; non-registry hosts are untouched.
-        mdDnrEnsureForTask(msg);
-        if (typeof msg.sendResponse === "function") msg.sendResponse(msg);
+        // One verdict per downloadId: `state` and `error` arrive as separate
+        // deltas, and the offscreen attempt below is asynchronous — the entry has
+        // to leave downloadItems NOW, or a second delta would start a SECOND
+        // attempt (and a second page-fetch fallback beside it).
         cleanup();
+
+        const fallBackToPageFetch = () => {
+            msg.alterDownload = true;
+            // Fix E (pixiv 403, 2026-09-10): a SERVER_FORBIDDEN interrupt on a
+            // registry host means the rule was not yet installed when the
+            // download started (popup-save before any scan) — ensure it now so
+            // the alterDownload fetch below passes the gate. Registry-scoped,
+            // idempotent; non-registry hosts are untouched.
+            mdDnrEnsureForTask(msg);
+            if (typeof msg.sendResponse === "function") msg.sendResponse(msg);
+        };
+
+        // SAVE-1 (2026-09-21, plan §D2): the fallback above asks the PAGE for the
+        // bytes, which a Referer-gated CDN can never satisfy — i.pximg.net sends no
+        // CORS headers, so the page-context fetch dies with "Failed to fetch" and
+        // the user gets an alert and no file (measured; log/
+        // `Pixiv imagus-mass-download-log-2026-09-11T18-28-25.txt`). For those
+        // hosts only — registry-scoped, and only after Chrome itself refused the
+        // download — the extension-origin offscreen document fetches instead (no
+        // CORS, and the DNR rule supplies the Referer). Every other case, and any
+        // failure or refusal inside the attempt, lands in the old path unchanged.
+        mdSaveViaOffscreen(msg).then(function (handled) {
+            if (!handled) fallBackToPageFetch();
+        });
         // chrome.tabs.sendMessage(msg.tabId, msg);
     }
 });
