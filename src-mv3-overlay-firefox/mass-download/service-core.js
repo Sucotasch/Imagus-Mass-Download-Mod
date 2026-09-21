@@ -496,6 +496,10 @@ function resetMassDownloadSession() {
     // FIX-DUP-2: and its own "what have we written" index. The next query is bounded
     // by the NEW run's start, so a page the user asks for again is downloaded again
     // — while the adopted files of a recovered session still count as already here.
+    // FIX-DUP-3/4: a new scan is a new RUN — its own origin, and no inherited restore
+    // marks (a page the user asks for again must still download again).
+    mdRunOrigin = 0;
+    mdRestoredKeys.clear();
     mdWrittenIndex = null;
     userCanceled = false;
     completionNotified = false;
@@ -1265,6 +1269,10 @@ function mdBuildSnapshot() {
         // taking-over worker reads it from here (the dying one cannot report).
         inflight: mdInflightList(),
         sessionId: sessionId,
+        // FIX-DUP-4: the RUN's original start, so the next generation's history query does
+        // not narrow to this worker's uptime — that sliding window is what let the run write
+        // 43 second copies of its own files.
+        runOrigin: mdRunOrigin || sessionStartTime,
         sessionStart: sessionStartTime,
         scanInProgress: scanInProgress,
         contentScanDone: contentScanDone,
@@ -1472,6 +1480,7 @@ function mdApplySnapshot(snap) {
         // the restore is the same session continuing, while a fresh scan is the user
         // asking for the page again, and refusing THAT would be a feature we rejected.
         t._restored = true;
+        mdMarkTaskRestored(t);
         globalProcessedUrls.delete(fileKey(t.url));
         const h = mediaHashKey(t.url);
         if (h) globalProcessedMediaHashes.delete(h);
@@ -1517,6 +1526,8 @@ function mdApplySnapshot(snap) {
 
     requeue.forEach(function (t) { filterQueue.push(t); });
 
+    // FIX-DUP-4: the run's ORIGINAL start travels across restarts (mdNextRunOrigin).
+    mdRunOrigin = mdNextRunOrigin(mdRunOrigin, snap);
     mdRecoveredInfo = {
         sessionStart: snap.sessionStart || null,
         workerStart: snap.workerStart || null,
@@ -2103,7 +2114,9 @@ function serializeProgressEntry(entry) {
         browserId: t && t._downloadId != null ? t._downloadId : null,
         // Which rows came back from a snapshot (DUP-1 scope) and which were
         // answered by Chrome's history instead of a download.
-        restored: !!(t && t._restored),
+        // FIX-DUP-3: asked by ITEM, so a row whose task was re-routed downstream still
+        // says it came from a snapshot instead of reporting itself as a fresh download.
+        restored: mdIsRestoredTask(t),
         historyAdopted: !!(t && t._historyAdopted)
     };
 }
@@ -2700,12 +2713,84 @@ var MD_WRITTEN_INDEX_MS = 2000;         // never re-ask Chrome more often than t
 var MD_HISTORY_WAIT_MS = 2000;          // wait this long while a same-item download runs
 var MD_HISTORY_WAIT_TRIES = 3;          // bounded: a stuck download must not pin the queue
 
+// FIX-DUP-4 (2026-09-21, live 11:38 run): the start of the RUN, and it must never move.
+// mdApplySnapshot re-keys sessionStartTime to the recovering worker, and every snapshot
+// then stored THAT value, so the bound slid forward by one generation per restart: gen 2
+// reported gen 1's start, gen 3 reported gen 2's … and by the sixth generation the history
+// window was 30 s wide. Measured on that run: 28 of the 43 byte-identical ' (1)' pairs had
+// been written two to four generations BEFORE the window opened, so the index could not
+// contain the very files the run was about to write a second time. The origin is carried
+// in the snapshot as `runOrigin` and combined as an earliest-start value (mdNextRunOrigin).
+var mdRunOrigin = 0;
+
+// FIX-DUP-3 (2026-09-21, same run): "this item came back from a snapshot" has to survive
+// the DOWNLOAD-side clones. The filter phase rebuilds the task object whenever the item is
+// re-routed — host pinned to browser download (triggerRefererDownload), the offscreen tier
+// (mdTryOffscreenDownload), the next candidate (advanceToNextCandidate) — and none of those
+// copies carried `_restored`, so the guard below read them as fresh-scan work and started a
+// SECOND download for a file the run already had. That is the whole shape of the 11:38
+// duplicates: every group was cross-generation, and every one of those rows was
+// `pick: breaker-open … host pinned to browser download`, i.e. the cloned path (the rows
+// even lost `restored: yes`). Keying the mark by the item's URLs instead of by one object's
+// field makes it indestructible.
+var mdRestoredKeys = new Set();
+
 // The start of the RUN, not of this worker: mdApplySnapshot re-keys sessionStartTime
 // to the recovering worker (the progress tab would otherwise read the recovered rows
-// as 'lost' forever), so the snapshot's own sessionStart is the only correct lower
-// bound for "what has this run already written".
+// as 'lost' forever), and each snapshot then stored the RE-KEYED value, so the bound slid
+// FORWARD one generation per restart — so the earliest start of the run is the only correct
+// lower bound for "what has this run already written" (FIX-DUP-4).
 function mdSessionOriginMs() {
+    if (mdRunOrigin) return mdRunOrigin;
     return (mdRecoveredInfo && mdRecoveredInfo.sessionStart) ? mdRecoveredInfo.sessionStart : sessionStartTime;
+}
+
+// Pure (executed by tools/md-unit-smoke.mjs): the run's origin after a recovery, as an
+// EARLIEST value. `snap.runOrigin` is what the dead generation carried; `snap.sessionStart`
+// is what a snapshot written before that field existed has instead. Neither may move the
+// origin forward — a restart must not narrow the window (FIX-DUP-4).
+function mdNextRunOrigin(current, snap) {
+    const carried = (snap && (Number(snap.runOrigin) || Number(snap.sessionStart))) || 0;
+    if (current && carried) return Math.min(current, carried);
+    return current || carried || 0;
+}
+
+// The item-identity mark (FIX-DUP-3). mdIsRestoredTask is what mdHistoryGuard asks, so a
+// task rebuilt downstream (pinned host, offscreen tier, next candidate) is still restored
+// work even though the surviving object never carried the field.
+function mdRestoredKey(url) {
+    try { return fileKey(url) || ''; } catch (e) { return ''; }
+}
+
+function mdMarkTaskRestored(task) {
+    if (!task) return;
+    const urls = [task.url];
+    if (Array.isArray(task._candidates)) {
+        task._candidates.forEach(function (c) {
+            urls.push((c && typeof c === 'object') ? c.url : c);
+        });
+    }
+    urls.forEach(function (u) {
+        const k = mdRestoredKey(u);
+        if (k) mdRestoredKeys.add(k);
+    });
+}
+
+function mdIsRestoredTask(task) {
+    if (!task) return false;
+    if (task._restored === true) return true;
+    if (mdRestoredKeys.size === 0) return false;
+    if (mdRestoredKeys.has(mdRestoredKey(task.url))) return true;
+    // A clone can carry the group's candidates (advanceToNextCandidate does): an item whose
+    // restored sibling walked another candidate is still the same item.
+    if (Array.isArray(task._candidates)) {
+        for (let i = 0; i < task._candidates.length; i++) {
+            const c = task._candidates[i];
+            const u = (c && typeof c === 'object') ? c.url : c;
+            if (u && mdRestoredKeys.has(mdRestoredKey(u))) return true;
+        }
+    }
+    return false;
 }
 
 // Lookup key for a media URL: HD '#' prefix stripped, protocol-relative resolved,
@@ -2918,7 +3003,9 @@ function mdAdoptIfAlreadyDownloaded(task) {
 //               it (it would re-ask) and must stop instead of spinning.
 //   'proceed' — everything else, including every task of a fresh scan: download it.
 function mdHistoryGuard(task) {
-    if (!task || task._restored !== true) return 'proceed';
+    // FIX-DUP-3: by ITEM, not by object — a task the filter phase rebuilt downstream
+    // (pinned host / offscreen tier / next candidate) is still restored work.
+    if (!task || !mdIsRestoredTask(task)) return 'proceed';
     if (task._historyChecked !== true) return 'check';
     return task._historyPending === true ? 'park' : 'proceed';
 }

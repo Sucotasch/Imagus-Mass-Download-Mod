@@ -2584,6 +2584,7 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
     const copies = {};
     const guards = {};
     const matchers = {};
+    const markedKeys = {};
     for (const tree of trees) {
         const core = readNorm(tree, 'mass-download/service-core.js');
         const helper = cutFnSource(core, 'mdAdoptIfAlreadyDownloaded');
@@ -2606,6 +2607,37 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         // the killed generation wrote — i.e. exactly the files this check exists for.
         assert.ok(/mdRecoveredInfo && mdRecoveredInfo\.sessionStart/.test(cutFnSource(core, 'mdSessionOriginMs')),
             `DUP: ${tree} — the query bound must be the snapshot's session start (the run), not the worker's own`);
+        // FIX-DUP-4 (2026-09-21, live 11:38 run): that bound was still ONE GENERATION OLD
+        // — sessionStart is re-keyed by every recovery and then stored again — so the
+        // window slid forward ~30 s per restart and by the sixth generation it could not
+        // see files the run had written minutes earlier (28 of the 43 ' (1)' pairs). The
+        // origin is now carried in the snapshot as an EARLIEST value, and the carry is
+        // pure, so it is executed below.
+        assert.ok(/if \(mdRunOrigin\) return mdRunOrigin;/.test(cutFnSource(core, 'mdSessionOriginMs')),
+            `DUP-4: ${tree} — the run's carried origin must win over the one-generation-old sessionStart`);
+        const nextOrigin = new Function(`${cutFnSource(core, 'mdNextRunOrigin')}\nreturn mdNextRunOrigin;`)();
+        assert.strictEqual(nextOrigin(0, { runOrigin: 1000, sessionStart: 1500 }), 1000,
+            `DUP-4: ${tree} — the first recovery must take the run's origin from the snapshot`);
+        assert.strictEqual(nextOrigin(1000, { runOrigin: 1000, sessionStart: 2000 }), 1000,
+            `DUP-4: ${tree} — and the next generation must NOT move it forward: that slide is the window that lost the run's own files`);
+        assert.strictEqual(nextOrigin(1000, { sessionStart: 2000 }), 1000,
+            `DUP-4: ${tree} — a snapshot without the field must not reset it either (older snapshot shape)`);
+        assert.strictEqual(nextOrigin(0, { sessionStart: 1500 }), 1500,
+            `DUP-4: ${tree} — a run whose first snapshot predates the field still gets its start back`);
+        assert.strictEqual(nextOrigin(1000, {}), 1000,
+            `DUP-4: ${tree} — a snapshot with neither field must leave the origin alone`);
+        assert.strictEqual(nextOrigin(0, null), 0,
+            `DUP-4: ${tree} — and no snapshot at all is 0 (the caller falls back to this worker's start)`);
+        // The chain is only alive if the snapshot CARRIES it and the recovery CONSUMES it.
+        assert.ok(/runOrigin: mdRunOrigin \|\| sessionStartTime/.test(cutFnSource(core, 'mdBuildSnapshot')),
+            `DUP-4: ${tree} — the snapshot must carry the run's origin to the next generation`);
+        assert.ok(/mdRunOrigin = mdNextRunOrigin\(mdRunOrigin, snap\)/.test(cutFnSource(core, 'mdApplySnapshot')),
+            `DUP-4: ${tree} — and the recovering worker must take it from there`);
+        const sessionReset = cutFnSource(core, 'resetMassDownloadSession');
+        assert.ok(/mdRunOrigin = 0;/.test(sessionReset) && /mdRestoredKeys\.clear\(\)/.test(sessionReset),
+            `DUP-3/4: ${tree} — a NEW scan is a new run: its own origin, and no inherited restore marks`);
+        assert.ok(/mdMarkTaskRestored\(t\)/.test(cutFnSource(core, 'mdApplySnapshot')),
+            `DUP-3: ${tree} — the restore path must mark the ITEM, not only the object it is about to rebuild`);
         // And a file written by THIS worker must land in the index immediately.
         assert.ok(/mdWrittenIndexNote\(url, delta\.id, results\[0\]\.filename/.test(core),
             `DUP: ${tree} — a completed download must be added to the index at once`);
@@ -2662,7 +2694,16 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         // — a parked task would be back in it), and how many iterations it burned.
         const parkBlock = /const history = mdHistoryGuard\(task\);[\s\S]*?\n        \}/.exec(dlQueue);
         assert.ok(parkBlock, `DUP: ${tree} — the guard branch could not be cut out of processDownloadQueue`);
-        const drive = new Function('downloadQueue', 'mdAdoptIfAlreadyDownloaded', `
+        // FIX-DUP-3: the guard asks by ITEM, so its sandbox needs the mark machinery
+        // (fileKey comes from the same file, at the bottom).
+        const markSrc = cutFnSource(core, 'mdRestoredKey') + '\n'
+            + cutFnSource(core, 'mdMarkTaskRestored') + '\n'
+            + cutFnSource(core, 'mdIsRestoredTask') + '\n'
+            + cutFnSource(core, 'fileKey');
+        const drive = new Function('downloadQueue', 'mdAdoptIfAlreadyDownloaded', 'marks', `
+var mdRestoredKeys = new Set();
+${markSrc}
+(marks || []).forEach(mdMarkTaskRestored);
 ${cutFnSource(core, 'mdHistoryGuard')}
 let iterations = 0;
 while (downloadQueue.length > 0 && iterations++ < 8) {
@@ -2670,11 +2711,11 @@ while (downloadQueue.length > 0 && iterations++ < 8) {
 ${parkBlock[0]}
     break;
 }
-return iterations;
+return { iterations: iterations, isRestored: mdIsRestoredTask, keys: mdRestoredKeys };
 `);
         const queue = [{ _restored: true }];
         const asked = [];
-        const firstIterations = drive(queue, function (t) { asked.push(t); });
+        const firstIterations = drive(queue, function (t) { asked.push(t); }).iterations;
         assert.strictEqual(asked.length, 1, `DUP: ${tree} — a restored task must be asked about exactly once`);
         assert.strictEqual(queue.length, 1, `DUP: ${tree} — the parked task goes back into the queue for the answer`);
         assert.strictEqual(queue[0]._historyChecked, true,
@@ -2696,6 +2737,40 @@ return iterations;
         const fresh = [{}];
         drive(fresh, function () {});
         assert.strictEqual(fresh.length, 0, `DUP: ${tree} — a fresh-scan task goes straight to the download`);
+
+        // --- EXECUTION: the mark must survive the DOWNLOAD-side clones (FIX-DUP-3) ----
+        // The filter phase rebuilds the task object whenever it re-routes the item
+        // (pinned host / offscreen tier / next candidate) and the copy carries no
+        // `_restored`. Live 11:38: EVERY one of the 43 cross-generation ' (1)' pairs
+        // went down that path (`pick: breaker-open … host pinned to browser download`).
+        const MARK_URL = 'https://wimg.rule34.xxx/images/4906/abc123def456abc123def456abc123de.png';
+        const MARK_SAMPLE = 'https://wimg.rule34.xxx/samples/4906/sample_abc123def456abc123def456abc123de.jpg';
+        const clone = { url: MARK_URL, _candidates: [{ url: MARK_SAMPLE }] };   // the clone shape
+        const unmarked = drive([], function () {});
+        assert.strictEqual(unmarked.isRestored(clone), false,
+            `FIX-DUP-3: ${tree} — before the restore nothing is marked (a fresh scan must not enter the machinery)`);
+        // The marked sandbox is driven exactly as mdApplySnapshot does it: the ITEM is
+        // marked, never this object.
+        const marked = drive([], function () {}, [{ url: MARK_URL, _candidates: [{ url: MARK_SAMPLE }] }]);
+        assert.strictEqual(marked.isRestored(clone), true,
+            `FIX-DUP-3: ${tree} — a clone of restored work IS restored work (the field it lost is what made it download a second copy)`);
+        assert.strictEqual(marked.isRestored({ url: MARK_SAMPLE }), true,
+            `FIX-DUP-3: ${tree} — and so is a task re-routed onto another candidate of the same item`);
+        // The candidate branch itself: advanceToNextCandidate hands the item a URL that is
+        // NOT the one that came back from the snapshot, and carries the group instead.
+        assert.strictEqual(marked.isRestored({ url: 'https://wimg.rule34.xxx/images/9999/other.png', _candidates: [{ url: MARK_URL }] }), true,
+            `FIX-DUP-3: ${tree} — a task carrying the marked URL among its candidates is the same item`);
+        assert.strictEqual(marked.isRestored({ url: 'https://other.tld/zzz.png' }), false,
+            `FIX-DUP-3: ${tree} — an unrelated item is never marked`);
+        const askedClone = [];
+        const clonePass = drive([clone], function (t) { askedClone.push(t); }, [{ url: MARK_URL }]);
+        assert.strictEqual(askedClone.length, 1,
+            `FIX-DUP-3: ${tree} — the clone must be ASKED about the download history, not downloaded on the spot`);
+        assert.strictEqual(clone._historyChecked, true,
+            `FIX-DUP-3: ${tree} — and the question must be marked asked, so the park/resume sequence still terminates`);
+        assert.ok(clonePass.iterations <= 3,
+            `FIX-DUP-3: ${tree} — asking must not spin the loop (${clonePass.iterations} iterations)`);
+        markedKeys[tree] = markSrc;
 
         // --- EXECUTION: the matcher itself, against a synthetic index -------------
         // Pure, so it runs here exactly as the worker runs it. Every case below is a
@@ -2774,6 +2849,8 @@ return iterations;
         'DUP: the history guard must be a copy, not a fork (both trees) — one contract, one behaviour');
     assert.strictEqual(matchers['src-mv3-overlay-firefox'], matchers['src-mv3-overlay'],
         'DUP-2: the written-file matcher must be a copy, not a fork (both trees)');
+    assert.strictEqual(markedKeys['src-mv3-overlay-firefox'], markedKeys['src-mv3-overlay'],
+        'DUP-3: the restored-item mark must be a copy, not a fork (both trees)');
     console.log('md-unit-smoke: restore-duplicate locks hold in both trees');
 }
 
