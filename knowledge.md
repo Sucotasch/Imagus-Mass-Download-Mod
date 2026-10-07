@@ -382,10 +382,30 @@ Two tool gaps closed, both found by using it rather than by reading it:
   endpoint answers (right after spawn it dies with `fetch failed`). Verified: 18 files in the scratch
   dir, 0 in the owner's, in the same run.
 
-OBSERVATION, not yet diagnosed (the log format is the next session's job): the lab page's two decoys
-were expected to be REJECTED - `banner_logo_ad.png` by `da.excludedKeywords` ("ad, banner, ...,
-logo") and `tiny_thumb.png` by `da.minImageSize=45` at 10 KB - yet a run reports
-`prefiltered=0, skipped=0, downloaded=18` for a page that is 16 real images + those 2 decoys, and both
-decoy files appear on disk. Either the decoy URLs do not hit the intended filter path, or the filters
-do not fire as designed. Evidence is cheap to reproduce now; record it before touching any filter.
+RESOLVED 2026-10-08 (4) - the decoys were MY lab's defect; the product is CORRECT. The owner
+reported it: "in the system browser the same version does not let 10 KB junk through". Both decoys
+were false alarms, and each was a defect of the lab rather than of the extension:
+
+1. **`tiny_thumb.png` was never 10 KB.** The lab generator assembled its IDAT with
+   `zlib.deflateSync(raw, { level: 0 })` - UNCOMPRESSED, ~227-270 KB for 300x300 - while sizing the
+   padding against the COMPRESSED length, so every target below ~270 KB produced the SAME file. The
+   extension's own Saved Log was the proof: `fileSize=270403` for all three images of a 3-image
+   page, with `quality: thumbnail` on the "small" one. 264 KB > `da.minImageSize=45`, so KEEPING it
+   was correct. After fixing the generator (compressible 16-pixel-block pixels; padding sized from
+   the assembled bytes) HEAD reports 47116 B for the items and 10252 B for `tiny_thumb.png`, and the
+   product filters exactly as the owner sees it:
+   `tiny_thumb.png status=skipped fileSize=10252 error=Too small`, the 46 KB items completed.
+   (A first fix attempt at 64x64 pixels failed informatively: `unresolved=3` - a picture that small
+   is a thumbnail and the extension will not resolve it at all, so a decoy must keep realistic
+   pixel dimensions even when its FILE is meant to be small.)
+2. **`banner_logo_ad.png` was a bare `<img>`.** `_hasStopWords` (content.js:75) matches an element's
+   `textContent || alt || title` and its `href` - never an `<img>`'s `src`, by design - so a bare
+   `<img>` can never be stop-word filtered. Wrapping the decoy in
+   `<a href="/img/banner_logo_ad.png">` made the path fire (`prefiltered=1`), which is also a
+   positive verification that this filter works; the file still arrives because the NESTED `<img>`
+   is its own candidate with the same src - expected, since the filter drops ELEMENTS, not URLs.
+
+Lessons recorded so they are not re-derived: put a decoy's keyword where the code actually looks,
+and never trust a size the generator cannot deliver (ask the product's own log for `fileSize`). The
+"candidate bug" wording that stood here before was WRONG.
 
