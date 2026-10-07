@@ -148,3 +148,36 @@ re-check the sync-XHR guard in data/sieve.json`.
 case. It has two live senders — `content/content.js:769` (Gallery Save, only when no scan is running)
 and `:5578` (scan start, `downloadAll`) — and the session reset inside `handleOpenDownloadProgress`
 is its documented purpose (`background/service.js:661` → `mass-download/service-core.js:533`).
+## 2026-10-07 (2) — why live runs stopped working at all: Edge 154 and `--load-extension`
+
+Previous live sessions were measured on **Edge 153.0.4234.32**; the host is now **Edge
+154.0.4258.62**, and that upgrade is what changed behaviour. Measured today, on throwaway scratch
+profiles, with `--user-data-dir` + `--remote-debugging-port` + `--load-extension=<repo>/src-mv3-overlay`:
+
+| launch | service workers seen | extension loaded? |
+|---|---|---|
+| plain `--headless` + `--enable-unsafe-extension-debugging` | 2 (ours: `…/background/service.js`) | **yes** |
+| plain `--headless`, no extra flag | 0 | no |
+| `--headless=new` + the flag | 1 (only Edge's own ntp.msn.com worker) | no |
+| visible window (no headless flag) + the flag | 1 (the same ntp worker) | no |
+| visible + the flag + `--disable-extensions-except=<abs path>` | 0 | no |
+
+Two rules follow, both measured, not inferred:
+
+1. **`--load-extension` is silently ignored** on Edge 154 unless `--enable-unsafe-extension-debugging`
+   is passed. No error, no extension, no worker - and a tool then reports "extension SW not found"
+   while everything looks healthy. The probe now passes the flag (fixed 2026-10-07).
+2. **Only plain `--headless` loads the unpacked extension.** A visible window loads nothing, with or
+   without `--disable-extensions-except`, and `--headless=new` behaves like the visible case. Proof
+   that the extension really is absent in those modes: the `chrome-extension://<id>/options.html`
+   target opens as an ERROR page, where `chrome.runtime` is `undefined`
+   (`Cannot read properties of undefined (reading 'sendMessage')`).
+
+Consequence for live testing, and the honest limit of it: the userScripts grant is clicked on the
+extension's own details page, which only exists where the extension is loaded - and a window that
+shows the extension cannot be produced on this host in this configuration. So the grant cannot be
+obtained by "open a window and click" here. What HAS worked before (and is the state the older
+`src-mv3-overlay/profile` is in) is a profile where the extension was **installed by hand once**
+(`edge://extensions` -> Developer mode -> Load unpacked -> the tree) and the grant was switched on in
+that same profile: after that every launch loads it from the profile record. That hand-install is the
+step to redo; a merely `--load-extension`-ed profile does not survive the upgrade in a usable state.
