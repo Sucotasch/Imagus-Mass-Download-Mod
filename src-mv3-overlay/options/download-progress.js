@@ -333,13 +333,22 @@
     // check compared the TOTAL row count, so it stayed silent exactly when the
     // list was full — i.e. always when this can happen. Kept as a pure function
     // so the smoke harness can execute it on the real numbers.
+    // 2026-10-08: this note used to end "are NOT listed below ... check the download
+    // folder, not this list", and a LIVE run proved that false against the log's own
+    // next section. 115-item lab page, da.maxProgressRecords=100: the note said "17
+    // completed download(s) are NOT listed below" at line 35 while line 648 of the
+    // SAME file read 'Terminal items, uncapped (117 of the session's ledger:
+    // completed=117, 17 beyond the row cap)'. The 17 were listed right there, which
+    // turns an accurate row-cap disclosure into the log contradicting itself. Name
+    // the cap; do not claim the rows are unavailable.
     function mdLogCapNote(byStatus, stats) {
         const completed = byStatus.completed || 0;
         const downloaded = stats.downloaded || 0;
         if (completed >= downloaded) return '';
-        return ' | NOTE: ' + (downloaded - completed) + ' completed download(s) are NOT listed below'
-            + ' — the oldest finished rows drop off when the list hits the cap.'
-            + ' The files are on disk; check the download folder, not this list.';
+        return ' | NOTE: ' + (downloaded - completed) + ' completed download(s) are beyond this capped row list'
+            + ' — the oldest finished rows drop off when the list hits da.maxProgressRecords.'
+            + ' They are not lost: the files are on disk, and the uncapped "Terminal items"'
+            + ' section of this log lists every one of them when the worker shipped the session ledger.';
     }
 
     // session. Saying so is the difference between "the page lies" and "the page

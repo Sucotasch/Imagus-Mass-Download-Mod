@@ -316,3 +316,49 @@ Harness fix (this is what the whole blockage was): the skill's probe gained a `m
 `{ "mouse": true, "mouseAt": "img" }` - because "drive an extension" has to include "let the
 extension boot first". The `key` step now says so as well when a hotkey does nothing.
 
+## 2026-10-08 (2) — POINT 2 measured and fixed: the Saved Log contradicted itself
+
+First live measurement of the counter/list question, now that the harness can boot the
+extension (section above). Method: lab page `?n=115` (117 `<img>`), Chrome for Testing 137
+headless, the grant profile, downloads redirected with CDP `Browser.setDownloadBehavior`
+into `.unlazy/dl` (the owner's download folder is not touched), and the product's OWN Save
+Log button clicked from the progress tab.
+
+Result:
+
+    scan:             found 174, prefiltered 0, skipped 0, downloaded 117
+    ledger (uncapped): mdOutcomeCounts() -> {completed:117, failed:0, skipped:0, canceled:0}
+    progress tab UI:  stats-downloaded=117 | totalFiles=100 | completedFiles=100 | rows=100
+    session summary:  "Finished - Downloaded 117 file(s) - 19s (the worker's totals for this run; the list above is capped)"
+    listNote:         "Showing the last 100 records ... This session: downloaded=117, skipped=0 (live counters, not the list)."
+
+So `byStatus.completed (100) < stats.downloaded (117)` - the exact condition - and
+`mdLogCapNote` fired. Its text did NOT match the rest of the document:
+
+    line 35:  "... by status: completed=100 | NOTE: 17 completed download(s) are NOT listed below
+               - the oldest finished rows drop off when the list hits the cap. The files are on
+               disk; check the download folder, not this list."
+    line 648: "Terminal items, uncapped (117 of the session's ledger: completed=117, 17 beyond
+               the row cap) - one line per item"
+
+The 17 rows the note calls "NOT listed below" ARE listed immediately below, in the uncapped
+ledger section of the same file. An accurate row-cap disclosure had turned into the log
+contradicting itself - exactly the "the page lies" reading this note exists to prevent.
+
+Fix (text only, BOTH trees, `options/download-progress.js` `mdLogCapNote`): name the row cap
+and stop claiming the rows are unavailable - "N completed download(s) are beyond this capped
+row list - the oldest finished rows drop off when the list hits da.maxProgressRecords. They
+are not lost: the files are on disk, and the uncapped \"Terminal items\" section of this log
+lists every one of them when the worker shipped the session ledger."
+
+The edit had to land in both trees because `tools/md-ff-delta.mjs` requires the trees to
+differ in EXACTLY the 3 canonical files. Gates after the change, all rc=0: `node --check`
+both trees; `tools/md-unit-smoke.mjs`; `tools/md-marker-check.mjs`; `tools/md-ff-delta.mjs`
+(still exactly background/service.js, manifest.json, mass-download/service-core.js);
+`tools/_chk_defaults.mjs`.
+
+Noted for the record: the ON-SCREEN wording was already correct - `mdListNoteText`
+("Completed in List counts only the rows still shown. This session: downloaded=117,
+skipped=0 (live counters, not the list)") and the session summary both state the cap and the
+live totals. Only the Saved Log note over-claimed.
+
