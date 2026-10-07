@@ -181,3 +181,34 @@ obtained by "open a window and click" here. What HAS worked before (and is the s
 (`edge://extensions` -> Developer mode -> Load unpacked -> the tree) and the grant was switched on in
 that same profile: after that every launch loads it from the profile record. That hand-install is the
 step to redo; a merely `--load-extension`-ed profile does not survive the upgrade in a usable state.
+## 2026-10-07 (3) — the test browser is Chrome for Testing 137, and why
+
+Edge (the host every earlier live session used) stopped being usable for this: 154 loads an unpacked
+extension **only** in `--headless` and **only** with `--enable-unsafe-extension-debugging`, and a
+VISIBLE window loads nothing at all - which is precisely the window a human needs for the one
+userScripts click. So the tool now prefers **Chrome for Testing** (the automation-branded build; its
+"test environment" branding is why it may do what the branded browsers refuse):
+
+    ~/.ext-dev-loop/browsers/cft-137/chrome-win64/chrome.exe   (Chrome for Testing 137.0.7151.119,
+    downloaded from storage.googleapis.com/chrome-for-testing-public, 163 MB, no installer)
+
+Measured on this host, same tree, same scratch-profile shape:
+
+| browser | headless | visible window | userScripts gate |
+|---|---|---|---|
+| Edge 154 | loads only WITH `--enable-unsafe-extension-debugging` | loads NOTHING | per-extension toggle (>= 138) |
+| Chrome 137+ (branded) | refuses `--load-extension` outside a test environment | - | per-extension toggle |
+| **Chrome for Testing 137** | **loads with plain `--load-extension`** | **loads too** | **global Developer-mode toggle** |
+
+Also verified on CfT 137:
+- `--enable-automation`, `--enable-unsafe-extension-debugging` and a hand-written
+  `extensions.ui.developer_mode` in the profile's `Preferences` do **not** open the gate. Hand-editing
+  the pref is pointless by design: it is MAC-protected, and Chrome silently discards the value.
+- The extension's service worker registers BOTH `chrome.runtime.onMessage` and
+  `chrome.runtime.onUserScriptMessage` (background/service.js:1356/1365) - worth knowing, because it
+  means a test copy of the tree whose manifest declares classic `content_scripts` would also be
+  driveable end to end (that is the zero-click fallback if the click is ever refused).
+- The probe's own availability check had a real bug on < 138: reading `chrome.userScripts` THROWS
+  ("only available for users in developer mode"), so the whole state expression threw and the run
+  printed `state: undefined` while continuing with a bogus verdict. It now uses the documented
+  call-inside-try/catch check and names which of the two gates is in force.
