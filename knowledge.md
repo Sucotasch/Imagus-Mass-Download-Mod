@@ -362,3 +362,30 @@ Noted for the record: the ON-SCREEN wording was already correct - `mdListNoteTex
 skipped=0 (live counters, not the list)") and the session summary both state the cap and the
 live totals. Only the Saved Log note over-claimed.
 
+## 2026-10-08 (3) — the harness can now read consoles and no longer writes into the owner's folder
+
+Two tool gaps closed, both found by using it rather than by reading it:
+
+- **The script runner was blind to the page's console.** It `Runtime.enable`d every page and threw
+  the output away, so a content script failing during its own init read as "the extension does
+  nothing". Page and worker consoles are now drained after every step and attributed per world
+  (`[<page> isolated#3] [error] ...`). Two traps, both measured: `Runtime.enable` REPLAYS its buffer
+  to each new session (every step attaches one), so repeats are deduped with an explicit
+  "(N replayed line(s) suppressed)"; and a context id is NOT uniform - `consoleAPICalled` has it at
+  params level, `exceptionThrown` only inside `params.exceptionDetails` (the old reader printed
+  "ctx undefined" for every exception).
+- **Downloads were landing in the owner's real download folder.** The lab script redirected them
+  with CDP `Browser.setDownloadBehavior`; the reusable tool did not, and three runs left 54 lab PNGs
+  in `D:\Arx`. The tool now redirects into `.ext-dev-loop/downloads` on every launch. Traps, both
+  measured: the behaviour is tied to the CDP session that set it (close that session and the log
+  still claims "redirected" while files go to the real folder), and it must be set after the
+  endpoint answers (right after spawn it dies with `fetch failed`). Verified: 18 files in the scratch
+  dir, 0 in the owner's, in the same run.
+
+OBSERVATION, not yet diagnosed (the log format is the next session's job): the lab page's two decoys
+were expected to be REJECTED - `banner_logo_ad.png` by `da.excludedKeywords` ("ad, banner, ...,
+logo") and `tiny_thumb.png` by `da.minImageSize=45` at 10 KB - yet a run reports
+`prefiltered=0, skipped=0, downloaded=18` for a page that is 16 real images + those 2 decoys, and both
+decoy files appear on disk. Either the decoy URLs do not hit the intended filter path, or the filters
+do not fire as designed. Evidence is cheap to reproduce now; record it before touching any filter.
+
