@@ -237,3 +237,29 @@ script". NOT yet confirmed against the owner's real usage: the Ctrl+Q hotkey run
 (the content script's own key handler), so it can still work - that is the path the owner actually
 uses, and it is what a live scan must be started with. The lab is therefore blocked on the TRIGGER,
 not on the counters question.
+## 2026-10-07 (5) — registration and INJECTION are fine; the trigger still does not reach the script
+
+Continued past the message-channel finding, and the picture narrowed further:
+
+- **The extension's world really is in the page.** Asked from the tab's ISOLATED world (Chrome for
+  Testing 137, headless, lab page `http://127.0.0.1:8123/grid?n=16`):
+  `{"chromeObject":"object","runtimeId":"nknbbghpoclmikkfnbcdjbaonkebofgo"}`.
+  So this is not "the user scripts were never injected".
+- **A real Ctrl+Q does nothing.** Dispatched with `Input.dispatchKeyEvent` (the recipe that is
+  measured to work on this box: `Page.bringToFront`, then keyDown with `text:"q"`, modifiers 2, then
+  keyUp), and the page itself reported `document.hasFocus(): true`. Result: the scan never starts -
+  `downloadStats.found: 0`, `scanInProgress: false`, phase `none`, empty rows and ledger.
+- **And the popup path still answers** `Could not establish connection. Receiving end does not exist.`
+  (6 more tries here, 20 in the earlier run).
+
+Registration OK + world present + neither entry point delivering = the remaining suspect is the
+injected script itself failing during its own init inside the USER_SCRIPT world (its CSP, or a thrown
+error), which would explain both symptoms with one cause.
+
+**Next check (small and decisive):** capture the CONSOLE of that world while the page loads. The probe
+streams the service worker's console; it does not yet drain the page/user-script console
+(`Runtime.enable` on the isolated/user-script context and print what arrives). The thrown error there
+is the thing to read next - do not guess at the cause before that is in hand.
+
+Also: the probe gained a `key` step for exactly this (`{ key: "Ctrl+Q", keyText: "q" }`), so a real
+hotkey can be driven from a script without a second tool.
