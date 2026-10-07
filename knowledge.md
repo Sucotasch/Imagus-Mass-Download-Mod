@@ -263,3 +263,56 @@ is the thing to read next - do not guess at the cause before that is in hand.
 
 Also: the probe gained a `key` step for exactly this (`{ key: "Ctrl+Q", keyText: "q" }`), so a real
 hotkey can be driven from a script without a second tool.
+
+## 2026-10-08 — SOLVED: the content script boots on the FIRST MOUSEMOVE (my harness was the bug)
+
+The "registration OK but nothing drives it" dead end from 2026-10-07 was NOT the extension and
+NOT Chrome for Testing 137. The code says it outright:
+
+- `content/content.js` at load (line ~5977) arms exactly ONE thing:
+  `window.addEventListener("mousemove", PVI.onInitMouseMove, true)`. No readCfg(), no PVI.init,
+  no chrome.runtime.onMessage registration.
+- The ONLY two `Port.listen(PVI.onMessage)` call sites - i.e. the only
+  `chrome.runtime.onMessage.addListener` in the content script - live inside `PVI.init()`
+  (content.js:4956) and `onInitMouseMove` (content.js:5046).
+- `onInitMouseMove` -> `Port.listen(PVI.onMessage)` + `Port.send({cmd:"hello"}, PVI.onMessage)` ->
+  the worker answers with the config -> `PVI.init(d)` -> the hotkey branch
+  (`cfg.keys.downloadAll`, content.js:3698) and the `downloadAll` message branch
+  (content.js:4873) become reachable.
+
+So the extension is deliberately lazy: it is a hover extension, and on a page it has never been
+used on there is NO message listener and NO hotkey. A headless harness that never moves the
+pointer therefore sees "Receiving end does not exist" and a dead Ctrl+Q - which reads exactly like
+a broken extension.
+
+Measured (Chrome for Testing 137, HEADLESS, the grant profile, lab page
+`http://127.0.0.1:8123/grid?n=16`, via the skill's probe with the new `mouse` step - log
+`.unlazy/verify.log`):
+
+    step 2  BEFORE any pointer move   tabs.sendMessage ping -> "Could not establish connection. Receiving end does not exist."
+    step 3  REAL mousemove            Input.dispatchMouseEvent mouseMoved, two positions, centre of the first <img>
+    step 4  AFTER                     ping -> DELIVERED
+    step 5  tabs.sendMessage {cmd:downloadAll} -> {"status":"done"}
+    step 6  worker: found 26, prefiltered 0, skipped 0, downloaded 18;
+            mdSessionPhase() "done";
+            mdOutcomeCounts() {completed:18, failed:0, skipped:0, canceled:0}
+
+Independent confirmation of the same conclusion from raw CDP (`.unlazy/us-exec-probe.mjs`):
+`getWorldConfigurations()` -> `[{csp:"script-src 'self' 'unsafe-eval'","messaging":true}]` (the
+messaging gate IS open); `userScripts.execute()` -> `[{result:{ran:true,...}}]` (the pipeline
+executes); a REGISTERED probe script left its marker after a reload (registered scripts execute at
+load); and after installing a listener in the world by hand, `tabs.sendMessage({cmd:'ping'})` ->
+`{"pong":true}` - so tabs.sendMessage DOES deliver into a USER_SCRIPT world once a listener exists.
+
+CORRECTIONS to earlier notes in this file:
+- "the trigger is blocked" - wrong. It was untested, not blocked.
+- "the injected script may be failing during its own init" - wrong. It runs.
+- `cfg` and `PVI` are NOT usable as execution markers from outside: `cfg` is a top-level `let`
+  (declared, value undefined - `typeof` reads "undefined" either way) and `PVI` is IIFE-local BY
+  DESIGN. `Port` (a top-level `const` in `common/app.js:106`) is the honest marker, and it was an
+  object all along.
+
+Harness fix (this is what the whole blockage was): the skill's probe gained a `mouse` step -
+`{ "mouse": true, "mouseAt": "img" }` - because "drive an extension" has to include "let the
+extension boot first". The `key` step now says so as well when a hotkey does nothing.
+
