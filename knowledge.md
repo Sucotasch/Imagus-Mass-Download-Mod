@@ -111,3 +111,40 @@ ReDoS in stop-word matching (escape keywords, try/catch); media-ext regex bugs (
 - `Docs/UPSTREAM_725_INTEGRATION_PLAN.md`, `Docs/UPSTREAM_820_INTEGRATION_PLAN.md` — re-base checklists
 - `Docs/PROJECT_STRUCTURE.md`, `Docs/MV3_DEVELOPMENT.md`, `Docs/DEVELOPMENT_GUIDE.md`, `Docs/PROJECT_MV2.md`
 - `Audit/AUDIT_STATUS_CURRENT.md` — consolidated status of audit items (qualify BUG-xx IDs with audit date, e.g. `BUG-03@0720`).
+## 2026-10-07 — userScripts grant (live-run blocker), tool fixes, and one product warning
+
+**The grant is per-profile and is the one step no tool can do.** Chrome/Edge >= 138 gate the
+`userScripts` API on a per-extension toggle on the extension's own details page
+(`edge://extensions/?id=<id>` → "Allow User Scripts"). Per the official docs there is **no flag, no
+policy and no CDP route** (the page is a `chrome://` URL); the documented route is the user clicking
+it. Measured here 2026-10-07: `userscriptAPI:false` in both scratch profiles
+(`.ext-dev-loop/src-mv3-overlay/profile`, `.ext-dev-loop/diag/profile`) while the extension itself
+loads fine (`Imagus Reborn MD`, version 2026.9.21.4, id `nknbbghpoclmikkfnbcdjbaonkebofgo`).
+Consequence: without the grant the extension's content scripts never register, so **any live scan
+measurement is about a dead extension, not about its code**. The grant IS stored in the profile, so
+it is a ONE-TIME click per scratch profile — keep the profile and later runs need nothing.
+
+**ext-dev-loop (tool) — four defects found and fixed while trying to run the scan lab:**
+- `--headless=new` produced a visible window on Edge 154. The probe now passes plain `--headless`
+  (the supported spelling since Chrome 132) **and verifies it**: headless reports a synthesised
+  screen (measured: `screen [800,600]`, `outer [1100,820]` = the requested window size), a real
+  window reports the monitor. Verified HEADLESS with no window on 2026-10-07.
+- `show()` crashed on `JSON.stringify(undefined).slice(...)` and the crash masked the step's own
+  result; `undefined` is now printed as itself.
+- The error path set `process.exitCode` but never called `process.exit()`, so a finished run hung
+  until the internal 360 s hard timeout (measured: two agent calls sat 200–240 s on a run that had
+  already closed its browser). Now it exits.
+- Awaiting the CDP response to `chrome.runtime.reload()` never returns (the reload tears down the
+  worker that would answer) and left an ORPHAN browser with an empty state file. The grant poll now
+  fires the reload, waits a bounded moment, and re-checks in the fresh worker.
+- The probe now opens `edge://extensions/?id=<id>` itself and polls the grant, so ONE click is enough
+  and the same run continues — no re-run, no second interaction.
+
+**Product warning seen at extension load (not caused by this work, worth a look):**
+`sieve hardening (D-1) NOT applied to E-Hentai|Exhentai-x-q-p — the rule text changed upstream;
+re-check the sync-XHR guard in data/sieve.json`.
+
+**Correction to an earlier note in this file's history:** `openDownloadProgress` is NOT a dead switch
+case. It has two live senders — `content/content.js:769` (Gallery Save, only when no scan is running)
+and `:5578` (scan start, `downloadAll`) — and the session reset inside `handleOpenDownloadProgress`
+is its documented purpose (`background/service.js:661` → `mass-download/service-core.js:533`).
