@@ -212,3 +212,28 @@ Also verified on CfT 137:
   ("only available for users in developer mode"), so the whole state expression threw and the run
   printed `state: undefined` while continuing with a bogus verdict. It now uses the documented
   call-inside-try/catch check and names which of the two gates is in force.
+## 2026-10-07 (4) — MEASURED: the popup's trigger path cannot reach the content script
+
+With the userScripts grant finally OPEN (Chrome for Testing 137 profile under
+`C:/Users/sucot/.ext-dev-loop`) the registration itself is proven good:
+
+    chrome.userScripts.getScripts() -> 2 scripts
+      common/app.js       matches <all_urls>  world USER_SCRIPT
+      content/content.js  matches <all_urls>  world USER_SCRIPT
+
+But sending the scan command the way the POPUP does it fails:
+
+    chrome.tabs.sendMessage(tabId, { cmd: "downloadAll" }, { frameId: 0 })
+    -> "Could not establish connection. Receiving end does not exist."
+    ... on 20 consecutive attempts over 15 s (a retry loop, not a single shot)
+
+So it is NOT injection timing. Implication, which is why this is recorded as a FINDING rather
+than a fix: a script injected through `chrome.userScripts` lives in the USER_SCRIPT world, and
+`chrome.tabs.sendMessage` addresses content scripts - on this build those are different channels
+(user scripts receive extension messages through `runtime.onUserScriptMessage`). The popup path
+(`popup.js` -> SW `handleDownloadAll` -> `tabs.sendMessage`) therefore cannot start a scan here,
+which is consistent with the worker logging its own "Failed to send downloadAll to content
+script". NOT yet confirmed against the owner's real usage: the Ctrl+Q hotkey runs INSIDE the page
+(the content script's own key handler), so it can still work - that is the path the owner actually
+uses, and it is what a live scan must be started with. The lab is therefore blocked on the TRIGGER,
+not on the counters question.
