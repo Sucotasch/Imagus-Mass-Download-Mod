@@ -261,7 +261,7 @@ numbers of the 21:52 log, a clean run, a resumed run, and an old worker without 
 | `maxConcurrentDownloads` | Parallel `chrome.downloads` |
 | `minImageSize` / `minVideoSize` | Size thresholds (KB / MB) |
 | `excludedExtensions` | Skip these extensions (comma-separated) |
-| `excludedKeywords` | Stop-words for URL/class/text pre-filter |
+| `excludedKeywords` | Stop-words for the content pre-filter. `_hasStopWords` (content.js) matches an element's `textContent`/`alt`/`title` and its `href` (segment-boundary regex) — **not** an `<img>`'s `src` and **not** its `class`, and the service worker has no keyword filter at all. So banner/logo files are dropped when the keyword is in a link's href or in alt/title/text, or when the file is under `minImageSize`; a bare `<img src="…/banner_logo_ad.png">` with no alt and a size above the floor is downloaded (measured 2026-10-08) |
 | `downloadOnUnknown` | Download when size/type unknown |
 | `resolutionTimeout` | Seconds for resolve timeout |
 | `showProgressTab` | Auto-open progress tab |
