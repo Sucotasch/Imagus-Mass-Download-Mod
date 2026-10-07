@@ -409,3 +409,37 @@ Lessons recorded so they are not re-derived: put a decoy's keyword where the cod
 and never trust a size the generator cannot deliver (ask the product's own log for `fileSize`). The
 "candidate bug" wording that stood here before was WRONG.
 
+### 2026-10-08 (5) - measured map of the stop-word filter, and one real doc/code gap
+
+The owner pushed back: "in the system browser the extension does not let `banner_logo_ad`-type files
+through". Measured with a `/banners` lab page (5 variants, 5 DISTINCT urls, 46 KB each unless noted):
+
+    found 6 | prefiltered 1 | skipped 1 | downloaded 3      (content: elements 6, candidates 5)
+      ban_bare.png     bare <img>, 46 KB, no alt   -> completed
+      ban_wrapped.png  <a href><img></a>, 46 KB    -> completed (element shown: a)
+      ban_alt.png      <img alt="banner logo ad">  -> ABSENT from the log = prefiltered  <-- works
+      ban_class.png    <img class="banner-logo-ad">-> completed                          <-- NOT checked
+      ban_small.png    bare <img>, 20 KB           -> skipped "Too small"                 <-- works
+
+So the code DOES drop these files in the shapes real pages actually use - keyword in an `<a href>`,
+or in `alt`/`title`/text, or a file under `da.minImageSize` - and that is consistent with what the
+owner sees. My earlier decoy slipped through because it combined two conditions real pages rarely
+combine: a BARE `<img>` (so no href/alt/text for the filter to read) whose FILE was 46 KB (above the
+size floor). Both escape routes had to be engineered shut at once.
+
+BUT there is a genuine mismatch with the documentation. AGENTS.md describes the pre-filter as
+"stop-words for URL/class/text", while `_hasStopWords` (content.js:75, byte-identical to the
+`content-block.js` reference - the marker check covers it) reads ONLY
+`el.textContent || el.alt || el.title` and `el.href`:
+
+- **`class` is never consulted.** `class="banner-logo-ad"` on a 46 KB `<img>` is downloaded.
+- **`src` is never consulted.** An `<img>` has no `href`, so a bare image whose FILENAME contains an
+excluded keyword (e.g. `.../banner_logo_ad.png`, 46 KB, no alt/title) is downloaded. "URL" is
+covered only for elements that HAVE an `href` (links).
+
+Nothing else in the tree filters by keyword - the service worker has no `excludedKeywords` path at
+all (grep, 2026-10-08) - so this function is the whole story. DECISION PENDING with the owner:
+either make the code match the doc (also test `el.className` and, for images, the URL of
+`el.currentSrc || el.src`), or fix the doc's wording. Not changed here: adding src/class matching is a
+behaviour change to a working filter and can drop real media the user wants.
+
