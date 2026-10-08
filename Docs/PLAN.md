@@ -174,11 +174,10 @@ by what unblocks what.** Two things changed the ranking:
    host's validation is Cloudflare-blocked, and four controlled probes now **prove** no header fix
    exists (every header the page sends, including all client hints and a real Referer, leaves the 403
    untouched). The work was therefore to stop the 5-request storm and to stop handing out unvalidated
-   picks — not a DNR rule. **The storm half is FIXED (2026-10-08, below):** the breaker's cooldown now
-   doubles per consecutive trip of the same host (30 s → 600 s cap, released by a real validation
-   success), so a host that cannot be validated at all is no longer re-probed with 5 guaranteed-403
-   requests every 30 s. What is left here is the other half — saying out loud that the pick is
-   unvalidated instead of downgrading silently.
+   picks — not a DNR rule. **The request-storm half was attempted on 2026-10-08 and REVERTED** (see the
+   section below: the saving is ~40 requests once per scan, the breaker resets with every session, and
+   the longer cooldown can skip a re-probe the same scan would otherwise have made). What is left here is
+   the honest-label half — saying out loud that the pick is unvalidated instead of downgrading silently.
 2. **`MAIN-07` — the worker dies and comes back silently (diagnosis, second).** Measured 2026-10-08: the
    worker's own globals are replaced in mid-run (the probe's `self.__mfCalls` went 62 → 0 inside one
    3 s poll) while Chrome reports **no** `targetCreated`, **no** `targetCrashed`, **no**
@@ -281,27 +280,21 @@ this file does not get a research item that does not change a `MAIN` decision (r
   `FIX-3` ".htm garbage" case). The media that never reaches disk is the **219 of 313 elements that were
   never resolved to a URL at all** (`unresolved 219`, `tWalkMs 30442`) — that is `MAIN-02`'s ground, not
   `HOST-1`'s. **Priority implication: needs the owner's confirmation (see below).**
-- **Fix applied 2026-10-08 (request-storm half; NOT yet re-measured on the listing).** The bounded part
-  of `MAIN-01` is done in both trees. `MD_BREAKER_COOLDOWN_MS` still serves 30 s for a host's first trip,
-  but each successive trip of the SAME host doubles its own cooldown (`mdBreakerCooldownFor`, capped at
-  10 min by `MD_BREAKER_MAX_COOLDOWN_MS` / `MD_BREAKER_MAX_TRIPS`), the trip count survives the cooldown
-  being served, and it is released by the one thing that proves recovery — a validation that actually
-  came back (`mdBreakerRecordSuccess`). The pick is unchanged on purpose: an open breaker still hands over
-  the same heuristic `ordered[0]` it always did, so this removes requests and nothing else. Locked by an
-  executable `md-unit-smoke` block (stubbed `Date.now`; asserts the cooldown the log claims, per-host
-  isolation under D-7, the 10 min ceiling, prune keeping the escalation memory, and the release on
-  success), and the lock was mutation-checked — smoke run against the unfixed file fails as it must.
-  Gates green on this state: `smoke / marker / ff-delta / defaults`, and the loaded worker really has it
-  (`mdBreakerCooldownFor=function`, asserted in a live worker after clearing the profile's
-  compiled-script cache — without that clear the profile served the PREVIOUS commit's worker and reported
-  the function as `undefined`). **No live listing run against the new code yet.**
-  **Still open:** the label half — a progress row must say "validation unavailable for this host"
-  instead of silently handing over an unvalidated pick.
+- **Attempted and REVERTED 2026-10-08 (request-storm half; do NOT rebuild it as is).** The idea was to
+  double the per-host breaker cooldown on each consecutive trip, so a host whose validation can never
+  pass stops being re-probed. Measured against what it costs: the saving is ~40 guaranteed-403 requests
+  ONCE per scan, and `mdBreakerReset()` runs with every session, so nothing carries into a second run —
+  a user scans a listing once, and the change is invisible. Meanwhile the longer cooldown skips a
+  re-probe that the old 30 s cooldown WOULD have made inside the tail of the SAME scan, so a pick that
+  could have been validated (and would then have been ordered by size) is served heuristically instead.
+  The shipping commit's claim — "removes requests and nothing else" — is true for an open window and
+  false for the timeline. Reverted bit-exact in both trees; gates green after the revert. What remains
+  of `MAIN-01` is the label half.
 - **Next (revised).** `HOST-1` (`G1`–`G10`) is now a **quality** fix, not a data-loss fix: quarantine
-  the host explicitly — the request storm is handled (see the fix above), and what remains is to stop
-  pretending the pick was validated and to tell the user "validation unavailable for this host" instead
-  of silently downgrading. The candidate-side
-  question — *why were 219 of 313 elements never resolved* — moves to `MAIN-02`.
+  the host explicitly — the request-storm attempt is reverted (above), with the measured reason — and
+  what remains is to stop pretending the pick was validated and to tell the user "validation unavailable
+  for this host" instead of silently downgrading. The candidate-side question — *why were 219 of 313
+  elements never resolved* — moves to `MAIN-02`.
 - **Closes with.** Same listing, same counters, failures gone (or each remaining failure named).
 - **Cost so far.** 3 runs.
 

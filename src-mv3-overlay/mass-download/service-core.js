@@ -4298,21 +4298,6 @@ function calculateUrlHeuristicScore(url) {
 // without bound.
 const MD_BREAKER_FAILURES = 8;
 const MD_BREAKER_COOLDOWN_MS = 30000;
-// MAIN-01 (2026-10-08): the cooldown used to be a constant 30 s, and expiring it
-// wiped the host's whole slate — so a host that refuses extension-origin
-// validation outright was re-probed with 5 fresh requests every 30 s for the rest
-// of the scan. Measured live on rule34: `wimg.rule34.xxx` answers 403
-// `cf-mitigated: challenge` in 44–232 ms to both GET and HEAD, for thumbnails and
-// full-size alike, with every header a real page sends (so no header fix exists),
-// and the run carried `pickReason: breaker-open (unvalidated, wimg.rule34.xxx)` on
-// every group. Each successive trip of the SAME host now doubles its own cooldown
-// (30 s → 60 → 120 → 240 → 480 → 600 s cap). The pick does not change: an
-// open-breaker host still hands over the same heuristic `ordered[0]` it did
-// before, so this removes requests and nothing else. The escalation is released by
-// a PROVEN validation success (mdBreakerRecordSuccess), so a host that recovers is
-// never held silent for the rest of the session.
-const MD_BREAKER_MAX_COOLDOWN_MS = 600000;
-const MD_BREAKER_MAX_TRIPS = 6;
 const MD_BREAKER_MAX_HOSTS = 64;
 var breakerByHost = new Map();
 
@@ -4322,14 +4307,6 @@ function mdBreakerHost(url) {
     } catch (e) {
         return '';
     }
-}
-
-// MAIN-01: pure so tools/md-unit-smoke.mjs can execute it. The nth consecutive
-// trip of a host serves twice the previous cooldown, capped; trips < 1 is a host
-// that has never tripped (a fresh host, and the escalation's zero state).
-function mdBreakerCooldownFor(trips) {
-    const n = Math.max(1, Math.min(MD_BREAKER_MAX_TRIPS, Number(trips) || 1));
-    return Math.min(MD_BREAKER_COOLDOWN_MS * Math.pow(2, n - 1), MD_BREAKER_MAX_COOLDOWN_MS);
 }
 
 // Pure read: it must NOT touch a streak that is still accumulating. The probe
@@ -4350,23 +4327,17 @@ function mdBreakerRecordFailure(host) {
     if (!host) return;
     let st = breakerByHost.get(host);
     if (!st) {
-        st = { failures: [], openUntil: 0, trips: 0 };
+        st = { failures: [], openUntil: 0 };
         breakerByHost.set(host, st);
         if (breakerByHost.size > MD_BREAKER_MAX_HOSTS) mdBreakerPrune();
     }
     st.failures.push(Date.now());
     if (st.failures.length >= MD_BREAKER_FAILURES) {
         st.failures = [];
-        // MAIN-01: the trip count IS the escalation memory. It survives the
-        // cooldown being served (mdBreakerIsOpen wipes the failure slate, not
-        // this) and is released only by a validation that really succeeded.
-        st.trips = Math.min((st.trips || 0) + 1, MD_BREAKER_MAX_TRIPS);
-        const cooldown = mdBreakerCooldownFor(st.trips);
-        st.openUntil = Date.now() + cooldown;
+        st.openUntil = Date.now() + MD_BREAKER_COOLDOWN_MS;
         console.warn(manifest.name + ': validation circuit breaker open for ' + host
-            + ' (unvalidated picks for ' + Math.round(cooldown / 1000)
-            + 's' + (st.trips > 1 ? ', trip ' + st.trips : '')
-            + '); other hosts keep validating normally');
+            + ' (unvalidated picks for ' + Math.round(MD_BREAKER_COOLDOWN_MS / 1000)
+            + 's); other hosts keep validating normally');
     }
 }
 
@@ -4375,22 +4346,13 @@ function mdBreakerRecordFailure(host) {
 function mdBreakerRecordSuccess(host) {
     if (!host) return;
     const st = breakerByHost.get(host);
-    if (st) {
-        st.failures = [];
-        // MAIN-01: a validation that came back proves the host is reachable
-        // again, so the escalation is released here — a host is never held
-        // silent past its own recovery, however many times it tripped.
-        st.trips = 0;
-    }
+    if (st) st.failures = [];
 }
 
 function mdBreakerPrune() {
     const now = Date.now();
     for (const [h, st] of breakerByHost) {
-        // MAIN-01: a host that has tripped keeps its escalation memory while it
-        // serves its cooldown, so only never-tripped, idle entries are dropped
-        // here. The cap below still bounds the map.
-        if (!st.trips && (!st.openUntil || now >= st.openUntil)) breakerByHost.delete(h);
+        if (!st.openUntil || now >= st.openUntil) breakerByHost.delete(h);
     }
     while (breakerByHost.size > MD_BREAKER_MAX_HOSTS) {
         breakerByHost.delete(breakerByHost.keys().next().value);
