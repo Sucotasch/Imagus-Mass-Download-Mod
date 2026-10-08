@@ -125,11 +125,19 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 
 ### Priority order
 
-**Revised 2026-10-08 after the `MAIN-01` measurement** (see `MAIN-01` step 2). `HOST-1` is a quality
-bug, not the file loss it was framed as, so the order below changes: the *loss* is localized first
-(cheap, and it decides whether there is a loss at all), and the two bounded quality fixes follow.
+**Reworked 2026-10-08 on the owner's instruction: order by what actually gets the user his files, and
+by what unblocks what.** Two things changed the ranking:
 
-1. **`MAIN-02` — CLOSED 2026-10-08 (fixed and proven).** The "219 of 313 unresolved" was **not** the
+* The `MAIN-05` premise was **wrong** and the item is **DROPPED** (owner, 2026-10-08): "All downloads
+  completed" is a status meaning *the task is over* — not a claim that every item succeeded — and the
+  real delivered/lost numbers already sit beside it in the persistent summary line. Fixing that message
+  changed nothing for the user. See `MAIN-05` below, which is kept only so it is not rebuilt.
+* A new measured fact outranks everything else: the service worker **restarts silently in mid-run**
+  (2026-10-08). It corrupts every timing, swallows a Stop, and makes "was this scan complete?"
+  unanswerable — so nothing downstream can be trusted until it is explained. It is now an item of its
+  own (`MAIN-07`) and it goes first.
+
+- **`MAIN-02` — CLOSED 2026-10-08 (fixed and proven).** The "219 of 313 unresolved" was **not** the
    loss (a rule34 listing holds ~8 DOM elements per post: nav/ads/related). The real loss was two
    defects: (a) the group's first pick (`images/<md5>.jpg` — an extension this host never serves) was
    registered in `globalProcessedUrls` before it was known to work, and the fallback then discarded its
@@ -144,11 +152,10 @@ bug, not the file loss it was framed as, so the order below changes: the *loss* 
    /samples/` 20 → **0** (9), `.jpeg` originals 0 → 24 (12). See `MAIN-02` → *Fix applied and proven*.
    The scan-cost questions (`unresolved`/`tWalkMs`, `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md`) stay
    parked until `MAIN-06` is done, so their numbers describe a pipeline that no longer drops files.
-2. **`MAIN-05` — the honest ending.** Cheap, unconditional, and it *makes every other run's numbers
-   trustworthy*: without it, `MAIN-02`/`MAIN-03` ask "was this scan complete?" of a tally that cannot
-   answer. Do it second so the later measurements are honest. (Note: the ground-truth count in `MAIN-02`
-   benefits directly — a run whose tail is silently trimmed would undercount what it found.)
-3. **`MAIN-06` — stop letting a TRANSIENT interrupt downgrade the item.** Newly measured (2026-10-08):
+- **`MAIN-02` remainder — scan cost (`C-2`)** is the one **speed** item ("scanning takes so long it is
+   not worth it"); it is now a live item below, because its numbers only became readable once the
+   pipeline stopped dropping files.
+- **`MAIN-06` — CLOSED 2026-10-08 (fixed and proven).** Newly measured (2026-10-08):
    `SERVER_FAILED` does not reproduce in isolation or at concurrency 6, i.e. it is transient, yet the
    interrupt branch always moves the chain FORWARD — so a one-off server/rate event silently replaces a
    reachable original with the downscaled sample (9 of 39 completed rows in after-run #2). This is the
@@ -156,16 +163,43 @@ bug, not the file loss it was framed as, so the order below changes: the *loss* 
    before the validation storm. **Fixed and proven 2026-10-08** — see `MAIN-06` →
    *Fix applied and proven* (the retry fires live 26× in a 42-post run, declines every 404, and
    `completed rows from /samples/` went to 0).
-4. **`MAIN-01` — the quality fix (`G1`–`G10`).** The host cannot be validated from the extension
-   origin, and the four probes of `MAIN-06` now **prove** no header fix exists (adding every header the
-   page sends, including all client hints and a real Referer, leaves the 403 untouched). So the fix is
-   to stop the 5-request storm and to stop handing out unvalidated picks — not a DNR rule. Quality-only
-   harm, design already exists.
-5. **`MAIN-03` — breadth across the owner's real sites.** Real value, but it needs the two missing
-   harness pieces above and produces baselines rather than fixes. Do it once `MAIN-01`/`MAIN-02` have
-   shown the pipeline is sound on a hard site.
-6. **`MAIN-04` — the self-opening second session.** Blocked on `RES-02`, and `RES-01` says the same
-   event costs nothing while it does not touch files. Lowest priority by the plan's own rules.
+**The live order (work items only):**
+
+1. **`MAIN-07` — the worker dies and comes back silently (NEW, first).** Measured 2026-10-08: the
+   worker's own globals are replaced in mid-run (the probe's `self.__mfCalls` went 62 → 0 inside one
+   3 s poll) while Chrome reports **no** `targetCreated`, **no** `targetCrashed`, **no**
+   `Runtime.exceptionThrown` and logs nothing — and the extension has **no** `self.onerror`, no
+   `unhandledrejection`, no `onSuspend` hook at all, which is why every historical log could only ever
+   say "abrupt: no onSuspend, no error". Idle teardown is excluded (the worker survived a 43 s idle
+   window, so the keep-alive works), and so are a renderer crash and an uncaught exception. **First step
+   is cheap and is what makes everything else measurable:** install the three hooks and log the
+   generation at every start, so the cause gets a name. It already explains two live symptoms: the Stop
+   that is swallowed (a restored session comes back with `userCanceled = false` and runs to completion)
+   and instrumented wrappers vanishing mid-run.
+2. **`MAIN-01` — the pick is never validated on a hard host.** Moved up from 4th: this is the item that
+   decides whether the address the extension picked is the right file at all. Measured: `byMethod`
+   `BROWSER 93, HEAD 3, REFERER 2` — **93 of 100 rows reach `chrome.downloads` unvalidated** because the
+   host's validation is Cloudflare-blocked, and four controlled probes now **prove** no header fix
+   exists (every header the page sends, including all client hints and a real Referer, leaves the 403
+   untouched). The work is therefore to stop the 5-request storm and to stop handing out unvalidated
+   picks — not a DNR rule.
+3. **`MAIN-02` remainder — scan cost (`C-2`).** `cfg.hz.delay` vs `nowait`, bounds 37 s…222 s, still
+   unmeasured. The only item here about **speed**, and it is measurable now that the pipeline no longer
+   drops files.
+4. **`MAIN-03` — breadth across the owner's real sites** (`e-hentai /g/`, `artuntamed`, `colorsuper`,
+   with the Pagetual userscript). This is where the owner actually works, so it is what turns the
+   rule34 result into a general one. It still needs the two missing harness pieces (Pagetual + a way to
+   force an abnormal ending) and produces baselines rather than fixes, which is why it follows the two
+   correctness items.
+5. **`MAIN-04` — the self-opening second session.** Blocked on `RES-02`; `RES-01` says the event costs
+   nothing while it does not touch files.
+
+**Closed, and staying closed (no work left; keep them locked by their gates):** `MAIN-02` (the `fileKey`
+collision, both sites) and `MAIN-06` (the transient-interrupt retry) — fixed, gated and measured live on
+2026-10-08: rule34 posts with a delivered file 19–31/42 → **41–42/42**, `/samples/` substitutions
+9 → **0–1**, duplicate skips 22 → **0**.
+
+**DROPPED:** `MAIN-05` — see its section below for the owner's reasoning, kept so it is not rebuilt.
 
 **Research folded into the line, not a separate phase:** the `MAIN-01` "why does `wimg.rule34.xxx`
 validation fail wholesale" question and `RES-02`'s sender hunt are both *inside* their `MAIN` item —
@@ -499,7 +533,26 @@ this file does not get a research item that does not change a `MAIN` decision (r
 - **Status. BLOCKED on RES-02** — do not design a fix before we know who triggers it.
 - **Cost so far.** 2 runs (incidental, picked up during MAIN-01's runs).
 
-### MAIN-05 — the session does not say how it ended, or how much it lost
+### MAIN-05 — DROPPED 2026-10-08 (owner decision) — the session does not say how it ended
+
+> **DROPPED. Do not rebuild.** The owner's ruling, 2026-10-08: "All downloads completed" is **not** an
+> error and not a claim that every item succeeded — it is the status "this task is over", and the real
+> numbers (delivered / failed / skipped) are already printed right beside it in the persistent summary
+> line. Changing that message therefore changes **nothing** for the user. The reason taxonomy
+> (`endedBy` = `page-silent` / `no-initiator` / `user-cancel` / `drained`) was dropped in the same
+> decision: "а как и почему во всевозможных вариантах — что это для него меняет?"
+>
+> **What was actually built and then reverted (2026-10-08).** A full implementation existed and passed
+> its own gate (an `unfinished` / `takenOn` pair in `mdSessionSummary`, the same number in both summary
+> renderers, and a `mdCompletionBannerText` that stopped claiming completion when items produced no
+> file; the gate failed on the unpatched code and on a "banner always claims success" mutation). It was
+> **reverted from both trees** once the premise was corrected — the whole change is preserved as
+> `.unlazy/main05-and-gate.patch` if it is ever wanted for a different reason. One note is worth keeping
+> from it, because it is a fact about the code rather than about the message: the outcome ledger holds
+> **terminal** outcomes only, so a run stopped with items still in flight has no number for them at all.
+> The live panel already shows that state separately (`mdPendingSnapshot` / "Unfinished work").
+>
+> The historical analysis below is kept for the trail only.
 - **Already known — merge, do not duplicate.** This is `HANDOFF-3` / `S5`
   (`Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md`). The doc's §7 carries the questions; §15 carries the
   2026-10-08 measurement and the revised decision below.
@@ -511,11 +564,12 @@ this file does not get a research item that does not change a `MAIN` decision (r
   2026-09-13 21:09) has not recurred since `S1`/`S6` landed. So the *silent-loss* symptom is now
   unmeasured, but the *dishonest ending* symptom is unconditional — it fires whether or not anything
   was lost.
-- **Next.** `S5` only: end the session with an honest `endedBy`
-  (`page-silent` / `no-initiator` / `user-cancel` / `drained`) plus "transferred X of Y, unconfirmed Z".
-- **Closes with.** A live run whose end state names the reason and the unconfirmed count, checked
-  against the worker's own numbers.
-- **Cost so far.** 0 dedicated runs.
+- ~~**Next.** `S5` only: end the session with an honest `endedBy` …~~ **SUPERSEDED — the item is
+  dropped (owner, 2026-10-08); see the banner at the head of this section.** The got/lost numbers the
+  owner actually wants (`Downloaded N file(s) · M item(s) failed · K item(s) skipped`) already ship in
+  `mdSessionSummaryText` (tab) and `_mdSummaryText` (panel).
+- ~~**Closes with.**~~ Not applicable — there is nothing to close.
+- **Cost so far.** 1 implementation + 1 gate + 4 live runs, all reverted.
 
 **Conditional under `MAIN-05` — build only on the trigger, do not pre-build:**
 - **Trigger.** A real saved log with non-zero `not-delivered`, **or** the page found markedly more
@@ -661,6 +715,40 @@ this file does not get a research item that does not change a `MAIN` decision (r
 - **Next.** C-2 / the scan-cost questions stay behind `MAIN-02`'s own *Next*; the remaining live
   regression (hover, e-hentai `/g/`, referer-retry > 10 MiB, and the FF tree's shorter interrupt branch)
   is still outstanding and belongs to the batch run, not to a separate item.
+
+### MAIN-07 — the service worker dies and comes back silently (NEW 2026-10-08)
+
+- **Symptom, in the owner's own terms.** A run looks normal, but the worker underneath it is replaced one
+  or more times without a word: the Stop the user pressed is forgotten, timings stop meaning anything,
+  and anything the session had only in memory is gone.
+- **Measured 2026-10-08 (`.unlazy/sw-death.log`, `.unlazy/sw-death-instr.log`, `.unlazy/paired-*.log`).**
+  The worker's own globals are replaced **in mid-run** — the probe's `self.__mfCalls` went `62 → 0`
+  inside one 3 s poll — while Chrome reports **no** `Target.targetCreated` for a new worker, **no**
+  `Target.targetCrashed`, **no** `Runtime.exceptionThrown` and **no** `Log` entry at all. In the same
+  runs the extension's own counters say `gen: 2` / `gen: 3` with `resumed: true`, and
+  `mdApplySnapshot` comes back with `userCanceled = false`.
+- **Three causes are excluded by measurement, not by argument:**
+  * **not an idle teardown** — the worker survived a **43 s** fully idle window (created 1.1 s, trigger at
+    41.3 s) and stayed alive, so the permanent `setInterval(chrome.runtime.getPlatformInfo, 25_000)`
+    keep-alive in `background/service.js` does work;
+  * **not a renderer crash** — `Target.targetCrashed` never fired;
+  * **not an uncaught exception** — `Runtime.exceptionThrown` and `Log.error` never fired, with both
+    enabled on the worker session for the whole run.
+- **Why the project has never had a cause for this.** `background/service.js` carries **no**
+  `self.onerror`, **no** `unhandledrejection` and **no** `onSuspend`. Every historical log therefore says
+  only "abrupt: no `onSuspend`, no error" — which is the absence of a hook, not the absence of an error.
+  (`GEN-4` already names one documented kill — Chrome terminates a worker whose `fetch()` response takes
+  more than 30 s — and caps two fetches for it; that cap has not been shown to cover this.)
+- **Two live symptoms this already explains, both recorded elsewhere:** a Stop that lands in the restart
+  window is **swallowed** (the restored session continues to `done`; seen twice,
+  `paired-ending-stop2/3.log`), and any instrumented wrapper installed on the worker vanishes with it
+  (`captured … calls: 0`).
+- **First step — cheap, and it is what makes every later measurement trustworthy:** install the three
+  hooks (`self.onerror`, `unhandledrejection`, `onSuspend`) and record the generation number at every
+  worker start, so a restart stops being invisible. Only then can the cause be named and a fix chosen.
+- **Closes with.** A live run in which a restart is **reported by the extension itself** with its
+  generation and (if there was one) its error, plus the existing live runs re-read against it.
+- **Cost so far.** 2 dedicated watcher runs + 3 stop runs that collided with restarts. No product change.
 
 ## RESEARCH — unlocks a decision
 
