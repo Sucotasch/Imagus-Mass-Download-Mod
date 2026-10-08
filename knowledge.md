@@ -643,3 +643,29 @@ they are parked, not blocking.
 so the two behaviour gates above (`repro-host-quarantine`, the ending contract) must be written with
 their fix, never after. Harness freeze still holds: only the Pagetual/session work and the
 force-abnormal-end capability are justified, and only when their `MAIN` item starts.
+## 2026-10-08 (9) - src-mv3 archived, and what the "findings list" button actually was
+
+**`src-mv3/` is archived.** Owner decision, form = in-repo move (not a zip, not deletion), executed
+2026-10-08: `git mv src-mv3 archive/src-mv3`, 43 files, every one a 100% rename (content preserved),
+commit `e4a51ad`. Consequences were checked **before** the move: no gate and no script referenced
+`src-mv3/` — only three docs did, and all now carry the archive path:
+
+* `AGENTS.md` — the directory-map row, the "stable older tree" note, the Build table, plus one stale
+  claim about a `README.md` legacy section (there is none) dropped.
+* `Docs/MASS_DOWNLOAD_STRATEGY.md` — 6 references.
+* `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` — 1 reference.
+
+The four standing gates were re-run after the move and the doc edits: `md-marker-check`, `md-ff-delta`,
+`md-unit-smoke`, `_chk_defaults` — **all EXIT 0**. They read only the two overlay trees, which were not
+touched (confirmed: `git diff HEAD~5 HEAD -- src-mv3-overlay src-mv3-overlay-firefox tools` is empty).
+`Audit/AUDIT_STATUS_CURRENT.md` §6.3 item 3 was marked closed (local-only file).
+
+**The "Save findings list" button (dropped `S3″`) — explained, because the name was opaque.** It would
+save **the list of media URLs the page found** to a real file in Downloads (a `Blob` + `<a download>`,
+or `chrome.downloads` on a blob URL). It is **not** the media, and the extension **cannot read the file
+back** — `fetch('file://…')` needs a user-granted file-access flag and `chrome.downloads` returns the
+name, not the contents — so it recovers nothing automatically; at best it is a manual copy of the found
+URLs. The existing **Save Log** already exports a richer version of the same thing (the worker's item
+table: URL, status, reason, filters, method). Recommendation stands: **drop it** — its one unique case,
+"the page found more than the worker accepted", is exactly the unmeasured trigger for `S2`/`S3`, so that
+is the moment to reconsider, not now. Owner has not yet said yes/no.
