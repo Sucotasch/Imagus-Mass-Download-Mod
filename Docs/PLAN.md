@@ -168,12 +168,18 @@ by what unblocks what.** Two things changed the ranking:
 1. **`MAIN-07` — the worker dies and comes back silently (NEW, first).** Measured 2026-10-08: the
    worker's own globals are replaced in mid-run (the probe's `self.__mfCalls` went 62 → 0 inside one
    3 s poll) while Chrome reports **no** `targetCreated`, **no** `targetCrashed`, **no**
-   `Runtime.exceptionThrown` and logs nothing — and the extension has **no** `self.onerror`, no
-   `unhandledrejection`, no `onSuspend` hook at all, which is why every historical log could only ever
-   say "abrupt: no onSuspend, no error". Idle teardown is excluded (the worker survived a 43 s idle
-   window, so the keep-alive works), and so are a renderer crash and an uncaught exception. **First step
-   is cheap and is what makes everything else measurable:** install the three hooks and log the
-   generation at every start, so the cause gets a name. It already explains two live symptoms: the Stop
+   `Runtime.exceptionThrown` and logs nothing. **Correction 2026-10-08: the hooks DO exist** — read the
+   section below; this document first claimed they did not, because they live in
+   `mass-download/service-core.js` (importScripts'd into the worker) and were only searched for in
+   `background/service.js`. `self.addEventListener('error')` `:892`,
+   `self.addEventListener('unhandledrejection')` `:895`, `chrome.runtime.onSuspend` `:1645-1661`,
+   `mdRecordWorkerStart()` `:885`, and `mdWriteGenerationEnd` / `mdGenEndLabel` attribute each end as
+   `suspend` / `error: …` / `abrupt`. So "no error was recorded" is a REAL reading (the hooks were
+   installed and said nothing), not a missing instrument. Idle teardown is excluded (the worker
+   survived a 43 s idle window, so the keep-alive works), and so are a renderer crash and a recorded
+   exception. **What is missing is not the hook but the CONTEXT**, plus one real gap the code itself
+   names: the end write is async (`chrome.storage.session.set`) and can be cut off by an instant
+   teardown, so a `suspend` can still be filed as `abrupt`. It already explains two live symptoms: the Stop
    that is swallowed (a restored session comes back with `userCanceled = false` and runs to completion)
    and instrumented wrappers vanishing mid-run.
 2. **`MAIN-01` — the pick is never validated on a hard host.** Moved up from 4th: this is the item that
@@ -734,27 +740,111 @@ this file does not get a research item that does not change a `MAIN` decision (r
   * **not a renderer crash** — `Target.targetCrashed` never fired;
   * **not an uncaught exception** — `Runtime.exceptionThrown` and `Log.error` never fired, with both
     enabled on the worker session for the whole run.
-- **Why the project has never had a cause for this.** `background/service.js` carries **no**
-  `self.onerror`, **no** `unhandledrejection` and **no** `onSuspend`. Every historical log therefore says
-  only "abrupt: no `onSuspend`, no error" — which is the absence of a hook, not the absence of an error.
-  (`GEN-4` already names one documented kill — Chrome terminates a worker whose `fetch()` response takes
-  more than 30 s — and caps two fetches for it; that cap has not been shown to cover this.)
+- **CORRECTION 2026-10-08 — the hooks already exist; this document first claimed they did not.** They
+  live in `mass-download/service-core.js`, which `importScripts()` pulls into the worker, and were only
+  searched for in `background/service.js`: `self.addEventListener('error')` `:892`,
+  `self.addEventListener('unhandledrejection')` `:895`, `chrome.runtime.onSuspend` `:1645-1661`,
+  `mdRecordWorkerStart()` called at `:885`, and `mdWriteGenerationEnd` / `mdGenEndLabel` (`:796`, `:830`)
+  attributing each end as `suspend` / `error: …` / `abrupt`. So an `abrupt` label in a log is a **real
+  reading** — the hooks were installed and said nothing — not a missing instrument. (`GEN-4` still names
+  one documented kill — Chrome terminates a worker whose `fetch()` response takes more than 30 s — and
+  caps two fetches for it; that cap has not been shown to cover this.) The ONE real gap the code itself
+  names (`:888-890`): the end write goes through async `chrome.storage.session.set`, which an instant
+  teardown can cut off, so a genuine `suspend` can still be filed as `abrupt`.
+  **AND the label is weaker than the code assumes — corrected 2026-10-08 by measurement and by the
+  platform.** `chrome.runtime.onSuspend` is **never fired for MV3 service workers**: confirmed by Chrome
+  DevRel on the chromium-extensions list (2022), and the docs page that claimed it does was corrected as
+  a mistake. `suspend` can therefore never appear, **every** termination reads `abrupt` — so the audits'
+  reasoning "no `suspend` and no error was recorded, therefore it was a hard kill" does not hold, and no
+  amount of watching `mdGenerationEnds` can separate a graceful stop from a hard one. The instrument must
+  not be used as a cause label until this is fixed (e.g. a deadline the worker refreshes, not `onSuspend`).
 - **Two live symptoms this already explains, both recorded elsewhere:** a Stop that lands in the restart
   window is **swallowed** (the restored session continues to `done`; seen twice,
   `paired-ending-stop2/3.log`), and any instrumented wrapper installed on the worker vanishes with it
   (`captured … calls: 0`).
-- **First step — cheap, and it is what makes every later measurement trustworthy:** install the three
-  hooks (`self.onerror`, `unhandledrejection`, `onSuspend`) and record the generation number at every
-  worker start, so a restart stops being invisible. Only then can the cause be named and a fix chosen.
-- **Closes with.** A live run in which a restart is **reported by the extension itself** with its
-  generation and (if there was one) its error, plus the existing live runs re-read against it.
-- **Cost so far.** 2 dedicated watcher runs + 3 stop runs that collided with restarts. No product change.
+- **The instrument is therefore not the gap — the CONTEXT is.** Measured the same day
+  (`.unlazy/gen-compare.js` over all 13 logged runs, extension's own `sw.gen` as the label): **6 of 13
+  runs died** (`stop2`, `stop3`, `stop4`, `stop6`, `stopped`, `retry`), 7 survived. On content features
+  the two groups are indistinguishable — candidates 319–585 vs 324–473, resolved groups 79–84 vs 80–84,
+  `tWalkMs` 30.9–42.1 s vs 32.3–36.6 s, messages sent ≈ 96 in both. Only two features separate them
+  perfectly, **`stop` 5/6 vs 0/7** and **`resumed` 6/6 vs 0/7** — and both are artifacts of my own run
+  design (`resumed` is *set by* the restart; stops were only sent in the stop-scenario runs).
+  **This sample cannot answer the question.** The one surviving lead is a testable hypothesis, not a
+  conclusion: the single no-stop death (`paired-retry`, `gen 4`) is the largest session (585 candidates,
+  115 page messages, `downloadMs` 57 s) against the largest survivor `ending-clean` (473 candidates,
+  100 messages, 49.8 s) — i.e. **session size / message volume**.
+- **The controlled A/B was BUILT and RUN (2026-10-08), and it changed the question.** Harness:
+  `.unlazy/swd-ab.mjs` — N sequential scans in one browser, identical listing/profile/settings per
+  group, no stop sent (`stop`/`resumed` are outputs, never inputs), and **three arms that differ only in
+  how the worker is watched**: `active` (a CDP debugger attach every second — how every earlier death was
+  measured), `passive` (one attach at startup), `native` (**zero attaches**, i.e. the owner's browser).
+  Hooks, installed in the worker without touching the product: a 1 s heartbeat into
+  `chrome.storage.session` (phase, counters, queue depths, in-flight entries, alarm state, a live API
+  probe), an exact `fetch` recorder, an event ring (`chrome.downloads.download`, `onChanged`,
+  non-heartbeat storage writes, `tabs.sendMessage`), the extension's own generation store read back from
+  an options page, and `Target.setDiscoverTargets` for exact death times **without** attaching. Logs:
+  `.unlazy/swd-{SMOKE,P1,N1,N2,E1,E2,E3,E4}.log` + `.json`; analysis `.unlazy/swd-analyze.js`.
+- **What the deaths ARE (6 dying sessions measured, 25 surviving runs):**
+  * **The debugger is exonerated.** In the `native` arm — 0 attaches for the whole session — the worker
+    died twice in one run (`swd-N1.log`: gen 1 → 2 → 3). The lab has never before measured a death
+    without a debugger; this one is real.
+  * **Not an idle teardown.** Both the native arm (a `getDownloadStatus` message every second) and the
+    instrumented arms (storage writes every second) kept the worker receiving events; at the death
+    heartbeat the session alarm was still armed (`md-session-keepalive`, next fire in 20–28 s) and an
+    ordinary API call answered (`ka: win`).
+  * **Not a hung `fetch`.** The in-flight set was empty at every death — an exact reading (start/end
+    recorded per request), not the 1 s sampling the earlier audits relied on.
+  * **Not memory.** Worker heap at death: 2–9 MB (`Runtime.getHeapUsage`), flat all run.
+  * **Not a crash, not an exception.** `Target.targetCrashed` never fired, `Runtime.exceptionThrown`
+    never fired, and the product's own `error` / `unhandledrejection` hooks wrote nothing.
+  * **Not the run design.** No stop was sent in any of the A/B runs.
+- **The fingerprint (identical in all 6):** first session of a **freshly started browser** (5 of 6; the
+  sixth was a 44 s later run), in the **tail (download) phase**, **35–54 s into the run**, with
+  **10–60 downloads queued and `activeDownloads` pinned at the cap (3)**, everything else quiet
+  (`activeFilters` 0, referer retries 0, nothing in flight). Immediately before the last heartbeat there
+  is always a **cascade of instantly-failing downloads** — `onChanged` carrying `state=error`, changed
+  `filename`s, at roughly 5–10 events/s — while the filter stage refills the queue at the same time
+  (`fq` 42 → 5, `dq` 0 → 30).
+- **What was tested and did NOT remove it:** `downloadOnUnknown = false` (`swd-E2`, run 1 + run 4 still
+  died — so the cascade is not only the unknown-size path).
+- **What DID change the outcome:** `da.maxConcurrentDownloads = 1` (`swd-E3`: 4 runs, **0 deaths**, one of
+  them a 58 s run with `dq` up to 34 and the same failing-download cascade). `swd-E4` then switched
+  mid-launch (runs 1–3 at 1, runs 4–6 at the default 3): **0 deaths in all 6**, so parallelism alone is
+  not sufficient — the death needs the 3-way download parallelism *and* a heavy failing-download phase,
+  and even then it is not deterministic (5 of 5 earlier first-runs died at the default; E4's first run at
+  concurrency 1 did not).
+- **What is still OPEN, and it is the honest limit of this pass:** the actual Chrome-side bookkeeping that
+  decides the kill was not observable from inside the extension (heap, alarms, events, targets and
+  labels all say "nothing wrong"). The candidate the data now points at is the **rate of instantly-failing
+  `chrome.downloads` operations at full parallelism**: every documented Chrome termination condition is
+  excluded, so this is either an undocumented interaction in that stage or a Chrome bug — and it is
+  reproducible on demand in this lab (first run of a fresh browser, default settings).
+- **Next, and it is no longer a hunt but a mitigation to try (with the measurement already in place):**
+  (1) space the download stage — do not refill a freed slot instantly after a failure; a short backoff
+  after N consecutive failures (the download-stage twin of the existing filter-stage circuit breaker),
+  measured with this harness (same listing, same first-run shape, deaths before / after); (2) re-run the
+  E3/E4 grid with more repetitions to see whether "first session + 3-way + cascade" holds; (3) fix the
+  label problem above (the `onSuspend` correction) so a future death can be attributed at all.
+- **Closes with.** A live run in which the extension itself reports the restart AND the setting change /
+  mitigation that made the death stop happening across the A/B grid. (A run that merely completes is not
+  a close: the recovery masks the death by design.)
+- **Cost so far.** 2 watcher runs + 3 stop runs + the A/B grid: **31 runs across 8 launches, of which
+  ⁠6 runs in 5 launches died (9 deaths)** — every one of them captured with its heartbeat, event ring and
+  target timeline — plus the 13-log discriminator pass. No product change.
 
 ## RESEARCH — unlocks a decision
 
-### RES-01 — why the worker dies abruptly — **CLOSED BY DECISION 2026-09-14 (`GEN-5`); do not reopen**
+### RES-01 — why the worker dies abruptly — **REOPENED BY OWNER 2026-10-08 (now `MAIN-07`)**
 - **Decision it changes.** Whether MAIN-04 is a product defect or a lab artifact — and whether we need
   a product-side mitigation at all.
+- **REOPENED 2026-10-08 on the owner's direct instruction, and the lab-artifact branch is answered.**
+  The owner reports the same random silent death **in his own system browser over a long period** —
+  it is why the save/restart recovery mechanism exists at all — so it is **not** an artifact of this
+  harness or of the new instrumentation. That removes the "lab artifact" fork the earlier `GEN-5`
+  close was partly resting on, and it makes the A/B in `MAIN-07` → *Next* the live method: find what
+  unites the dying sessions and separates them from every survivor (file count? elapsed time? one
+  event? material type/format?). Owner's closing condition is unchanged — the hunt stays open while it
+  costs files, and a swallowed Stop already costs the user control.
 - **Evidence** (2026-10-08): in 2 of 3 rule34 runs `gen 1 ended (lived 62 s / 65 s), ended by: abrupt,
   in-memory queues lost`. A consistent ~60 s lifetime is a **fingerprint, not randomness** — that is
   the handle we did not have before. (Run #1 ended at ~46 s and showed no restart.)

@@ -819,3 +819,57 @@ when the retry is scheduled and is then overwritten by whatever the retry ends a
 "0 rows mention a retry" is **not** evidence the retry never fired — it is exactly what a retry that
 succeeded looks like. Only an observer (above) can distinguish "never fired" from "fired and won".
 Recorded because the first reading of the `MAIN-06` regression run made the opposite inference.
+
+## (14) 2026-10-08 — why the service worker dies silently: what the A/B established, and the instrument trap
+
+The owner: "the worker's random silent death is a long-standing problem in my own browser too, so it is
+not your new instrumentation — find what unites the dying sessions and separates them from the session
+where the worker does NOT die: number of files? time? an event? the material?"
+
+**Build a harness whose arms differ ONLY in how the worker is watched.** Anything that attaches a CDP
+debugger to the worker keeps it alive (Chrome 118+ even documents that active debugger sessions keep an
+extension worker alive), so *every* death this lab had ever measured was measured with a debugger
+attached. `.unlazy/swd-ab.mjs` therefore has three arms — `active` (attach every second), `passive`
+(one attach at startup) and `native` (**zero attaches**, i.e. the owner's browser) — and the same
+non-invasive hooks in all of them: a 1 s heartbeat written into `chrome.storage.session` (phase,
+counters, queue depths, in-flight entries, alarm state, a live API probe), an exact `fetch`
+start/end recorder, an event ring (`chrome.downloads.download`, `onChanged`, non-heartbeat storage
+writes, `tabs.sendMessage`), the extension's own `mdWorkerStarts`/`mdGenerationEnds` read back from
+an options page, and `Target.setDiscoverTargets` (no attach) for exact death times.
+
+**Result: the debugger was exonerated.** With 0 attaches the worker died twice in one run
+(`.unlazy/swd-N1.log`, gen 1 → 2 → 3). Also excluded by measurement: idleness (a message or a storage
+write every second; at the death heartbeat the `md-session-keepalive` alarm was still armed and an
+ordinary API call answered `ka: win`), a hung `fetch` (the in-flight set was empty — exact, not
+sampled), memory (heap 2–9 MB, flat), a crash (`Target.targetCrashed` never fired) and an exception
+(no `exceptionThrown`, no `error`/`unhandledrejection` label).
+
+**The fingerprint, identical in all 6 dying sessions (31 runs / 8 launches):** the first session of a
+freshly started browser, in the tail (download) phase, 35–54 s into the run, 10–60 downloads queued with
+`activeDownloads` pinned at the cap, nothing else in flight — and immediately before the last heartbeat a
+**cascade of instantly-failing downloads** (`onChanged` with `state=error` and changed `filename`s,
+~5–10 events/s) while the filter stage refills the queue. The one lever that changed the outcome:
+`da.maxConcurrentDownloads = 1` (4 runs, 0 deaths, one of them a 58 s run with the same cascade);
+`downloadOnUnknown = false` changed nothing.
+
+**The instrument trap, and it invalidates older reasoning: `chrome.runtime.onSuspend` is NEVER fired for
+MV3 service workers.** Chrome DevRel confirmed this on the chromium-extensions list (2022) and the docs
+page that claimed otherwise was corrected. So the product's `mdGenEndLabel` can only ever produce
+`suspend` never / `error: …` on a real throw / `abrupt` for everything else — including a graceful idle
+teardown. The audits' line "no `suspend` and no error was recorded, therefore it was a hard kill" does
+not hold, and no amount of watching `mdGenerationEnds` can attribute a death. Before trusting a label
+again, the end-of-generation record needs a mechanism that does not depend on `onSuspend`.
+
+**Two harness traps this session cost runs, and both are cheap to avoid:**
+* A **reloaded listing with lazy images is an EMPTY run**: the scan runs its 30 s walk, the worker sees
+  zero work and the phase goes to `done` — which silently counts as a "survivor" (native runs 2 and 3 of
+  the first arm did exactly this). Pre-flight the page (anchors present AND images
+  `complete && naturalWidth > 0`, nudging with scrolls) before triggering, and mark a run that produced
+  no work as invalid instead of as evidence.
+* **Run-design features must not be used as labels.** `resumed` is *set by* the restart and stops were
+  only sent in the stop-scenario runs, so `resumed` 6/6 vs 0/7 and `stop` 5/6 vs 0/7 in the 13-log
+  retrospective were artifacts, not discriminators. Only features that are inputs may be compared.
+
+**Reproduce:** `SWD_GROUP=X SWD_RUNS=6 node .unlazy/swd-ab.mjs` (add `SWD_NATIVE=1` for the
+no-debugger arm, `SWD_EVENTS=1` for the event ring, `SWD_PREFS='{"maxConcurrentDownloads":1}'` /
+`SWD_PREFS_ALT` + `SWD_PREFS_ALT_RUN` for a within-launch A/B), then `node .unlazy/swd-analyze.js`.
