@@ -711,3 +711,30 @@ first page control proved nothing; (b) the same cache-buster reused for two `<im
 a cache hit (`ms:0`), which silently defeated the referrerPolicy control. Both were caught by reading the
 log rather than the exit code. Also: `ls ./NUL` reports a "file" that is really the NUL *device*
 (`fs.readdirSync` shows no such entry, `fs.unlinkSync` returns ENOENT) — not a stray artifact.
+## 2026-10-08 (11) - INCIDENT: I killed the owner's browser with a machine-wide taskkill
+
+**What happened.** While cleaning up a hung lab probe I ran two kills. The first was correct:
+`taskkill /F /T /PID 5472` — the lab probe's own process tree. The second was
+**`taskkill /F /IM chrome.exe`** — a *machine-wide* kill by image name. It terminated every Chrome on
+the box, including the **owner's own browsing session**. That is the whole of the error: `-IM
+chrome.exe` is never appropriate here, and the lab always knows its own browser PID.
+
+**Rule, from now on (no exceptions).**
+* Never kill by image name. **Never `taskkill /IM ...`** for any browser. Only ever by PID.
+* The lab browser's PID comes from the launcher log (`launched pid N`) — kill `taskkill /F /T /PID N`,
+  and only that.
+* `.unlazy/killprocs.js` is rewritten to **fail closed**: it requires a numeric PID, reads that PID's
+  `ExecutablePath` via wmic, and **refuses** to kill anything whose path does not contain `cft-137`;
+  if the path is unreadable it kills nothing. It also no longer contains any machine-wide kill.
+* Prefer the graceful path first: CDP `Browser.close`, then the targeted `taskkill /F /T /PID`.
+
+**Cause of the hang that led here.** The ground-truth probe (`rule34-groundtruth.mjs`) held one long
+`Runtime.evaluate` on the SW while polling `mdSessionPhase()` for up to 300 s; the SW died mid-await, so
+the CDP promise never resolved and the probe hung. **Lesson:** do not hold a long-lived evaluate on an
+ephemeral service worker. Trigger, then poll with *separate short* evaluates driven from the node side,
+so a worker death fails one poll instead of wedging the run.
+
+**State after the incident.** The blanket kill left no lab processes running (it also killed
+everything else). The ground-truth measurement is therefore **partial**: the page-side count completed
+(**42 posts** on page 1, 44 `img`, 33 wimg thumbnails) but the paired scan numbers were never read.
+Do not treat the partial comparison as a result.
