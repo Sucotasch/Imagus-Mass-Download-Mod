@@ -28,6 +28,33 @@ Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what 
 
 ---
 
+## Where the plan stands — 2026-10-08
+
+**Decided.** `HANDOFF` (`S2`–`S5`): do `S5`; `S2` + light `S3` + `S4` only on the trigger; `S3′` and
+`S3″` dropped (`Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` §15). Recorded as `MAIN-05` and the
+conditional block under it. **Decided is not started** — implementation waits for the owner's word.
+
+**Still needs a decision — none of it blocks the MAIN work:**
+- The fate of the duplicate `src-mv3/` tree (archive or delete, `Audit` §6.3). Cosmetic; the
+  `README.DEAD.txt` banner already stands.
+- Whether a manual "Save findings list" button is worth having — the only surviving use of the dropped
+  `S3″`. Low priority, and it may never be worth the UI.
+
+**The plan is fully assembled when:** every `MAIN` item names a symptom, evidence **and a gate**; every
+open audit item is either in `MAIN`, in `RESEARCH` with the decision it unlocks, or in `B` marked
+closed; and nothing is waiting on an unanswered question from the owner. Today `ROWS-2` is still a
+measurement rather than a task, and `src-mv3` a preference rather than a task.
+
+**Then, and only then, the next phase — capability and priority.** For each `MAIN` item, name what it
+needs before it can start: an existing gate, a gate that must be written, a live run, or a harness
+capability that does not exist yet. Two rules come from this project's own history:
+- **A gate written after the fact rots.** `scripts/verify-resource-race.mjs` stayed red on every run
+  and therefore asserted nothing (the `D-8` class). Whatever proves a fix gets written *with* it.
+- **Harness freeze (rule 3).** The `ext-dev-loop` loop is good enough for live runs; a new lab
+  capability must be justified by a specific `MAIN` item blocked without it — not by convenience.
+
+---
+
 ## MAIN — product work
 
 ### MAIN-01 — rule34: part of the media never downloads
@@ -83,6 +110,34 @@ Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what 
   non-terminal row and aborts in-flight work.
 - **Status. BLOCKED on RES-02** — do not design a fix before we know who triggers it.
 - **Cost so far.** 2 runs (incidental, picked up during MAIN-01's runs).
+
+### MAIN-05 — the session does not say how it ended, or how much it lost
+- **Already known — merge, do not duplicate.** This is `HANDOFF-3` / `S5`
+  (`Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md`). The doc's §7 carries the questions; §15 carries the
+  2026-10-08 measurement and the revised decision below.
+- **Symptom.** On a session that ends oddly — the page stops answering, no initiator is known, the
+  worker dies mid-run — the panel reports a tally as if it were final. The user cannot tell a clean
+  finish from a partial one, so a lost tail of findings looks exactly like a complete run.
+- **Evidence (2026-10-08).** Across `log/*.txt`, **15 files carry the `page → worker:` line and all 15
+  say `not-delivered=0`** (2026-09-13 21:52 → 2026-09-21 14:01). The demonstrated loss (172 of 180 at
+  2026-09-13 21:09) has not recurred since `S1`/`S6` landed. So the *silent-loss* symptom is now
+  unmeasured, but the *dishonest ending* symptom is unconditional — it fires whether or not anything
+  was lost.
+- **Next.** `S5` only: end the session with an honest `endedBy`
+  (`page-silent` / `no-initiator` / `user-cancel` / `drained`) plus "transferred X of Y, unconfirmed Z".
+- **Closes with.** A live run whose end state names the reason and the unconfirmed count, checked
+  against the worker's own numbers.
+- **Cost so far.** 0 dedicated runs.
+
+**Conditional under `MAIN-05` — build only on the trigger, do not pre-build:**
+- **Trigger.** A real saved log with non-zero `not-delivered`, **or** the page found markedly more
+  candidates than the worker accepted on a healthy channel. Neither has been seen yet.
+- **On the trigger:** `S2` (ACK on fire-and-forget commands) + **light** `S3` (page-side resend of the
+  un-ACKed tail) + `S4`. The real fix for the residual is *when* the ACK is sent — after
+  `mdFlushSession()`, not after `filterQueue.push` — which is a more expensive form of `S2`. Do not
+  build it before a measurement shows the loss.
+- **Dropped:** `S3′` (page-origin `chrome.storage`) and `S3″` (append a file on disk). Owner-agreed;
+  the only surviving trace of `S3″` is the parked "Save findings list" question below.
 
 ---
 
