@@ -32,7 +32,11 @@ Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what 
 
 **Decided.** `HANDOFF` (`S2`–`S5`): do `S5`; `S2` + light `S3` + `S4` only on the trigger; `S3′` and
 `S3″` dropped (`Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` §15). Recorded as `MAIN-05` and the
-conditional block under it. **Decided is not started** — implementation waits for the owner's word.
+conditional block under it.
+
+**Execution is open (2026-10-08).** The owner has confirmed the plan is complete and asked to begin.
+No decision is outstanding; the priority order below governs which `MAIN` item starts first
+(`MAIN-01`), and each `MAIN` item still closes only on its own live measurement.
 
 **Decided 2026-10-08 by the owner — no longer open:**
 - The duplicate `src-mv3/` tree: **archived — DONE 2026-10-08**. Owner chose an in-repo move, so the
@@ -41,15 +45,16 @@ of being deleted. Consequence checked before the move: no gate or script referen
 `scripts/` grep clean — only `AGENTS.md` (3 lines) and `Docs/MASS_DOWNLOAD_STRATEGY.md` (6 lines) did,
 and both now carry the new path. **Gates re-run after the move**: `md-marker-check`, `md-ff-delta`,
 `md-unit-smoke`, `_chk_defaults` — all read the two overlay trees only, so nothing in them moved.
-- The manual "Save findings list" button (`S3″`): the owner did not know what it was. Explained
-  below — it saves the **list of what the page found** (URLs), not the media, and cannot be read back;
-  the existing **Save Log** already exports a richer version. Recommendation: drop it.
+- The manual "Save findings list" button (`S3″`): **dropped — DONE 2026-10-08**. The owner did not
+  know what it was; once explained (it would save the **list of what the page found** — URLs, not the
+  media — to a file the extension cannot read back, and **Save Log** already exports a richer version),
+  the owner decided against building it. `S3″` is now fully closed, with no surviving UI item.
 
-**The plan is fully assembled when:** every `MAIN` item names a symptom, evidence **and a gate**; every
-open audit item is either in `MAIN`, in `RESEARCH` with the decision it unlocks, or in `B` marked
-closed; and nothing is waiting on an unanswered question from the owner. Today `ROWS-2` is still a
-measurement rather than a task. `src-mv3` is now out of the way (archived), so it is no longer a
-preference waiting to be made.
+**The plan is fully assembled — 2026-10-08 (met).** Every `MAIN` item names a symptom, evidence and a
+closing gate; every open audit item is in `MAIN`, in `RESEARCH` with the decision it unlocks, or in `B`
+marked closed; and **nothing is waiting on an unanswered question from the owner** (`src-mv3` archived,
+the findings-list button dropped). `ROWS-2` remains a measurement *inside* `MAIN-01`, not a separate
+task.
 
 **Then, and only then, the next phase — capability and priority.** For each `MAIN` item, name what it
 needs before it can start: an existing gate, a gate that must be written, a live run, or a harness
@@ -61,8 +66,9 @@ capability that does not exist yet. Two rules come from this project's own histo
 
 **Assembled 2026-10-08.** Every open audit item is now in `MAIN`, in `RESEARCH` with the decision it
 unlocks, or in `B` marked closed; every `MAIN` item names a symptom, evidence and the gate it closes
-with. The only unanswered questions left are the two owner preferences above, and neither gates a
-`MAIN` item — so the capability/priority pass below is done and the plan is complete for this phase.
+with. The two owner preferences that were the last open questions are both resolved above, so nothing
+gates a `MAIN` item — the capability/priority pass below is done and the plan is complete for this
+phase. **Execution started 2026-10-08 at `MAIN-01`.**
 
 ---
 
@@ -224,7 +230,7 @@ this file does not get a research item that does not change a `MAIN` decision (r
   (`fetch('file://…')` needs a user-granted file access; `chrome.downloads` gives the name, not the
   contents) — so it recovers nothing automatically. Its only value is a manual copy of the found URLs
   to fall back on, and the existing **Save Log** already exports a richer version of the same thing
-  (the worker's item table: URL, status, reason, filters, methods). **Recommendation: drop** — its one
+  (the worker's item table: URL, status, reason, filters, methods). **Dropped (owner, 2026-10-08)** — its one
   unique case, "the page found more than the worker accepted", is exactly the unmeasured trigger for
   `S2`/`S3`, so if that is ever seen, that is the moment to reconsider, not now (rule 1).
 
