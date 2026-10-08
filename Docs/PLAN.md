@@ -165,7 +165,17 @@ by what unblocks what.** Two things changed the ranking:
    `completed rows from /samples/` went to 0).
 **The live order (work items only):**
 
-1. **`MAIN-07` — the worker dies and comes back silently (NEW, first).** Measured 2026-10-08: the
+1. **`MAIN-01` — the pick is never validated on a hard host (FIRST since 2026-10-08).** Moved ahead of
+   `MAIN-07` because of two measured facts: the death's user-visible cost — a swallowed Stop — is now
+   fixed (`STOP-1`), and the stage the death happens in is exactly the failure cascade this item removes
+   (instantly-failing `chrome.downloads` on unvalidated picks). It is also the item that decides whether
+   the address the extension picked is the right file at all. Measured: `byMethod`
+   `BROWSER 93, HEAD 3, REFERER 2` — **93 of 100 rows reach `chrome.downloads` unvalidated** because the
+   host's validation is Cloudflare-blocked, and four controlled probes now **prove** no header fix
+   exists (every header the page sends, including all client hints and a real Referer, leaves the 403
+   untouched). The work is therefore to stop the 5-request storm and to stop handing out unvalidated
+   picks — not a DNR rule.
+2. **`MAIN-07` — the worker dies and comes back silently (diagnosis, second).** Measured 2026-10-08: the
    worker's own globals are replaced in mid-run (the probe's `self.__mfCalls` went 62 → 0 inside one
    3 s poll) while Chrome reports **no** `targetCreated`, **no** `targetCrashed`, **no**
    `Runtime.exceptionThrown` and logs nothing. **Correction 2026-10-08: the hooks DO exist** — read the
@@ -179,16 +189,12 @@ by what unblocks what.** Two things changed the ranking:
    survived a 43 s idle window, so the keep-alive works), and so are a renderer crash and a recorded
    exception. **What is missing is not the hook but the CONTEXT**, plus one real gap the code itself
    names: the end write is async (`chrome.storage.session.set`) and can be cut off by an instant
-   teardown, so a `suspend` can still be filed as `abrupt`. It already explains two live symptoms: the Stop
-   that is swallowed (a restored session comes back with `userCanceled = false` and runs to completion)
-   and instrumented wrappers vanishing mid-run.
-2. **`MAIN-01` — the pick is never validated on a hard host.** Moved up from 4th: this is the item that
-   decides whether the address the extension picked is the right file at all. Measured: `byMethod`
-   `BROWSER 93, HEAD 3, REFERER 2` — **93 of 100 rows reach `chrome.downloads` unvalidated** because the
-   host's validation is Cloudflare-blocked, and four controlled probes now **prove** no header fix
-   exists (every header the page sends, including all client hints and a real Referer, leaves the 403
-   untouched). The work is therefore to stop the 5-request storm and to stop handing out unvalidated
-   picks — not a DNR rule.
+   teardown, so a `suspend` can still be filed as `abrupt`. Of the two live symptoms it explained, **one
+   is FIXED (2026-10-08, `STOP-1`): the swallowed Stop** — a restored session no longer comes back with
+   `userCanceled = false` and runs itself to completion; the other (instrumented wrappers vanishing
+   mid-run) is inherent to a restart and is not a defect. What is left here is therefore diagnosis plus
+   the death itself: the A/B narrowed it to the download stage's failure cascade, and "fix the label"
+   (the `onSuspend` correction above) is the cheap part of it.
 3. **`MAIN-02` remainder — scan cost (`C-2`).** `cfg.hz.delay` vs `nowait`, bounds 37 s…222 s, still
    unmeasured. The only item here about **speed**, and it is measurable now that the pipeline no longer
    drops files.
