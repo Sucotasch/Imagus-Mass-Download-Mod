@@ -179,7 +179,7 @@ out wrong and are corrected or removed — `PANEL-1` and `PIXIV-1` are **fixed**
 | `ROWS-2` | High 403 share on `wimg.rule34.xxx`, in the filter and in the browser download | needs a live measurement | A run; must count **items**, not rows (`SUPERSEDE-1` correction) |
 | `DUP-1-live` | `mdAdoptIfAlreadyDownloaded` was never exercised: no run since the fix had a real worker restart | — | One run **with** a restart **during** the downloads. Partial evidence from today: run #2 restarted (gen 2 at 65 s) and its 33 downloaded files contain **no ` (1)` name** — but that restart came after the downloads had finished, so the risky window (death between Chrome writing the file and the snapshot recording it) was probably never entered. Do not count it as verified. |
 | `PIXIV-2` (= `D1`) | `case "download"` passes `sender.tab?.incognito` (a boolean) where a tab object is expected; `msg.tabId` is always lost in private windows | `PLAN_96_FOLLOWUP` item `D1` | Pass `sender.tab` (both trees) |
-| `HANDOFF-3` (= `S2`–`S5`) | No ACK on fire-and-forget commands, no outgoing retry queue, the page goes silent on `resumeGroupAnalysis` once the walk ended, and `handleDownloadMass` refuses to revive a closed session — together: late findings are dropped | `Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` — **awaits the owner's decision** | The owner's call on S2–S5 |
+| `HANDOFF-3` (= `S2`–`S5`) | No ACK on fire-and-forget commands, no outgoing retry queue, the page goes silent on `resumeGroupAnalysis` once the walk ended, and `handleDownloadMass` refuses to revive a closed session — together: late findings are dropped | `Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` — **decision requested; the recommendation is now revised (see that doc's §7 and §11)** | **Evidence 2026-10-08**: `not-delivered=0` in **all 15** saved logs that carry the line (2026-09-13 21:52 → 2026-09-21 14:01) — the demonstrated loss (172 of 180 at 21:09) has not recurred since `S1`/`S6`. So: do `S5` (the honest number) next, and `S2` + `S3`-lite **only if** a real log shows non-zero `not-delivered`; drop `S3′` (writes our URLs into the site's own storage for a case no log has shown) and `S3″` |
 | `R1`–`R11` | Mass Retry with one button | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
 | `C1` | New session while downloads are still live | `PLAN_96_FOLLOWUP` | `⏳ не начато`, but the user-facing half is guarded (2026-09-14, verified in code): `mdStartDownloadAll` asks first — "Session still running: N downloaded, M item(s) left" with "Start over (cancel the rest)". `resetMassDownloadSession()` itself is unchanged: live `chrome.downloads` are neither cancelled nor stopped from writing into the new session |
 | `E1` | Diagnostics for "slow" elements | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
@@ -191,7 +191,6 @@ out wrong and are corrected or removed — `PANEL-1` and `PIXIV-1` are **fixed**
 | `BT-09`, `BT-12` | Deliberately untouched / needs a live FF+pixiv run | `Audit` §9.6 | `BT-12` needs the run |
 | — | Live regression run after the `BT` batch: hover, e-hentai `/g/`, referer-retry > 10 MiB | `Audit` §9.6 | Never done |
 | — | FF e-hentai Gallery Save (`REPORT_GALLERY_BATCH` §27); FF pixiv — zero log | `Audit` §9.5 | Live runs on Firefox |
-| `UI-COLOR-1` | Corrective counter colours are in the code but were never confirmed live; the owner was asked | `Audit` §10.14 | The owner's answer / one look |
 
 Smaller and already mitigated — **verified in code 2026-10-08** so they are not re-discovered:
 §6.2 hotkey **Q** really does collide with `flipH` in `data/defaults.json` (`"flipH": "Q"` and
@@ -213,6 +212,8 @@ stands — it asserts a 404 while the same row can carry our own `GET/403`.
   interrupt hook calls `mdSaveViaOffscreen` *before* asking the page, so the bytes are fetched from
   the extension origin where the DNR Referer rule applies. Verified in code, both call site and
   function exist in the worker.
+- **`UI-COLOR-1`** — **closed 2026-10-08 by the owner's answer**: the counter colours are acceptable
+  as they are. The code side was already verified (`_mdStatusColor`, `_mdTailCounterParts` present).
 - **`SAMPLE-1`** — "rule34 duplicates at different sizes" = the `samples/…/sample_<hash>` preview vs
   the full `images/…/<hash>`: 23 ids were tried in both forms and **0 real pairs** exist on disk
   (dedup already collapses them). Measured, not a defect. Today's `sample_*.jpg` downloads are this,
