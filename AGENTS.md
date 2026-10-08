@@ -360,6 +360,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 
 | Doc | Use when |
 |-----|----------|
+| `Docs/PLAN.md` | **Master ledger (MAIN/RES) — read first**: the live index of what we are doing, why, and what is still open |
 | `Docs/MASS_DOWNLOAD_STRATEGY.md` | Overlay design, entry points, re-base procedure |
 | `Docs/MASS_DOWNLOAD_ALGORITHM.md` | Two-phase algorithm, heuristics, circuit breaker |
 | `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` | Where a scan's seconds go (facts vs estimates, labelled): fixed inter-element waits 43.6–46.0 s of a 171.9 s walk, `walk=` is an upper bound on the walk, and the unmeasured resolve delay / serial resolve as the bigger lever |

@@ -443,3 +443,162 @@ either make the code match the doc (also test `el.className` and, for images, th
 `el.currentSrc || el.src`), or fix the doc's wording. Not changed here: adding src/class matching is a
 behaviour change to a working filter and can drop real media the user wants.
 
+### 2026-10-08 (6) - the Cloudflare handover plan (recovered), and a REAL bug it exposed in the harness
+
+The owner recalled that I once said they would have to help me through a Cloudflare check, and that
+the thread got lost when we switched to fixing the tool. Confirmed: it was about **rule34**, whose
+access sits behind a Cloudflare interstitial that needs a human click. No saved URL/step file exists
+anywhere (checked knowledge.md, Docs/, .unlazy/, git messages) - the mechanism exists only as the
+skill's `ask` section, which is exactly what it was built for. This matters because the speed work
+(A-E, especially the C-2 `hz.delay` question in Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md) was measured
+on a rule34 listing, and PERF-1's re-entry rules demand a LIVE run after every change.
+
+Shape that works for me (measured constraint, 2026-09-22): `--ask-keep` is USELESS to an agent - the
+shell waits for the whole process tree, so a kept browser hangs it forever. Only the BLOCKING default
+works: launch a VISIBLE cft window (ask is refused with --headless), sit on an `ask` step with a big
+`waitTimeout`, let the owner click in that window; the run continues by itself when the predicate
+holds. Run it in the BACKGROUND and read the log - the wait budget can exceed a 600 s tool timeout.
+
+While preparing that run I found the bug that would have destroyed it, and I found it because I
+TESTED the fix instead of trusting it:
+
+1. **`session.send` does NOT reject on a CDP error - it RESOLVES with `{id, error:{code:-32000,
+   message:"Cannot find context with specified id"}}`.** So a `try/catch` around a `Runtime.evaluate`
+   is DEAD CODE, and a dead context is indistinguishable from "the predicate is not true yet". My
+   first "fix" was exactly that dead catch; the test proved it (12 s of silent `TIMED OUT`).
+2. Consequence in `pollUntil`: a solved Cloudflare interstitial RELOADS ITSELF, replacing the
+   execution context, so a poll pinned to the old context id failed every tick, timed out, and
+   reported a SOLVED challenge as an unanswered `ask`.
+3. Same defect in `challengeInfo`: with a stale id the probe fell back to
+   `{challenge:false}` - printing "no challenge markers, the predicate simply is not true yet"
+   exactly when a human is staring at a challenge.
+
+Fixed in the skill (probe.mjs): `pollOnce` returns `{dead}` on `r.error`, `pollUntil` re-asks in the
+session's DEFAULT context after a context death, and the wait line says so
+(`(the context changed under the poll - continued in the new one)`); `challengeInfo` falls back the
+same way and answers `probeFailed` instead of a confident "no challenge" when it cannot tell.
+
+VERIFIED, not assumed (headless, no human, scratch test `.unlazy/poll-reload-test.mjs`):
+
+    reload 6 s in (mid-poll), predicate set only in the replacement context
+      before: wait: TIMED OUT after 12251ms                       exit 1
+      after:  wait: true after 4011ms (the context changed ...)    exit 0
+
+    page reloads INTO a Cloudflare-shaped interstitial, wait then times out
+      NOTE: this looks like a CHALLENGE page (text,dom,script) on ...
+
+Traps for the next me: this shell's `bash` mangles `node -e '<script>'` ("Unexpected token" / fork
+errors) - put helper scripts in a file under .unlazy/ instead; and a long SYNC command can be killed at
+its timeout while the probe itself finishes and cleans up correctly (check the log, not the exit
+code, and verify no lab browser survived).
+
+### 2026-10-08 (7) - the rule34 run: what the Cloudflare handover actually produced
+
+The owner answered my blocked question with "Читай Errors.txt" - a file at the repo root that is a
+test-URL sheet, not an error dump:
+
+    https://rule34.xxx/index.php?page=post&s=list&tags=all     <- the rule34 listing I had been waiting for
+    https://e-hentai.org/g/4239205/772b354d68/
+    https://artuntamed.com/index.php?media/albums/erotic-absurdities.2049/
+    https://colorsuper.com/collections/all-swim
+
+plus the note that for large sets the owner uses the **Pagetual** userscript
+(https://greasyfork.org/ru/scripts/438684-pagetual), which appends the next pages, so the extension
+sees media from several pages at once. Sibling files, context only: `Errors2.txt` is the OLD
+2026-08-21 issue dump marked "obsolete, decisions taken, kept for reference" - it is the source of the
+"rule34 -> HTTP 403" and "e-hentai/artuntamed -> extremely slow scan" complaints; `New.txt` is a stray
+`(prefs[pref[0]] || []).map is not a function` at options/options.js:314; `ReviewPrompt.txt` is the
+prompt of the earlier full audit.
+
+**The Cloudflare premise was WRONG, and only running it showed that.** On this box, in the CfT 137
+scratch profile, rule34 answered with the real listing on the FIRST load: the `ask` predicate was
+satisfied after 2 590 ms and no human click ever happened. So the handover step was never exercised -
+the mechanism stays verified only against the stand-in (section 6), and a REAL interstitial at a real
+site is STILL unmeasured. Geography/VPN decides this, not the code: the owner's 403 reports came over
+RU->US VPN chains.
+
+Batch used (visible, BACKGROUND, log polled - never SYNC, never `--ask-keep`):
+
+    .unlazy/rule34-ask.json   ask+listing -> mouse -> sw ping -> downloadAll+poll -> progress UI -> Save Log
+    .unlazy/rule34-log.json   + getDownloadLog aggregate (this is where the payload shape came from)
+    .unlazy/rule34-diag.json  in-SW diagnostics dumped with console.log, while the worker still owned the session
+
+Three runs, same listing:
+
+    run  found  prefil  skip  downloaded  completed  failed  skipped(outcome)  canceled
+     #1    384     3      4       28          28        13          77             0
+     #2    302     6      4       33          33        10          80             0
+     #3    313     3      6       28          28         7          68             0
+
+**`getDownloadLog` payload shape** (measured): the response keys are
+`log, stats, pending, scanDiagnostics, outcomes, version, sessionStart, worker, settings` - the ITEM
+array is `response.log`, NOT `response.items`. My first aggregate eval read `.items` and reported
+`items: 0` on a session that had 100 rows. Do not repeat that.
+
+**Where the items went (run #3, 100 listed rows out of 313 elements):**
+
+    byStatus  skipped 65, completed 28, failed 7
+    byHost    wimg.rule34.xxx 94, z6v2p9a8.bkcdn.net 5, rule34.xxx 1
+    byMethod  BROWSER 94, HEAD 5          <- almost nothing is HEAD-validated
+    bySource  group 94, element 5
+    byErr     "interrupted: SERVER_BAD_CONTENT - superseded ..." 32
+              "interrupted: SERVER_FAILED - superseded ..."      27
+              "Too small" 5 ; "Excluded type" 1
+              "HTTP 404 - all 8 candidate URLs failed"            3
+              "Server refused the download (HTTP error other than 403/404 - often 429 ...)" 4
+
+Two things fall out. First, 59 of the 68 "skipped" are the BENIGN superseded-candidate rows (the item
+continued with another candidate URL) - not missing files, exactly as the progress tab's list note
+says. Second, each of the 7 real failures carries `pickReason: "breaker-open (unvalidated,
+wimg.rule34.xxx)"` and `candidateCount: 8`: the validation circuit breaker had opened FOR
+`wimg.rule34.xxx`, so those picks went to `chrome.downloads` WITHOUT validation and then failed
+(404 / "other HTTP error"). The worker console says it plainly:
+
+    validation circuit breaker open for wimg.rule34.xxx (unvalidated picks for 30s); other hosts keep validating normally
+
+**The 403 the owner reported did NOT reproduce here** - no `403` appears anywhere in byErr. What
+reproduces is wholesale validation failure on `wimg.rule34.xxx` (breaker opens), then unvalidated
+downloads, then a few 404s and rate-limit-shaped refusals. Different cause, same symptom ("part of
+rule34 fails").
+
+**The scan is the real cost, not the downloads** (run #3, the worker's own diagnostics):
+
+    content: elements 313, candidates 310, prefiltered 3, covered 1, unresolved 219,
+             groups 84, tWalkMs 30442, totalMs 31866, timeouts 0
+    sw:      gen 2, groupsMs 1096, downloadMs 11073, scanTailMs 10421, totalMs 42287
+
+`unresolved 219 / 313` (70 %) and `walk = 30.4 s` for 313 elements is the owner's "scanning takes
+impractically long" complaint, measured - and it is the C-2 ground truth I was missing: the walk, not
+the download phase.
+
+**The worker died abruptly in two of the three runs**, and on restart a NEW mass-download session was
+opened:
+
+    gen 1 started 08:12:12 ... gen 2 started 08:13:14 - previous gen 1 ended (lived 62s),
+    ended by: abrupt, in-memory queues lost
+    then: "mass-download session opened by worker gen 2 (non-terminal rows of the previous session
+    dropped)" + "Created new progress tab"
+
+That line lives in `handleOpenDownloadProgress` (mass-download/service-core.js:537), and that handler
+calls `resetMassDownloadSession()` - dropping every non-terminal row and aborting in-flight work. I
+could NOT find a SW path that sends `downloadAll`/`openDownloadProgress` back to a tab (grep: the only
+sender of `{cmd:'downloadAll'}` to a content script is `handleDownloadAll`, which the popup drives) and
+the content-script confirm path needs a real click. So WHO opened the second session is an OPEN
+question, not a finding - but the consequence is real and reproduced twice (a second progress tab,
+`resetMassDownloadSession()`, `scanInProgress = true` with no scan). Needs a dedicated instrumented run
+before anything is claimed.
+
+**Save Log is flaky under the harness, and that is the HARNESS, not the product.** In runs #1/#2 the
+click produced no file even with 20 s of grace. Isolated runs then showed the product's own button
+works: a probe-opened progress tab wrote `imagus-mass-download-log-2026-10-08T08-16-28.txt`, and a
+worker-created tab wrote `...08-19-31.txt`. The `getDownloadLog` round trip always answered
+(`respOk: true`, keys above). 2 of 5 attempts wrote a file; the page was initialised every time (the
+JS-produced `#listNote` marker was present, 482 chars). Do NOT report this as a product bug. For
+diagnostics, read the item data from the worker instead of depending on the click.
+
+Harness notes worth keeping: `serializeAllProgress()`, `mdOutcomeCounts()`, `mdSessionPhase()`,
+`mdPendingSnapshot()`, `mdScanDiagnosticsForLog()` are top-level globals in the SW (importScripts'd),
+so `--target sw` reads them directly; and a SW `console.log('MD_DIAG ' + ...)` is printed
+UNTRUNCATED by the probe, while the step's `result:` line is cut at 2000 chars - use the console for
+payloads.
+
