@@ -242,12 +242,38 @@ this file does not get a research item that does not change a `MAIN` decision (r
   - **Retraction:** the guess that Pagetual had appended pages in run #3 to explain `313` vs `42` was
     mine alone and is **not** evidence — Pagetual was never installed in this profile. The 313-vs-42
     gap is currently **unexplained** and is no longer attributed to anything.
-- **Next (revised).** The paired measurement: one run that captures **both** the page's 42 posts **and**
-  the worker's per-item resolutions, then a **per-post diff** — which posts resolved, to which URL, and
-  which files landed. Only that diff can say whether the "loss" is real; the counters alone cannot.
-  Then C-2 (`hz.delay`/`nowait`) as before. See §PERF-1 of `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the
-  re-entry rules (do not touch the walk scheduler; one step at a time; a live run after each).
-- **Cost so far.** 1 recon run (no scan).
+- **Step 1b done 2026-10-08 (PAIRED RUN — `.unlazy/rule34-paired.mjs`, `paired2.log`,
+  `paired-worker.json`, `paired-groundtruth.json`; downloads pinned to the lab dir via
+  `Browser.setDownloadBehavior`) — the loss is now anchored to the page, and it has TWO distinct causes.**
+  - Page ground truth: **42 posts** on the listing (38 with a derivable original URL).
+  - Worker: `elements 331`, `unresolved 238`, `groups 81`, `tWalkMs 32802`; outcomes `completed 35,
+    failed 7, skipped 67`; **`byMethod: BROWSER 93, HEAD 3, REFERRER 2`** — 93 of 100 rows reached the
+    downloader **unvalidated** (the Cloudflare-blocked validator of `MAIN-01`).
+  - Files: **36 landed**; **31 of 42 posts** have a file; **11 have none** (4 of those are my derivation
+    gap — their thumbnail carried no md5).
+  - **Two causes, separated by a direct `<img>` load test of every md5 the worker failed on**
+    (`.unlazy/rule34-jpeg-check.mjs`, control row verified):
+
+    | posts | real file (verified reachable) | what the worker did |
+    |---|---|---|
+    | 3 — `051f07e8…`, `da48ad1b…`, `020e34bb…` | **`.png` exists** | reached the **correct** `images/<md5>.png` and the transfer still **failed** (`SERVER_FAILED` / "HTTP error other than 403/404 — often 429") |
+    | 4 — `8af0a775…`, `26f03721…`, `10d2fd86…`, `ce5a80dd…` | **`.jpeg` exists** | tried only `images/<md5>.jpg`, `images/<md5>.png`, `samples/…jpg`, `samples/…png` — **never `.jpeg`** |
+
+  - **Cause A (4 posts, ~10 % of the page): the resolved candidate chain carries no `.jpeg` variant.**
+    The extension synthesises `.jpg`/`.png` and passes a true URL through only when the page hands it over
+    (the completed `.jpeg?<pid>` rows show that path works). For an original stored as `.jpeg` with no such
+    hand-over, every candidate misses. **This is a resolution defect — `MAIN-02`'s own ground, not
+    `HOST-1`'s.** Sites can store an original under any image extension, so this is a general class.
+  - **Cause B (3 posts): the correct URL was tried and the transfer still failed.** That is a
+    fetch/download-stage failure (429? referer? size?), separate from the pick, and needs its own check.
+  - **The 238 "unresolved" are NOT the loss.** `elements 331` counts ~8 DOM elements per post, so
+    "unresolved" is mostly nav/ads/related. The loss is Cause A + Cause B.
+- **Next.** Cause A is the first bounded fix candidate (add the `.jpeg` form to the rule34 candidate
+  synthesis) — but check it against the sieve / `_mdResolveCandidates` first and prove it with this same
+  paired measurement before/after. Cause B gets one focused run: why does a file verified present fail to
+  transfer. Then C-2 (`hz.delay`/`nowait`) as originally planned. See §PERF-1 of
+  `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one step at a time; a live run after each).
+- **Cost so far.** 1 recon run + 1 paired run (still no product change).
 
 ### MAIN-03 — the rest of the owner's sites
 - **Symptom.** `Errors.txt` (repo root) is the owner's real workflow, not a synthetic page.
