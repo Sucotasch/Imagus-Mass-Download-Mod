@@ -669,3 +669,45 @@ URLs. The existing **Save Log** already exports a richer version of the same thi
 table: URL, status, reason, filters, method). Recommendation stands: **drop it** — its one unique case,
 "the page found more than the worker accepted", is exactly the unmeasured trigger for `S2`/`S3`, so that
 is the moment to reconsider, not now. Owner has not yet said yes/no.
+## 2026-10-08 (10) - MEASURED: the rule34 validation failure is a Cloudflare challenge
+
+Ran a focused live probe (`.unlazy/rule34-validate-probe.mjs`, six iterations, logs `validate-probe1..6.log`)
+against the real listing in the CfT 137 scratch profile. It measured the same `wimg.rule34.xxx` URL three
+ways: from the page with a Referer, from the page with `referrerPolicy:'no-referrer'`, and from the
+**service worker** (exactly what `validateSingleUrlContent` does).
+
+**Result:**
+
+| measurement | outcome |
+|---|---|
+| SW `fetch(u, {credentials:'include'})` (GET) | **403**, `content-type: text/html`, 44–232 ms |
+| SW HEAD, same | **403**, 44–47 ms |
+| SW GET with the Fetch `referrer` init set | **403** (unchanged) |
+| page `<img>`, default Referer, cache-busted | `ok:true`, 98–159 ms |
+| page `<img>`, `referrerPolicy:'no-referrer'`, cache-busted | `ok:true`, 132–133 ms |
+
+The 403's own headers give it away: `cf-mitigated: challenge`, `server: cloudflare`, `cf-ray:
+a47439b83dbc9a02-HEL`, and the body starts `<title>Rule34.xxx CAPTCHA</title>`.
+
+**So both hypotheses from step 1 are dead.**
+* **H1 (Referer/hotlink) — falsified.** The page loads the same URLs with *and* without a Referer, and
+  forcing the Fetch `referrer` init in the SW changes nothing. Adding rule34 to `MD_DNR_MEDIA_HOSTS`
+  would fix nothing.
+* **H2 (1500 ms timeout) — falsified.** 44–232 ms is not a timeout.
+* **Actual cause:** Cloudflare challenges the **extension-origin** request (`Origin:
+  chrome-extension://…`, `Sec-Fetch-Site: cross-site`) regardless of cookies and regardless of any
+  header the Fetch API is allowed to set. There is **no header fix**.
+
+**The important consequence — this is not the file-loss bug.** The browser's own download request is not
+challenged (run #3 landed 28 files), so "validation impossible for this host" costs no file by itself.
+What it costs: ~5 wasted requests per group for the first 8 groups of each 30 s window, then a silent
+switch to **unvalidated picks** (no size/type check; HTML and dead links stay eligible — the `FIX-3`
+".htm garbage" case). The media that never reaches disk is the **219 of 313 elements never resolved to a
+URL at all** (`unresolved 219`, `tWalkMs 30442`) — `MAIN-02`'s ground, not `HOST-1`'s.
+
+**Harness note:** two of my first three probe iterations were invalid for reasons worth remembering —
+(a) a cross-origin `fetch()` from the page CANNOT read a status (no CORS headers => `TypeError`), so the
+first page control proved nothing; (b) the same cache-buster reused for two `<img>` loads made the second
+a cache hit (`ms:0`), which silently defeated the referrerPolicy control. Both were caught by reading the
+log rather than the exit code. Also: `ls ./NUL` reports a "file" that is really the NUL *device*
+(`fs.readdirSync` shows no such entry, `fs.unlinkSync` returns ENOENT) — not a stray artifact.
