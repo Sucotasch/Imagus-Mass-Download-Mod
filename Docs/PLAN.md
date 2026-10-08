@@ -291,7 +291,10 @@ this file does not get a research item that does not change a `MAIN` decision (r
   executable `md-unit-smoke` block (stubbed `Date.now`; asserts the cooldown the log claims, per-host
   isolation under D-7, the 10 min ceiling, prune keeping the escalation memory, and the release on
   success), and the lock was mutation-checked — smoke run against the unfixed file fails as it must.
-  Gates green on this state: `smoke / marker / ff-delta / defaults`.
+  Gates green on this state: `smoke / marker / ff-delta / defaults`, and the loaded worker really has it
+  (`mdBreakerCooldownFor=function`, asserted in a live worker after clearing the profile's
+  compiled-script cache — without that clear the profile served the PREVIOUS commit's worker and reported
+  the function as `undefined`). **No live listing run against the new code yet.**
   **Still open:** the label half — a progress row must say "validation unavailable for this host"
   instead of silently handing over an unvalidated pick.
 - **Next (revised).** `HOST-1` (`G1`–`G10`) is now a **quality** fix, not a data-loss fix: quarantine

@@ -905,3 +905,11 @@ same heuristic `ordered[0]`, so this change removes requests and nothing else. `
 breaker with a stubbed `Date.now` and asserts the per-host isolation (D-7), the ceiling, prune keeping the
 escalation memory, the release on success, and the cooldown the log line claims — a mutation check (smoke
 against the unfixed file) fails as it must.
+**And the §12 cache trap fired again here, in a NEW way worth remembering.** A boot-only assert (no
+before/after run, `SWD_RUNS=0` + `SWD_ASSERT_FN`) against the UNCLEARED profile answered
+`mdBreakerCooldownFor=undefined` while `mdStopWins=function` — i.e. it was serving the previous COMMIT's
+compiled worker, and a reader who only trusted "the worker booted with no error" would have concluded the
+new code was live. Clear `Default/Code Cache` + `Default/Service Worker/ScriptCache` before ANY assert of
+what the worker actually has, even when it is not a before/after comparison; the next launch then
+recompiles and may report the retryable "NO SERVICE WORKER at startup" (§13). After clearing, both trees'
+assert read `mdBreakerCooldownFor=function`.
