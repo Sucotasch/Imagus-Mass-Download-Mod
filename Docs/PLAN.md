@@ -254,24 +254,32 @@ this file does not get a research item that does not change a `MAIN` decision (r
   - **Two causes, separated by a direct `<img>` load test of every md5 the worker failed on**
     (`.unlazy/rule34-jpeg-check.mjs`, control row verified):
 
-    | posts | real file (verified reachable) | what the worker did |
+    | posts | real file (verified reachable) | what the rows show |
     |---|---|---|
-    | 3 — `051f07e8…`, `da48ad1b…`, `020e34bb…` | **`.png` exists** | reached the **correct** `images/<md5>.png` and the transfer still **failed** (`SERVER_FAILED` / "HTTP error other than 403/404 — often 429") |
-    | 4 — `8af0a775…`, `26f03721…`, `10d2fd86…`, `ce5a80dd…` | **`.jpeg` exists** | tried only `images/<md5>.jpg`, `images/<md5>.png`, `samples/…jpg`, `samples/…png` — **never `.jpeg`** |
+    | 3 — `051f07e8…`, `da48ad1b…`, `020e34bb…` | **`.png` exists** | a `.png` candidate is the terminal failure |
+    | 4 — `8af0a775…`, `26f03721…`, `10d2fd86…`, `ce5a80dd…` | **`.jpeg` exists** | recorded rows carry `.jpg`/`.png` (+ samples), no `.jpeg` — **but see the correction below** |
 
-  - **Cause A (4 posts, ~10 % of the page): the resolved candidate chain carries no `.jpeg` variant.**
-    The extension synthesises `.jpg`/`.png` and passes a true URL through only when the page hands it over
-    (the completed `.jpeg?<pid>` rows show that path works). For an original stored as `.jpeg` with no such
-    hand-over, every candidate misses. **This is a resolution defect — `MAIN-02`'s own ground, not
-    `HOST-1`'s.** Sites can store an original under any image extension, so this is a general class.
-  - **Cause B (3 posts): the correct URL was tried and the transfer still failed.** That is a
-    fetch/download-stage failure (429? referer? size?), separate from the pick, and needs its own check.
+  - **Cause A was a hypothesis and its evidence has been withdrawn (same day).** The first reading was
+    "the chain never tries `.jpeg`", from the rows recorded for those posts. **But the failure text says
+    "all 8 (or 10) candidate URLs failed"**, so the chain held more candidates than the four rows show —
+    and the progress table **evicts superseded rows first** (`mdEvictOldestRows` ranks superseded `0`; see
+    `RETRY-2`), so the recorded rows are an unreliable sample of what was tried. **Nothing may be fixed on
+    this reading.** Note also that the sieve *does* emit `.jpeg` (`Rule34.xxx-x-q-p`'s `to` uses
+    `#jpg jpeg png gif#`) and `candidateKey` preserves the extension, so the omission — if real — is in
+    neither of those places.
+  - **Cause B (3 posts) rests on solid ground.** For those posts the load test proves the target exists,
+    and the terminal row is a transfer failure (`SERVER_FAILED` / "HTTP error other than 403/404 — often
+    429"). That is fetch/download-stage, separate from the pick: 429 rate limiting, referer, or size.
+  - **What is not yet established anywhere:** *why* those 7 posts fail. The candidate chain must be
+    captured **before** it can be evicted — not read out of the progress table afterwards.
   - **The 238 "unresolved" are NOT the loss.** `elements 331` counts ~8 DOM elements per post, so
-    "unresolved" is mostly nav/ads/related. The loss is Cause A + Cause B.
-- **Next.** Cause A is the first bounded fix candidate (add the `.jpeg` form to the rule34 candidate
-  synthesis) — but check it against the sieve / `_mdResolveCandidates` first and prove it with this same
-  paired measurement before/after. Cause B gets one focused run: why does a file verified present fail to
-  transfer. Then C-2 (`hz.delay`/`nowait`) as originally planned. See §PERF-1 of
+    "unresolved" is mostly nav/ads/related. The loss is the **7 hard failures** (plus 4 posts I could not
+    check because their thumbnail carried no md5).
+- **Next.** Capture the **true candidate chain for one failing post before its rows are evicted** — the
+  SW already records `candidateCount` and builds `task._candidates` (from `pick.ordered`), so a single
+  probe that reads `_candidates` for a live failing task, or a run with the eviction disabled/raised for
+  the duration, will settle it. Only then choose between "a missing `.jpeg` candidate" and "all
+  candidates fail at transfer". Then C-2 (`hz.delay`/`nowait`) as originally planned. See §PERF-1 of
   `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one step at a time; a live run after each).
 - **Cost so far.** 1 recon run + 1 paired run (still no product change).
 
