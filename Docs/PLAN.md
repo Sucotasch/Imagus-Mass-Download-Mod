@@ -162,8 +162,28 @@ this file does not get a research item that does not change a `MAIN` decision (r
   403/404 — often 429)", the rest benign superseded-candidate rows.
   **The owner's reported HTTP 403 did NOT reproduce** (no `403` anywhere in `byErr`); those reports
   came over RU→US VPN chains.
-- **Next.** Find out *why* validation on `wimg.rule34.xxx` fails wholesale — is it the HEAD probe
-  itself, the host, or the referer/hotlink path? Only then choose a fix.
+- **Step 1 done 2026-10-08 (code read, no run) — the question now has two named answers.**
+  *(a) The breaker has exactly one input.* `mdBreakerRecordFailure` has a **single call site**
+  (`service-core.js:4236`, in `findBestUrlWithValidation`) and `mdBreakerRecordSuccess` likewise
+  (`:4226`). The **filter phase never feeds it**: the HEAD (`:2808`) / GET (`:2882`) path with its
+  `triggerRefererDownload` retry neither records failures nor reads `mdBreakerIsOpen`. That sharpens
+  `HOST-1`: the breaker is not merely ignored by the filter phase, it is **blind to it** — only the
+  group path can ever open it.
+  *(b) The failure accounting is per GROUP, not per candidate.* One `mdBreakerRecordFailure` fires when
+  *all* of up to 5 candidates fail, so `MD_BREAKER_FAILURES = 8` means **8 failing groups** immediately
+  before the 30 s cooldown — which is exactly the `breaker-open (unvalidated, wimg.rule34.xxx)` seen in
+  every run.
+  *(c) Two hypotheses, distinguishable in ONE run.* **H1 (Referer/hotlink):** `wimg.rule34.xxx` is
+  **not** in `MD_DNR_MEDIA_HOSTS` (`md-dnr.js` — only the 4 pixiv pximg hosts), so the extension-origin
+  validation GET carries **no Referer** and a hotlink gate answers 403 to all 5 candidates. **H2
+  (timeout):** the group path validates with a **1500 ms** per-candidate timeout (`:4223`; the default
+  is 3000 ms), so a slow `wimg.rule34.xxx` yields `reason: 'timeout'` and the same accounting.
+- **Next.** One measurement settles which: capture the per-candidate `reason` from
+  `validateSingleUrlContent` for `wimg.rule34.xxx` (403 vs `timeout` vs 404 vs `HTML page`). Today the
+  only trace is `pickReason: 'heuristic (validation failed)'`, which names neither. The fix direction
+  differs sharply: H1 → add the rule34 host(s) to the DNR registry (mirroring pximg; note the
+  `md-dnr.js` finding that DNR reaches only the SW fetch, so the *download* needs the offscreen tier),
+  H2 → instrument/re-raise the 1500 ms group timeout. Do not choose before the run.
 - **Closes with.** Same listing, same counters, failures gone (or each remaining failure named).
 - **Cost so far.** 3 runs.
 
