@@ -68,7 +68,10 @@ capability that does not exist yet. Two rules come from this project's own histo
 unlocks, or in `B` marked closed; every `MAIN` item names a symptom, evidence and the gate it closes
 with. The two owner preferences that were the last open questions are both resolved above, so nothing
 gates a `MAIN` item — the capability/priority pass below is done and the plan is complete for this
-phase. **Execution started 2026-10-08 at `MAIN-01`.**
+phase. **Execution started 2026-10-08 at `MAIN-01`.** `MAIN-01` closed as a *quality* defect (Cloudflare
+challenge on the extension-origin fetch; no header fix exists), which re-ordered the work to `MAIN-02` —
+and `MAIN-02`'s loss is now **localized and its cause proven** (2026-10-08, same day): a `fileKey`
+identity collision inside the item's own fallback chain. See `MAIN-02` → *Root cause*.
 
 ---
 
@@ -98,7 +101,7 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 |---|---|---|
 | `MAIN-01` | `repro-host-quarantine` — a source-level contract test (cut functions out of `service-core.js` the way `md-unit-smoke` does) that an **open** breaker is read by the filter phase and by the download path, and that a pick decided while the breaker is open is not handed out unvalidated | The regression *is* "the breaker is read in one place only"; a test added afterwards would assert the new topology, not that the old defect is gone |
 | `MAIN-05` | An ending contract: the four `endedBy` values plus "transferred X of Y, unconfirmed Z" consistent with the worker's own counts | The whole point is an honest number; a check written after the fact can only describe whatever the code happened to print |
-| `MAIN-02` | None as a unit gate — the close is a before/after **measurement** on the same listing (`tWalkMs`, `unresolved`) | A perf assertion would freeze an estimate, not a requirement |
+| `MAIN-02` | A source-level **candidate-reachability** test, written *with* the guard fix: cut `fileKey`/`candidateKey`/`pickNextCandidate` out of `service-core.js` the way `md-unit-smoke` does (stubbing `globalProcessedUrls`, `getExcludedExtensions`, `isExcludedType`, `cachedPrefs`, `scanInProgress`) and assert that with the item's **own** `images/<md5>.jpg` registered, the `…jpeg` candidate is still reachable — plus the control (nothing registered) and the negative control (a **different** item's key still blocks it). The close is then a before/after **measurement** on the same listing (per-post file count, `_attempts` chain) | The regression *is* "the item's own identity blocks its own chain"; a test written afterwards could only describe the new behaviour. The negative control is what keeps the cross-item dedup guarantee from being silently traded away |
 | `MAIN-03` | None — per-site baseline counters only | These are baselines, not fixes |
 | `MAIN-04` | None yet — blocked on `RES-02` | Nothing to prove until the trigger is known |
 
@@ -122,14 +125,15 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 bug, not the file loss it was framed as, so the order below changes: the *loss* is localized first
 (cheap, and it decides whether there is a loss at all), and the two bounded quality fixes follow.
 
-1. **`MAIN-02` — localize the loss before fixing anything.** The owner's complaint ("part of the media
-   never downloads") no longer points at validation: the download path is not challenged. It points at
-   the **219 of 313 elements that were never resolved to a URL**. But "unresolved" is *not yet proven*
-   to mean "media we failed to get" — a rule34 listing is full of nav/ads/related links with no media,
-   so most of the 219 may be legitimately empty. **First step is one cheap ground-truth measurement, no
-   product change:** count from the page how many real posts/media the listing holds and compare with
-  313 candidates / 91 resolved / 28 downloaded. Only if a gap survives does `MAIN-02` become a loss
-   item; otherwise it drops back to the scan-cost item it was.
+1. **`MAIN-02` — the loss is localized and its cause is PROVEN (2026-10-08); the next step is the fix.**
+   The "219 of 313 unresolved" was **not** the loss (a rule34 listing holds ~8 DOM elements per post:
+   nav/ads/related). The real loss is the hard failures, and the cause is measured, not inferred: the
+   group's first pick (`images/<md5>.jpg` — an extension this host never serves) is registered in
+   `globalProcessedUrls` before it is known to work, and the fallback then discards its own `.jpeg` twin
+   as a `fileKey` duplicate of the URL that just failed. See `MAIN-02` → *Root cause*. The fix is a
+   single guard in `pickNextCandidate`, proven by the same two arms (a deterministic in-worker check and
+   a paired live run). Delay "unresolved"/scan-cost analysis until the guard is fixed, so its numbers
+   describe a pipeline that no longer silently loses the file.
 2. **`MAIN-05` — the honest ending.** Cheap, unconditional, and it *makes every other run's numbers
    trustworthy*: without it, `MAIN-02`/`MAIN-03` ask "was this scan complete?" of a tally that cannot
    answer. Do it second so the later measurements are honest. (Note: the ground-truth count in `MAIN-02`
@@ -259,6 +263,12 @@ this file does not get a research item that does not change a `MAIN` decision (r
     | 3 — `051f07e8…`, `da48ad1b…`, `020e34bb…` | **`.png` exists** | a `.png` candidate is the terminal failure |
     | 4 — `8af0a775…`, `26f03721…`, `10d2fd86…`, `ce5a80dd…` | **`.jpeg` exists** | recorded rows carry `.jpg`/`.png` (+ samples), no `.jpeg` — **but see the correction below** |
 
+  - ⚠️ **SUPERSEDED 2026-10-08 (same day) by the runtime measurement under "Next" — the arithmetic
+    below is wrong.** The synthesis chain is **not** collapsed to `{jpg, png}` before it reaches the
+    worker: `.unlazy/cand-calls.json` shows chains carrying `{jpg, jpeg, png, gif}` × 2 paths intact, and
+    `.unlazy/candskip2.log` proves where the `.jpeg` really dies. The *symptom* recorded here (4 files,
+    2 extensions) is real and is reproduced exactly — it is simply not caused by the sieve. Kept for the
+    trail, not as evidence.
   - **Cause A — re-established properly 2026-10-08 (second chain run with the row cap raised).** The
     first reading was withdrawn because the table evicts superseded rows first. That was fixed the right
     way: raise `cachedPrefs.da.maxProgressRecords` **in memory for the run only** (`100 → 20000`, no file
@@ -286,10 +296,12 @@ this file does not get a research item that does not change a `MAIN` decision (r
       `{jpg, png}` — the 4 files × 2 HD = 8 of `_candidateCount`;
     * the **`link` rule + `res`** (`page=post&s=view&id=…`): `res` fetches the **post page** and pulls
       `og:image` — the **true** `…/<md5>.jpeg?<pid>` plus the `/samples/` form.
-    So the **only** path that can yield a real `.jpeg` is the post-page one; the `img` route cannot,
-    because the collapse removes `.jpeg` before synthesis. **Not yet measured: why the post-page path
-    fired for so few items** (5 of the run carried `.jpeg`, every one with `?<pid>` and every one
-    completed). Either way the post-page fetch belongs to `MAIN-02`'s walk cost, not to a separate item.
+    So the **only** path that can yield a real `.jpeg` **with the true shard/name in one hop** is the
+    post-page one. **Not yet measured: why the post-page path fired for so few items** (5 of the run
+    carried `.jpeg`, every one with `?<pid>` and every one completed). Either way the post-page fetch
+    belongs to `MAIN-02`'s walk cost, not to a separate item. **Correction (2026-10-08, later the same
+    day):** the `img` route *does* emit a `.jpeg` candidate (see "Next"); it was being discarded in the
+    worker, not in the sieve — so the post-page path no longer has to fire for the file to survive.
   - **Cause B (3 posts) rests on solid ground.** For those posts the load test proves the target exists,
     and the terminal row is a transfer failure (`SERVER_FAILED` / "HTTP error other than 403/404 — often
     429"). That is fetch/download-stage, separate from the pick: 429 rate limiting, referer, or size.
@@ -298,13 +310,68 @@ this file does not get a research item that does not change a `MAIN` decision (r
   - **The 238 "unresolved" are NOT the loss.** `elements 331` counts ~8 DOM elements per post, so
     "unresolved" is mostly nav/ads/related. The loss is the **7 hard failures** (plus 4 posts I could not
     check because their thumbnail carried no md5).
-- **Next.** Capture the **true candidate chain for one failing post before its rows are evicted** — the
-  SW already records `candidateCount` and builds `task._candidates` (from `pick.ordered`), so a single
-  probe that reads `_candidates` for a live failing task, or a run with the eviction disabled/raised for
-  the duration, will settle it. Only then choose between "a missing `.jpeg` candidate" and "all
-  candidates fail at transfer". Then C-2 (`hz.delay`/`nowait`) as originally planned. See §PERF-1 of
-  `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one step at a time; a live run after each).
-- **Cost so far.** 1 recon run + 1 paired run (still no product change).
+- **Cause A — ROOT CAUSE FOUND AND PROVEN, 2026-10-08 (runtime measurement; the earlier "Cause A"
+  arithmetic above is superseded).**
+  - **The `?<pid>` query is NOT the discriminator** (`.unlazy/rule34-query-check.mjs`,
+    `query-check.log`). A page-side `<img>` load test crossed every extension with query-state **inside
+    the same post**, so the extension confound cancels: `0` cells loaded only with `?<pid>`, `0` only
+    without, `6` loaded either way, `18` were not a real file. The real extension **varies per post** and
+    **`.jpg` never resolves (0/6)** — the originals were `.jpeg` 3/6, `.png` 2/6, `.gif` 1/6. The
+    listing's own thumbnails carry `?<pid>`, so a query is always present on the page and never
+    distinguished a good chain from a bad one.
+  - **The chain the worker receives is complete** (`.unlazy/qc-analyze.log`, from `.unlazy/cand-calls.json`):
+    `ordered` carries `{jpg, jpeg, png, gif}` × `{images, samples}` (8 or 10 entries) and
+    `findBestUrlWithValidation` does **not** trim it. `.jpeg` and `.gif` are both there.
+  - **The first pick is always `images/<md5>.jpg`.** All four `images/` candidates score identically, the
+    HD `#` marker ties equally, and `Array.sort` is stable — so the sieve's own order decides, and it
+    starts with the one extension this host **never** serves.
+  - **`processFilterQueue` registers that pick's `fileKey` in `globalProcessedUrls` *before* knowing it
+    works** (`mass-download/service-core.js:2750`, the single add point).
+  - **Then the fallback eats the real file.** `pickNextCandidate` (~:3534) refuses any candidate whose
+    `fileKey` is already registered, and `fileKey` maps `.jpeg` → `.jpg` (the stage-4a identity
+    contract) — so the chain's **`.jpeg` twin of the URL that just failed is discarded as a duplicate of
+    itself**. The comment five lines above the check claims the opposite (“a real `.jpeg` alternative is
+    NOT skipped just because `fileKey()` treats it as the same file”); the code does exactly that.
+  - **Proof, using the real functions, with no network** (`.unlazy/candskip-exp.js`, executed inside the
+    live worker by `rule34-candskip2.mjs`; all touched globals are restored, `restored=true`):
+    * **A — the real starting state** (`globalProcessedUrls` = the item's own `images/<md5>.jpg`):
+      `images/….jpeg` verdicts **`fileKey-dup`**, and `pickNextCandidate` returns `images/….png`.
+    * **B — control**, identical chain with nothing registered: `pickNextCandidate` returns
+      `images/….jpeg`. The drop is therefore caused *solely* by the item's own first pick.
+    * **C — the item's whole fallback walk**, produced by the real function from the real state:
+      `images/.png → samples/sample_.jpg → samples/sample_.png`, then it gives up. This matches the live
+      failure chains **exactly** (`.unlazy/candskip.log`: `[403:images/<md5>.jpg ×3,
+      ?:images/<md5>.png, ?:sample_<md5>.jpg, ?:sample_<md5>.png]` with `_candidateCount` 8/9) — the
+      absent `.jpeg` is now explained, not inferred.
+    * `.gif` → `excluded-ext` (`excludedExtensions` defaults to `.svg, .ico, .gif`) — **by design, not
+      part of the defect**; it is a settings question.
+    * Keys read back from the real functions: `fileKey(….jpeg) == fileKey(….jpg)`, but
+      `candidateKey(….jpeg) != candidateKey(….jpg)`.
+  - **What this means for the owner's complaint.** For a post stored as `.jpeg` (the majority here) the
+    chain silently degrades to a wrong `.png` guess and then to the **downscaled sample** — a quality
+    loss — and where no sample exists it ends as `no such file (404) — all N candidate URLs failed` — a
+    total loss. That is the file loss this item was opened to localise.
+  - **How it interacts with `MAIN-01`.** They compound: because this host's validation is
+    Cloudflare-blocked (measured in `MAIN-01`), the `.jpg` guess is never corrected by validation, and
+    the identity guard then makes the blind pick unrecoverable. Repairing the guard is what brings the
+    file back; `MAIN-01`'s quarantine remains the quality fix.
+  - **One note on the live `.unlazy/candskip.log` run** (the attempt-chain evidence above): that run is
+    **not clean** — the worker restarted mid-scan (`failed … Download lost when the background
+    restarted`) and the `pickNextCandidate` wrapper recorded 0 calls because the wrapper died with it.
+    The chain it *did* record is real and matches case C, but the mechanism conclusion rests on the
+    deterministic in-worker experiment (`candskip2.log`), not on that run.
+- **Next — the fix is a single changed guard, then the same measurement proves it.** A candidate must be
+  deduped against **other** items, never against the current item's own already-consumed identities:
+  exempt `{ fileKey(task.url) } ∪ { fileKey(a.url) | a ∈ task._attempts }` from the `globalProcessedUrls`
+  check in `pickNextCandidate` (the `candidateKey` check that rejects the *identical* URL stays, so no URL
+  is ever tried twice). Cross-item dedup is untouched, and on hash-named hosts the cross-host twin guard
+  (`globalProcessedMediaHashes`, Fix C-2) still blocks genuine mirrors. Proof = the same arms as above:
+  case A/B must flip (`.jpeg` picked), and a paired live run on this listing must show the `.jpeg`
+  candidate inside the attempt chain and the per-post file count recover. Then C-2 (`hz.delay`/`nowait`)
+  as originally planned. See §PERF-1 of `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one
+  step at a time; a live run after each).
+- **Cost so far.** 1 recon run + 3 paired/chain runs + 2 candidate-capture runs + 1 deterministic
+  in-worker experiment + 1 page load test (still no product change).
 
 ### MAIN-03 — the rest of the owner's sites
 - **Symptom.** `Errors.txt` (repo root) is the owner's real workflow, not a synthetic page.
