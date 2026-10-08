@@ -602,3 +602,44 @@ so `--target sw` reads them directly; and a SW `console.log('MD_DIAG ' + ...)` i
 UNTRUNCATED by the probe, while the step's `result:` line is cut at 2000 chars - use the console for
 payloads.
 
+## 2026-10-08 (8) - the plan is assembled, and the order of work is now decided
+
+This is the review-protocol entry the plan itself asks for, answered plainly.
+
+1. **Which MAIN item moved, and what did the live measurement say?** None moved as a product change.
+   The measurements stand as recorded in `Docs/PLAN.md`: rule34 - found 384/302/313, downloaded
+   28/28/33, failed 13/10/7, and **every failure `breaker-open (unvalidated, wimg.rule34.xxx)`** with
+   `candidateCount: 8`; the walk (`tWalkMs 30442`, `unresolved 219/313`) is the scan cost; the owner's
+   HTTP 403 did NOT reproduce. These are evidence, not fixes.
+
+2. **Which RESEARCH item closed with a decision?** `RES-03` (Save Log under the harness) - closed as
+   harness-side flakiness, read the worker instead of the click. `RES-01` stays closed by `GEN-5`. The
+   HANDOFF `S2`-`S5` decision was taken: do `S5`; `S2` + light `S3` + `S4` only on a named trigger;
+   `S3-prime` / `S3-double-prime` dropped (§15 of the HANDOFF doc). `RES-02` is still open and blocks
+   `MAIN-04`.
+
+3. **Did anything we did change the plan?** Yes, three times this session: `HANDOFF` became `MAIN-05`
+   plus a conditional block; the plan got its "fully assembled" statement; and the capability/priority
+   pass was added (`Docs/PLAN.md`, commits `a982408`, `2447cae`).
+
+**What "assembled" means here.** Every open audit item is now in `MAIN`, in `RESEARCH` with the decision
+it unlocks, or in the closed `B` list. Two owner preferences remain unanswered - the fate of `src-mv3/`
+and whether a manual "Save findings list" button is worth having - and **neither gates a MAIN item**, so
+they are parked, not blocking.
+
+**Priority order (why this order):**
+1. `MAIN-01` (rule34 data loss = audit `HOST-1`) - the only item losing files, fix already designed
+   (`G1`-`G10`), evidence complete. Needs a `repro-host-quarantine` gate written WITH the fix.
+2. `MAIN-05` (honest session ending, `S5`) - cheap, unconditional, and it makes the numbers every later
+   measurement relies on trustworthy.
+3. `MAIN-02` (scan cost) - expensive and risky (walk scheduler), but the baseline run already exists.
+4. `MAIN-03` (the owner's other sites) - needs the two missing harness pieces (Pagetual userscript +
+   per-site session) and yields baselines, not fixes.
+5. `MAIN-04` (self-opening second session) - blocked on `RES-02`, and `GEN-5` says it costs nothing
+   while it does not touch files.
+
+**Harness lessons to carry in:** the four standing gates (`md-unit-smoke`, `md-marker-check`,
+`md-ff-delta`, `_chk_defaults`) cover contracts the fixes can break, NOT the behaviours they change -
+so the two behaviour gates above (`repro-host-quarantine`, the ending contract) must be written with
+their fix, never after. Harness freeze still holds: only the Pagetual/session work and the
+force-abnormal-end capability are justified, and only when their `MAIN` item starts.
