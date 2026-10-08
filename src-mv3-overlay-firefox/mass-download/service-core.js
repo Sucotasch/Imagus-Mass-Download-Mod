@@ -3170,14 +3170,51 @@ function processDownloadQueue() {
 
 // Stage 5b/5c: a group task carries ordered fallback candidates (sieve
 // ext-fallback chains) as [{ url, isHd }, ...]. pickNextCandidate pops the next
-// usable one (dedup by candidateKey within the chain, by fileKey globally, and
-// excluded extensions), returning { url, isHd } or null.
+// usable one (dedup by candidateKey within the chain, by fileKey against OTHER
+// items — never against this item's own consumed identities — and by excluded
+// extensions), returning { url, isHd } or null.
 function pickNextCandidate(task) {
     if (!task || !Array.isArray(task._candidates) || task._candidates.length === 0) return null;
     if (!scanInProgress || userCanceled) return null;
     const da = cachedPrefs.da || {};
     const excludedExtensions = getExcludedExtensions(da);
     const currentKey = candidateKey(task.url);
+    // The item's OWN already-consumed identities. globalProcessedUrls is the
+    // CROSS-ITEM dedup set, and processFilterQueue registers the group's first
+    // pick in it BEFORE that pick is known to work (that function is the single
+    // add point). So a candidate that merely shares that pick's fileKey is not
+    // "another item's file" — it is this item's own alternative representation
+    // of a URL that just died. Without this exemption the '.jpeg' twin of a
+    // failed '.jpg' guess is dropped as a duplicate OF ITSELF (fileKey maps
+    // .jpeg -> .jpg by the stage-4a contract), which is how rule34 originals were
+    // replaced by downscaled samples, or lost outright once no sample existed
+    // (MAIN-02, measured 2026-10-08: in the real state the '.jpeg' candidate
+    // verdicts fileKey-dup and the pick is '.png'; with nothing registered the
+    // pick is '.jpeg'; the simulated walk then matched the live attempt chains
+    // exactly).
+    //
+    // Both global sets need the exemption, because processFilterQueue seeds
+    // BOTH for the first pick and the two keys normalize a '.jpeg' the same
+    // way: fileKey maps .jpeg -> .jpg and mediaHashKey does too. Exempting only
+    // the fileKey would leave the hash guard (Fix C-2) still blocking the twin
+    // — the first version of this fix did exactly that and was caught by
+    // re-reading the add point.
+    const ownKeys = new Set();
+    const ownHashes = new Set();
+    const addOwnKey = function (u) {
+        try {
+            const k = fileKey(u);
+            if (k) ownKeys.add(k);
+            const h = mediaHashKey(u);
+            if (h) ownHashes.add(h);
+        } catch (e) { /* identity is best-effort — never block a candidate on it */ }
+    };
+    addOwnKey(task.url);
+    if (Array.isArray(task._attempts)) {
+        for (let i = 0; i < task._attempts.length; i++) {
+            addOwnKey(task._attempts[i] && task._attempts[i].url);
+        }
+    }
     let next = null;
     while (task._candidates.length > 0) {
         const cand = task._candidates.shift();
@@ -3187,15 +3224,18 @@ function pickNextCandidate(task) {
         // candidateKey keeps the extension/query distinct, so a real '.jpeg'
         // alternative is NOT skipped just because fileKey() treats it as the
         // same file as the failed '.jpg'. The global dedup below uses fileKey
-        // so a '?TS' cache-bust variant never double-downloads across items.
+        // so a '?TS' cache-bust variant never double-downloads across items —
+        // but only against OTHER items: this item's own consumed identities
+        // (ownKeys above) must never block its own fallback chain.
         if (candidateKey(candUrl) === currentKey) continue;
-        if (globalProcessedUrls.has(fileKey(candUrl))) continue;
+        const candFileKey = fileKey(candUrl);
+        if (!ownKeys.has(candFileKey) && globalProcessedUrls.has(candFileKey)) continue;
         // Fix C-2 (2026-09-09 live test): a cross-host twin of a hash-named
         // file already attempted this session is not a real alternative —
         // the hash key ignores the host by design. '' (not hash-shaped,
         // e.g. sample_/thumbnail_ names) never blocks a candidate.
         const candHash = mediaHashKey(candUrl);
-        if (candHash && globalProcessedMediaHashes.has(candHash)) continue;
+        if (candHash && !ownHashes.has(candHash) && globalProcessedMediaHashes.has(candHash)) continue;
         if (isExcludedType(candUrl, '', excludedExtensions)) continue;
         next = { url: ensureAbsoluteUrl(candUrl), isHd: candIsHd };
         break;

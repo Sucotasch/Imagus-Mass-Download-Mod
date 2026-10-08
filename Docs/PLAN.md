@@ -360,18 +360,63 @@ this file does not get a research item that does not change a `MAIN` decision (r
     restarted`) and the `pickNextCandidate` wrapper recorded 0 calls because the wrapper died with it.
     The chain it *did* record is real and matches case C, but the mechanism conclusion rests on the
     deterministic in-worker experiment (`candskip2.log`), not on that run.
-- **Next — the fix is a single changed guard, then the same measurement proves it.** A candidate must be
-  deduped against **other** items, never against the current item's own already-consumed identities:
-  exempt `{ fileKey(task.url) } ∪ { fileKey(a.url) | a ∈ task._attempts }` from the `globalProcessedUrls`
-  check in `pickNextCandidate` (the `candidateKey` check that rejects the *identical* URL stays, so no URL
-  is ever tried twice). Cross-item dedup is untouched, and on hash-named hosts the cross-host twin guard
-  (`globalProcessedMediaHashes`, Fix C-2) still blocks genuine mirrors. Proof = the same arms as above:
-  case A/B must flip (`.jpeg` picked), and a paired live run on this listing must show the `.jpeg`
-  candidate inside the attempt chain and the per-post file count recover. Then C-2 (`hz.delay`/`nowait`)
-  as originally planned. See §PERF-1 of `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one
-  step at a time; a live run after each).
-- **Cost so far.** 1 recon run + 3 paired/chain runs + 2 candidate-capture runs + 1 deterministic
-  in-worker experiment + 1 page load test (still no product change).
+- **FIX APPLIED AND PROVEN, 2026-10-08 — `mass-download/service-core.js`, `pickNextCandidate` (both
+  overlay trees).** A candidate is deduped against **other** items only, never against the item's own
+  already-consumed identities: `ownKeys`/`ownHashes` are built from `task.url` plus every
+  `task._attempts[].url` and exempted from the two global checks. The `candidateKey` check that rejects
+  the *identical* URL stays, so no URL is ever tried twice.
+  - **The first version of the fix was WRONG, and re-reading the add point caught it before it shipped.**
+    Exempting only `globalProcessedUrls` left the very next guard blocking the same candidate:
+    `processFilterQueue` seeds **both** global sets for the first pick, and `mediaHashKey` normalizes
+    `.jpeg` → `.jpg` exactly like `fileKey` does. Both guards are exempted now. The lesson is the owner's:
+    check the consequence at the source of the state, not at the site of the edit.
+  - `src-mv3-overlay` and `src-mv3-overlay-firefox` carry the identical change; `md-ff-delta` still
+    reports exactly its 3 canonical deltas.
+  - **The gate, written with the fix** (`tools/md-unit-smoke.mjs`, “candidate reachability locks”): it
+    cuts the real `fileKey`/`candidateKey`/`mediaHashKey`/`isExcludedType`/`pickNextCandidate` out of each
+    tree and asserts (a) the item's own registered `.jpg` no longer hides its `.jpeg` twin, (b) the
+    control with nothing registered picks the same, (c) the **negative control** — *another* item's file
+    is still deduped away, (d) the identical URL is still rejected and `.gif` is still excluded, (e) the
+    `_attempts` half of the exemption works, (f) the whole walk equals
+    `images/.jpeg → images/.png → sample_.jpg → sample_.jpeg → sample_.png`.
+    **It was run against the UNPATCHED code and fails there** with exactly `actual '….png' / expected
+    '….jpeg'` (`EXIT 1`, `.unlazy/smoke-unpatched.log`) — the gate detects the defect; it does not
+    describe the fix.
+  - **Deterministic in-worker proof of the flip** (`.unlazy/candskip2-after.log`): case A now reports
+    `old=fileKey-dup now=ALLOWED` for the `.jpeg` and **returns `images/….jpeg`**; the walk is the one
+    the gate locks. (A first version of the walk simulation rebuilt the candidate list every step and
+    oscillated `.jpg`/`.jpeg` forever — an artifact of the wrong model. The real code `shift()`s **one**
+    shared array, so each candidate is consumed once and no loop is possible; the corrected simulation
+    uses that model.)
+  - **Live before/after on the same listing, same harness, same artifacts**
+    (`.unlazy/rule34-candidates.mjs`; the worker JSON is preserved as `cand-worker-before.json` /
+    `cand-worker.json`, the chains as `cand-calls-before.json` / `cand-calls.json`):
+
+    | | before | after |
+    |---|---|---|
+    | posts with a downloaded file | 31 / 42 | **42 / 42** |
+    | outcomes | completed 41, **failed 2**, skipped 69 | completed **42**, **failed 0**, skipped 51 |
+    | completed rows from `/images/` (the real original) | 20 | **42** |
+    | completed rows from `/samples/` (downscaled) | **20** | **0** |
+    | completed URL extensions | jpg 20, png 18, webp 1, mp4 2 — **no `.jpeg`** | **jpeg 24**, png 15, mp4 3 |
+    | picks resolved as `.jpeg` | 0 | 6 |
+
+    The fix did not merely recover the lost posts — it removed the **sample downgrade** entirely. Before,
+    half of the successful items were the downscaled sample standing in for the original.
+  - **Harness lesson, recorded in `knowledge.md` §12.** Chrome served the **old compiled service-worker
+    script** from the lab profile's `Code Cache` / `Service Worker/ScriptCache` after the source change,
+    so the first “after” run still ran the unpatched function (`hasOwnKeys:false`). Changing a worker file
+    requires clearing those caches (or reloading the extension) before any before/after comparison. It
+    invalidates none of the earlier runs: the source had not changed when they were taken.
+  - **One observation, not a defect.** `da.excludedExtensions` defaults to `.svg, .ico, .gif`, and some
+    rule34 originals really are `.gif` (1 of 6 sampled). Such a post now reaches its `.gif` candidate and
+    skips it as configured, falling back to the sample. That is the setting working as documented — an
+    owner decision, not a bug.
+- **Next.** C-2 (`hz.delay`/`nowait`) as originally planned, then the scan-cost questions
+  (`unresolved`/`tWalkMs`) — now read off a pipeline that no longer drops the file. See §PERF-1 of
+  `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one step at a time; a live run after each).
+- **Cost so far.** 1 recon run + 4 paired/chain runs + 2 candidate-capture runs + 2 deterministic
+  in-worker experiments + 1 page load test.
 
 ### MAIN-03 — the rest of the owner's sites
 - **Symptom.** `Errors.txt` (repo root) is the owner's real workflow, not a synthetic page.

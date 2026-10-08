@@ -3266,3 +3266,139 @@ return mdSaveViaOffscreen(msg);
         console.log('md-unit-smoke: offscreen delivery locks hold (SAVE-2)');
     })();
 }
+
+// --- MAIN-02 candidate reachability: an item's OWN identity must not block its
+// own fallback chain (live measurement 2026-10-08) ---
+// rule34's synthesised chain is {images,samples}/…{jpg,jpeg,png,gif}; its first
+// pick is always '.jpg' — an extension that host never serves — and fileKey AND
+// mediaHashKey both normalize '.jpeg' onto '.jpg'. processFilterQueue seeds BOTH
+// global sets with that first pick before it is known to work, so the fallback
+// used to throw away the chain's real '.jpeg' original as "a duplicate" of the
+// URL that had just failed; the post then fell through to the downscaled sample
+// or was lost outright once no sample existed. These locks pin the exemption,
+// and the negative control pins that cross-item dedup is NOT traded away.
+const cutConstFor = (source) => (name) => {
+    const start = source.indexOf(`const ${name} = {`);
+    assert.ok(start >= 0, `const ${name} not found`);
+    const end = source.indexOf('\n};', start);
+    return source.slice(start, end + 3);
+};
+
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const swSrc = readFileSync(join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8');
+    const md5 = 'c238b56865c46a8e2bb1bec89b0144f4';
+    const img = `https://wimg.rule34.xxx/images/3942/${md5}`;
+    const smp = `https://wimg.rule34.xxx/samples/3942/sample_${md5}`;
+    const EXTS = ['jpg', 'jpeg', 'png', 'gif'];
+    const chain = () => EXTS.map((e) => ({ url: `${img}.${e}`, isHd: true }))
+        .concat(EXTS.map((e) => ({ url: `${smp}.${e}`, isHd: false })));
+
+    // Everything the picker needs, cut from the real source. Only
+    // `ensureAbsoluteUrl` is stubbed (every URL here is already absolute), so
+    // the subject stays the dedup guards and every key function is the real one.
+    const pickerCode = [
+        cutConstFor(swSrc)('MIME_TO_EXT'),
+        cutConstFor(swSrc)('EXT_ALIASES'),
+        cutFnFor(swSrc)('normalizeExt'),
+        cutFnFor(swSrc)('getUrlExtension'),
+        cutFnFor(swSrc)('isExcludedType'),
+        cutFnFor(swSrc)('fileKey'),
+        cutFnFor(swSrc)('candidateKey'),
+        cutFnFor(swSrc)('mediaHashKey'),
+        cutFnFor(swSrc)('pickNextCandidate'),
+    ].join('\n');
+
+    const PRELUDE = [
+        'var scanInProgress = true;',
+        'var userCanceled = false;',
+        'var cachedPrefs = { da: {} };',
+        'var globalProcessedUrls = new Set();',
+        'var globalProcessedMediaHashes = new Set();',
+        "var getExcludedExtensions = function () { return ['.svg', '.ico', '.gif']; };",
+        'var ensureAbsoluteUrl = function (u) { return u; };',
+    ].join('\n');
+    const EPILOGUE = 'return { pick: pickNextCandidate, urls: globalProcessedUrls, hashes: globalProcessedMediaHashes, fileKey: fileKey, mediaHashKey: mediaHashKey };';
+    const makePicker = () => new Function(PRELUDE + '\n' + pickerCode + '\n' + EPILOGUE)();
+
+    // Seed EXACTLY the way processFilterQueue does: both sets, from one URL.
+    const seed = (p, urls) => {
+        for (const u of urls) {
+            p.urls.add(p.fileKey(u));
+            const h = p.mediaHashKey(u);
+            if (h) p.hashes.add(h);
+        }
+    };
+
+    // A — the real starting state: the group's own first pick is registered.
+    {
+        const p = makePicker();
+        seed(p, [`${img}.jpg`]);
+        const pick = p.pick({ url: `${img}.jpg`, _candidates: chain().filter((c) => c.url !== `${img}.jpg`) });
+        assert.ok(pick, `${tree}: MAIN-02 — a candidate must remain reachable`);
+        assert.strictEqual(pick.url, `${img}.jpeg`,
+            `${tree}: MAIN-02 — the '.jpeg' twin of the item's own failed '.jpg' must be reachable (it used to be fileKey-dup)`);
+    }
+    // B — control: with nothing registered the pick is the same.
+    {
+        const p = makePicker();
+        const pick = p.pick({ url: `${img}.jpg`, _candidates: chain().filter((c) => c.url !== `${img}.jpg`) });
+        assert.strictEqual(pick && pick.url, `${img}.jpeg`,
+            `${tree}: MAIN-02 control — '.jpeg' is the expected pick with nothing registered`);
+    }
+    // C — negative control: ANOTHER item's file is still deduped away.
+    {
+        const p = makePicker();
+        seed(p, [`${img}.jpeg`]);
+        const other = 'https://wimg.rule34.xxx/images/3942/ffffffffffffffffffffffffffffffff.jpg';
+        const pick = p.pick({ url: other, _candidates: [{ url: `${img}.jpeg` }, { url: `${img}.png` }] });
+        assert.ok(pick, `${tree}: MAIN-02 — a cross-item duplicate must not remove the whole chain`);
+        assert.notStrictEqual(pick.url, `${img}.jpeg`,
+            `${tree}: MAIN-02 — cross-item dedup must NOT be traded away for the exemption`);
+        assert.strictEqual(pick.url, `${img}.png`, `${tree}: MAIN-02 — the chain continues past the other item's file`);
+    }
+    // D — the identical URL is still never retried, and .gif stays excluded.
+    {
+        const p = makePicker();
+        seed(p, [`${img}.jpg`]);
+        assert.strictEqual(p.pick({ url: `${img}.jpg`, _candidates: [{ url: `${img}.jpg` }] }), null,
+            `${tree}: MAIN-02 — the identical URL is still rejected by candidateKey`);
+        const p2 = makePicker();
+        seed(p2, [`${img}.jpg`]);
+        assert.strictEqual(p2.pick({ url: `${img}.jpg`, _candidates: [{ url: `${img}.gif` }] }), null,
+            `${tree}: MAIN-02 — the exemption must not widen the net past excludedExtensions`);
+    }
+    // E — the second half of the exemption: the item's own ATTEMPTS. After a
+    // filter re-queue the task's url is the sample's '.jpg' while the chain still
+    // holds its '.jpeg' twin; only `_attempts` shows the sample is the own file.
+    {
+        const p = makePicker();
+        seed(p, [`${smp}.jpg`]);
+        const pick = p.pick({ url: `${smp}.jpg`, _attempts: [{ url: `${img}.jpg` }], _candidates: [{ url: `${smp}.jpeg` }, { url: `${smp}.png` }] });
+        assert.strictEqual(pick && pick.url, `${smp}.jpeg`,
+            `${tree}: MAIN-02 — the sample's own '.jpeg' twin must be reachable through _attempts`);
+    }
+    // F — the whole walk through the real function, registering each pick the way
+    // advanceToNextCandidate does. Before the fix this walk started at '.png'.
+    {
+        const p = makePicker();
+        seed(p, [`${img}.jpg`]);
+        const cands = chain().filter((c) => c.url !== `${img}.jpg`);
+        let cur = `${img}.jpg`;
+        const attempts = [];
+        const walk = [];
+        for (let i = 0; i < 10; i++) {
+            const pick = p.pick({ url: cur, _attempts: attempts.slice(), _candidates: cands });
+            if (!pick) break;
+            walk.push(pick.url);
+            attempts.push({ url: cur });
+            p.urls.add(p.fileKey(pick.url));
+            const h = p.mediaHashKey(pick.url);
+            if (h) p.hashes.add(h);
+            cur = pick.url;
+        }
+        assert.deepStrictEqual(walk,
+            [`${img}.jpeg`, `${img}.png`, `${smp}.jpg`, `${smp}.jpeg`, `${smp}.png`],
+            `${tree}: MAIN-02 — the fallback walk must reach the originals before the samples`);
+    }
+}
+console.log('md-unit-smoke: candidate reachability locks hold (MAIN-02)');

@@ -166,7 +166,7 @@ Background завершает processUrlGroupsWithValidation
 
 Задача после группового анализа несёт `_candidates = [{ url, isHd }, ...]` — упорядоченный
 список альтернатив из sieve-цепочек расширений. Общий пикер — `pickNextCandidate` (пропускает
-`candidateKey === currentKey`, URL уже в `globalProcessedUrls` по `fileKey`, исключённые
+`candidateKey === currentKey`, URL уже в `globalProcessedUrls` по `fileKey` (**кроме собственных уже потреблённых идентичностей задачи** — ownKeys/ownHashes из `task.url` и `task._attempts`; иначе `.jpeg`-двойник только что упавшего `.jpg` отбрасывается как дубликат самого себя, MAIN-02), исключённые
 расширения). Два потребителя:
 
 - **`advanceToNextCandidate(task)`** — фаза загрузки: браузерная загрузка прервана (мёртвый 404) →

@@ -738,3 +738,42 @@ so a worker death fails one poll instead of wedging the run.
 everything else). The ground-truth measurement is therefore **partial**: the page-side count completed
 (**42 posts** on page 1, 44 `img`, 33 wimg thumbnails) but the paired scan numbers were never read.
 Do not treat the partial comparison as a result.
+## (12) 2026-10-08 — the lab profile caches the compiled service-worker script
+
+**Symptom.** After patching `mass-download/service-core.js`, a fresh lab launch still ran the OLD
+function: an in-worker check of `pickNextCandidate.toString()` reported `hasOwnKeys:false` and printed
+the pre-fix guard lines, while the file on disk was verifiably patched.
+
+**Cause.** Chrome keeps the extension service worker's compiled script in the PROFILE, not only in
+memory: `Default/Code Cache` and `Default/Service Worker/ScriptCache` under the lab profile. Restarting
+the browser is not enough — the cached script is served again, so the extension behaves exactly as it
+did before the edit.
+
+**Fix for the lab.** After changing ANY worker file (and always before a before/after comparison), clear:
+
+    .ext-dev-loop/cft-md/profile/Default/Code Cache
+    .ext-dev-loop/cft-md/profile/Default/Service Worker/ScriptCache
+
+(`Service Worker/CacheStorage` and `GPUCache` cleared too is harmless.) The `userScripts` grant lives in
+`Secure Preferences`, not in those caches, so clearing them does not cost the grant. The equivalent
+shortcut for a human is to reload the unpacked extension on `chrome://extensions`.
+
+**Rule.** Never take an "after" measurement right after a worker-file edit without proving WHICH code is
+live. The cheap proof is to read the function back out of the worker (`.unlazy/swcheck-exp.js`, driven by
+`.unlazy/rule34-candskip2.mjs`: assert `pickNextCandidate.toString()` contains `ownKeys`/`ownHashes`).
+
+**Does this invalidate earlier runs?** No. Every run before the patch measured the source as it then was
+on disk, and the cache only ever served the version that was already current. It invalidates nothing —
+it is simply why the first post-fix run had to be discarded rather than explained.
+
+**Related, still open.** In the instrumented live run (`.unlazy/candskip.log`, pre-fix) a wrapper on
+`pickNextCandidate` recorded **0** calls across a whole scan, while the attempt chains showed several
+candidates being consumed per item. That run's worker restarted mid-scan
+(`Download lost when the background restarted`), and a restart destroys any wrapper installed on it — so
+the zero is most likely the wrapper dying, not the picker never running. **Not settled.** Do not read
+mechanism out of a wrapped live run; use a deterministic in-worker experiment.
+
+**Shell note (cost me one edit).** The section above was first appended via
+`node -e "..."` inside double quotes; every backticked span in the payload was command-substituted by
+bash and silently removed. Put long text in a FILE (`.unlazy/knowledge-append-12.md`) and have node read
+it — never inline backticks in a double-quoted `node -e`.
