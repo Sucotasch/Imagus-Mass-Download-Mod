@@ -2738,8 +2738,34 @@ async function processFilterQueue() {
             // (live rows [001]+[021] downloaded the same 4.45 MB mp4 twice).
             // mediaHashKey '' (not hash-shaped) never blocks anything.
             const hashKey = mediaHashKey(task.url);
-            if (globalProcessedUrls.has(dupKey)
-                || (hashKey && globalProcessedMediaHashes.has(hashKey))) {
+            // MAIN-02/MAIN-06 (2026-10-08): this is the CROSS-ITEM dedup, so it
+            // must not fire for a candidate that CONTINUES the same item. The
+            // identity key maps .jpeg onto .jpg, so an item that tried
+            // '…/<md5>.jpg', lost it, and re-queued its own '…/<md5>.jpeg' twin
+            // arrived here and was written off as 'Duplicate (same file)' — the
+            // real original dropped because of one wrong guess. Measured live
+            // 2026-10-08: 22 such rows and 12 posts left with no file, while a
+            // page-side load test proved every one of those originals reachable.
+            // Only a task carrying the item's OWN attempt history is exempt; a
+            // first-time task has none, so cross-item dedup is unchanged (an
+            // exemption based on task.url would have disabled it altogether).
+            const ownKeys = new Set();
+            const ownHashes = new Set();
+            if (Array.isArray(task._attempts)) {
+                for (let ai = 0; ai < task._attempts.length; ai++) {
+                    const au = task._attempts[ai] && task._attempts[ai].url;
+                    if (!au) continue;
+                    try {
+                        const ak = fileKey(au);
+                        if (ak) ownKeys.add(ak);
+                        const ah = mediaHashKey(au);
+                        if (ah) ownHashes.add(ah);
+                    } catch (e) { /* identity is best-effort — never block a candidate on it */ }
+                }
+            }
+            const ownCandidate = ownKeys.has(dupKey) || (!!hashKey && ownHashes.has(hashKey));
+            if (!ownCandidate && (globalProcessedUrls.has(dupKey)
+                || (hashKey && globalProcessedMediaHashes.has(hashKey)))) {
                 downloadStats.skipped++;
                 updateDownloadProgress(task.url, 'skipped', 0,
                     globalProcessedUrls.has(dupKey)
@@ -3820,6 +3846,98 @@ function mdRemoveFileThenErase(id) {
     });
 }
 
+// MAIN-06 (2026-10-08) — a TRANSIENT interrupt is not a dead candidate.
+//
+// Measured before this was written: the same URL that interrupted inside a
+// mass run completed on its own (chrome.downloads -> state 'complete', 975,613
+// bytes) and six originals at once completed 5 of 6 twice with ZERO
+// SERVER_FAILED — the single failure was a genuine SERVER_BAD_CONTENT (404)
+// for the post stored under the other extension. So a 5xx / transport
+// interrupt is a passing server or rate event, not a verdict on the URL.
+//
+// The interrupt branch used to treat it like a dead link: erase the stub, give
+// it one extension-origin fetch, then advanceToNextCandidate. On rule34 that
+// walks .jpeg -> .png (real 404) -> the DOWNSCALED /samples/ file, so one
+// transient event silently downgraded the item (9 of 39 completed rows in the
+// 2026-10-08 after-run #2, with every original proven reachable from the page).
+// These reasons now get a bounded same-URL retry first; every other reason
+// (a real 404, an auth refusal, a user cancel, a file error) keeps the old
+// behaviour, because retrying those can only waste requests.
+var MD_RETRYABLE_INTERRUPTS = [
+    'SERVER_FAILED',            // 5xx, or a truncated transfer
+    'NETWORK_FAILED',
+    'NETWORK_TIMEOUT',
+    'NETWORK_DISCONNECTED',
+    'NETWORK_SERVER_DOWN',
+    'SERVER_NO_RANGE'
+];
+// Two extra attempts: enough to ride out a rate-limit blip, small enough that a
+// host which is really down cannot turn one item into an unbounded request loop.
+var MD_MAX_SAME_URL_RETRIES = 2;
+// Backoff before the retry: also lets the stub's chrome.downloads.erase() land,
+// so the history guard cannot see the interrupted record we just removed.
+var MD_RETRY_BACKOFF_MS = 1200;
+
+// PURE (executed by tools/md-unit-smoke.mjs): does this interrupt reason mean
+// "try the same url again", or "move on"? Only the transport/5xx class is
+// retryable; SERVER_BAD_CONTENT is a hard 404 and must keep advancing, and a
+// user cancel is the user's verdict, not a failure to work around.
+function mdIsRetryableInterrupt(reason) {
+    if (typeof reason !== 'string' || !reason) return false;
+    return MD_RETRYABLE_INTERRUPTS.indexOf(reason) !== -1;
+}
+
+// Re-queue the SAME url as a fresh browser download. Returns false when the
+// reason is not retryable or the budget is spent, so the caller falls through
+// to the existing advance path.
+//
+// A NEW task object is built on purpose. The caller releases the failed
+// attempt's slot, and releaseDownloadSlot marks the OLD object _slotReleased —
+// re-using it would leak the retry's slot forever, which is the exact trap
+// advanceToNextCandidate documents. The old object's timers and its
+// downloadIdToTask entry are dropped by that release before this runs.
+function mdRetryInterruptedDownload(task, reason) {
+    if (!task || !mdIsRetryableInterrupt(reason)) return false;
+    const tries = task._retries || 0;
+    if (tries >= MD_MAX_SAME_URL_RETRIES) return false;
+    if (!scanInProgress || userCanceled) return false;
+    const newTask = {
+        url: task.url,
+        referer: task.referer || '',
+        isPrivate: task.isPrivate === true,
+        source: task.source || 'group',
+        isHd: !!task.isHd,
+        elementInfo: task.elementInfo || null,
+        contentType: task.contentType || '',
+        fileSize: task.fileSize || 0,
+        httpStatus: task.httpStatus || 0,
+        filterMethod: 'BROWSER',
+        _session: task._session,
+        _candidates: Array.isArray(task._candidates) ? task._candidates : [],
+        _attempts: recordCandidateAttempt(task, 'retry after ' + reason),
+        _candidateCount: task._candidateCount != null ? task._candidateCount : null,
+        _pickReason: task._pickReason || null,
+        // The offscreen tier already had its chance on the first attempt.
+        _offscreenTried: task._offscreenTried === true,
+        _retries: tries + 1
+    };
+    // The row is deliberately NOT superseded: this is the same url being tried
+    // again, so it goes back to 'pending' with the reason and the attempt number
+    // visible instead of leaving a dead 'failed' row for a file that may arrive.
+    updateDownloadProgress(task.url, 'pending', 0,
+        'Retrying after ' + reason + ' (attempt ' + (tries + 2) + ' of ' + (MD_MAX_SAME_URL_RETRIES + 1) + ')...',
+        null, newTask);
+    setTimeout(function () {
+        // The session may have ended, or the user may have canceled, during the
+        // backoff — then the retry must not resurrect the item.
+        if (!scanInProgress || userCanceled) return;
+        newTask._session = sessionId;
+        downloadQueue.push(newTask);
+        processDownloadQueue();
+    }, MD_RETRY_BACKOFF_MS);
+    return true;
+}
+
 chrome.downloads.onChanged.addListener(function (delta) {
     const existingTask = downloadIdToTask.get(delta.id);
     if (!existingTask) return;
@@ -3937,7 +4055,17 @@ chrome.downloads.onChanged.addListener(function (delta) {
                     // mdTryOffscreenDownload never rejects — the slot, released
                     // in the continuation below, is what would leak if it did.
                     mdTryOffscreenDownload(existingTask).then(function (handled) {
-                        if (!handled && !advanceToNextCandidate(existingTask, interruptReason)) {
+                        // MAIN-06: a TRANSIENT failure is not a dead candidate —
+                        // retry the SAME url (bounded) before the chain walks on,
+                        // so one 5xx/rate event cannot silently swap a reachable
+                        // original for the downscaled sample. The offscreen tier
+                        // keeps its chance first: if it materialized the bytes,
+                        // there is nothing left to retry.
+                        if (handled || mdRetryInterruptedDownload(existingTask, results[0].error)) {
+                            releaseDownloadSlot(existingTask);
+                            return;
+                        }
+                        if (!advanceToNextCandidate(existingTask, interruptReason)) {
                             updateDownloadProgress(url, 'failed', 0, mdItemFailedText(existingTask, mapDownloadInterruptReason(results[0].error)), delta.id, existingTask);
                         }
                         releaseDownloadSlot(existingTask);

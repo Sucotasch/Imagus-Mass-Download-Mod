@@ -71,7 +71,10 @@ gates a `MAIN` item — the capability/priority pass below is done and the plan 
 phase. **Execution started 2026-10-08 at `MAIN-01`.** `MAIN-01` closed as a *quality* defect (Cloudflare
 challenge on the extension-origin fetch; no header fix exists), which re-ordered the work to `MAIN-02` —
 and `MAIN-02`'s loss is now **localized and its cause proven** (2026-10-08, same day): a `fileKey`
-identity collision inside the item's own fallback chain. See `MAIN-02` → *Root cause*.
+identity collision inside the item's own fallback chain, with a **second site** at the filter-queue
+dedup. `MAIN-06` (the transient-interrupt downgrade) and both collision sites are now **fixed, gated
+and measured live** on the same 42-post listing (posts with a file 19–31/42 before → 41–42/42 after) —
+see `MAIN-02` → *Root cause* / *Fix applied and proven* and `MAIN-06` → *Fix applied and proven*.
 
 ---
 
@@ -131,7 +134,10 @@ bug, not the file loss it was framed as, so the order below changes: the *loss* 
    defects: (a) the group's first pick (`images/<md5>.jpg` — an extension this host never serves) was
    registered in `globalProcessedUrls` before it was known to work, and the fallback then discarded its
    own `.jpeg` twin as a `fileKey` duplicate of the URL that had just failed — **fixed** in
-   `pickNextCandidate`, in both trees, with a gate written alongside it
+   `pickNextCandidate`, in both trees, with a gate written alongside it; the **same collision had a
+   second site** at the head of `processFilterQueue` (the cross-item dedup), which cost 12 further posts
+   as `Duplicate (same file)` and is fixed in the same pass (24 duplicate rows → 0, posts with a file
+   30/42 → 42/42)
    (`tools/md-unit-smoke.mjs` → *candidate reachability locks*, which fails on the unpatched source);
    and (b) a transient download interrupt downgrading the item — now `MAIN-06`. Live before/after on the
    same listing: posts with a file 31/42 → **42/42** (38/42 on the second run), `completed rows from
@@ -147,7 +153,9 @@ bug, not the file loss it was framed as, so the order below changes: the *loss* 
    interrupt branch always moves the chain FORWARD — so a one-off server/rate event silently replaces a
    reachable original with the downscaled sample (9 of 39 completed rows in after-run #2). This is the
    remaining half of the owner's rule34 complaint and the fix is bounded to one branch, so it goes
-   before the validation storm.
+   before the validation storm. **Fixed and proven 2026-10-08** — see `MAIN-06` →
+   *Fix applied and proven* (the retry fires live 26× in a 42-post run, declines every 404, and
+   `completed rows from /samples/` went to 0).
 4. **`MAIN-01` — the quality fix (`G1`–`G10`).** The host cannot be validated from the extension
    origin, and the four probes of `MAIN-06` now **prove** no header fix exists (adding every header the
    page sends, including all client hints and a real Referer, leaves the 403 untouched). So the fix is
@@ -434,6 +442,42 @@ this file does not get a research item that does not change a `MAIN` decision (r
     rule34 originals really are `.gif` (1 of 6 sampled). Such a post now reaches its `.gif` candidate and
     skips it as configured, falling back to the sample. That is the setting working as documented — an
     owner decision, not a bug.
+- **SECOND SITE OF THE SAME COLLISION — `processFilterQueue` — found, fixed and measured 2026-10-08.**
+  The `pickNextCandidate` repair above fixed the fallback chain, but the same `fileKey`/`.jpeg`→`.jpg`
+  collapse guards the **cross-item** dedup at the head of `processFilterQueue`
+    (`mass-download/service-core.js` ~:2750, overlay; ~:2363, FF). A candidate that CONTINUES the same
+  item (`…/<md5>.jpeg` after its own `…/<md5>.jpg` had already been registered) arrived there and was
+  written off as `Duplicate (same file)` — the real original dropped by the item's own failed guess.
+  Measured live in the `MAIN-06` regression run (`.unlazy/paired-retry.log` kept as
+  `cand-worker-retryrun.json`): **20 rows `Duplicate (same file)` + 2 `Duplicate (same file on another
+  host)`**, 12 posts left with no file, while a page-side load test had proved every one of those
+  originals reachable.
+  - **The fix, and the distinction that matters.** `ownKeys`/`ownHashes` are built from `task._attempts`
+    **only** — deliberately NOT from `task.url`, because keying the exemption on the task's own URL would
+    exempt every first-time task and disable cross-item dedup altogether. The guard is skipped only when
+    the candidate is the item's own continuation:
+    `if (!ownCandidate && (globalProcessedUrls.has(dupKey) || (hashKey && globalProcessedMediaHashes.has(hashKey))))`.
+    Applied to both trees by `.unlazy/apply-filterfix.js` (idempotent, CRLF-preserving).
+  - **Gate written with it** (`tools/md-unit-smoke.mjs`, *filter-queue own-candidate locks*): asserts the
+    own-candidate verdict exists, that the cross-item guard is skipped **only** for own candidates, that
+    the set comes from `task._attempts`, that every own attempt url contributes its `fileKey`, that
+    `ownKeys` does **not** include `fileKey(task.url)` (the trap above), and that no cross-item
+    bookkeeping is deleted.
+  - **Live before/after, same listing, same harness** (`.unlazy/rule34-candidates.mjs`):
+
+    | | before second-site fix (`cand-worker-retryrun.json`) | after, run #1 (`cand-worker-secondfix.json`) | after, run #2 (`cand-worker.json`) |
+    |---|---|---|---|
+    | posts with a downloaded file | 30 / 42 | **42 / 42** | 41 / 42 |
+    | outcomes | completed 33, failed 1, skipped 60 | completed **42**, **failed 0**, skipped 50 | completed 41, failed 1, skipped 59 |
+    | rows `Duplicate (same file…)` | **22** | **0** | **0** |
+    | completed rows from `/images/` | 32 | **41** | **41** |
+    | completed rows from `/samples/` | 0 | 1 | **0** |
+
+    Every duplicate-skip is gone and the posts it cost came back. The one post that still fails
+    (18983141, `fe5dd06c…`) is a genuinely dead original: its `.jpeg` answers `SERVER_FAILED` once, then
+    `SERVER_BAD_CONTENT` (404) on the bounded retry, and its `.png` **and both `/samples/` forms** also
+    404 — so nothing on this host serves that post. That is a real loss of the file at the source, not a
+    pipeline defect.
 - **Next.** C-2 (`hz.delay`/`nowait`) as originally planned, then the scan-cost questions
   (`unresolved`/`tWalkMs`) — now read off a pipeline that no longer drops the file. See §PERF-1 of
   `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one step at a time; a live run after each).
@@ -558,12 +602,65 @@ this file does not get a research item that does not change a `MAIN` decision (r
     should go to 0, as they already did in after-run #1).
   * **Not a piece of `MAIN-01` after all** — `MAIN-01` is the filter-phase validation storm; this is the
     download-stage interruption branch. They share only the host.
-- **Next.** Measure the retry class in a live run (does a retried same-URL download succeed after a
-  `SERVER_FAILED`?), then implement the bounded retry with its own gate — the retry must not fight the
-  watchdog, the slot release, or `_interruptHandled` (one verdict per download, which is what stops a
-  double advance today).
-- **Cost so far.** 5 probes, no product change. (`.unlazy/dlpath.log`, `headerdiff.log`,
-  `headerdiff2.log`, `conc.log`, `slash-check.log`.)
+- **FIX APPLIED AND PROVEN, 2026-10-08 — `mass-download/service-core.js`, the interrupt branch (both
+  overlay trees).** A **retryable** interrupt now re-tries the **SAME** url, bounded, before the chain
+  downgrades; everything else keeps advancing exactly as before.
+  - **The classification is pure and explicit.** `MD_RETRYABLE_INTERRUPTS = ['SERVER_FAILED',
+    'NETWORK_FAILED', 'NETWORK_TIMEOUT', 'NETWORK_DISCONNECTED', 'NETWORK_SERVER_DOWN',
+    'SERVER_NO_RANGE']` and `mdIsRetryableInterrupt(reason)` — a transport/5xx event is retryable;
+    `SERVER_BAD_CONTENT` (a real 404), `SERVER_FORBIDDEN`, a user cancel and a file error are **not**,
+    because retrying those can only waste requests.
+  - **`mdRetryInterruptedDownload(task, reason)`** returns `false` when the reason is not retryable, when
+    the budget (`MD_MAX_SAME_URL_RETRIES = 2`) is spent, or when the session ended
+    (`if (!scanInProgress || userCanceled) return false;`). Otherwise it builds a **FRESH** task object on
+    purpose: the caller releases the failed attempt's slot, and `releaseDownloadSlot` marks the OLD object
+    `_slotReleased`, so re-using it would leak the retry's slot forever (the exact trap
+    `advanceToNextCandidate` documents). The new task carries `_candidates`, `_attempts` (via
+    `recordCandidateAttempt`), `_pickReason`, `_candidateCount`, `_offscreenTried` and `_retries: tries + 1`.
+    The row is deliberately **not** superseded — it goes back to `'pending'` with
+    `"Retrying after <reason> (attempt N of 3)..."`, and the re-queue happens after
+    `MD_RETRY_BACKOFF_MS = 1200` with the session re-checked and `newTask._session = sessionId` so the
+    retried task's continuations are not dropped as stale.
+  - **Wired after the cancel/already-judged guard and before the chain advances**
+    (`if (handled || mdRetryInterruptedDownload(existingTask, results[0].error))` — the offscreen tier
+    keeps its chance first, and if it materialized the bytes there is nothing left to retry). The Chrome
+    tree therefore has the offscreen call in front of it; the **Firefox tree has no offscreen tier**, so
+    its branch is a shorter variant. `md-ff-delta` still reports exactly its 3 canonical deltas.
+  - **Gate written with the fix** (`tools/md-unit-smoke.mjs`, *interrupt-retry locks*): a pure
+    classification lock (`SERVER_FAILED`/`NETWORK_TIMEOUT`/`NETWORK_DISCONNECTED` true;
+    `SERVER_BAD_CONTENT`/`SERVER_FORBIDDEN`/`USER_CANCELED`/`FILE_FAILED`/`''`/`undefined`/
+    `'server_failed'` false) plus structural locks on **both** trees: gated by the classification, budget
+    enforced, `_retries: tries + 1`, can decline, no `mdSupersedeAttempt`, no `_slotReleased`, the retry is
+    offered **before** the advance, and it sits **after** the cancel/duplicate-verdict guard. **Verified to
+    fail on the unpatched source** (`EXIT 1`, `.unlazy/smoke-retry-unpatched.log`).
+  - **Deterministic in-worker behavioural proof** (`.unlazy/retry-exp.js` driven by
+    `rule34-candskip2.mjs`, `retry-exp.log`, globals restored): a retryable reason returns `true`; a spent
+    budget returns `false`; a 404 returns `false`; a cancel returns `false`; the fresh task carries
+    `_retries: 1` then `2` with `slotReleased: false` and `_offscreenTried` preserved.
+  - **LIVE PROOF THAT IT FIRES — measured 2026-10-08 with an in-worker observer**
+    (`.unlazy/rule34-candidates.mjs` with `WRAP_RETRY=1` wrapping both the retry and the offscreen tier
+    through their writable global bindings; no product change, `.unlazy/paired-retryobs.log`,
+    `.unlazy/retry-observe.json`): on the same 42-post listing
+    **`mdRetryInterruptedDownload` was called 82×, returned `true` 26×** — every one of those with reason
+    `SERVER_FAILED`, `tries: 0`, `scanInProgress: true` — and returned `false` for all **56**
+    `SERVER_BAD_CONTENT` calls (the 404s advance, exactly as intended). `mdTryOffscreenDownload` was
+    called 82× and handled **0** (this host challenges it), which is why the retry, not the offscreen
+    tier, is what saves the item here. Outcome: `completed 41, failed 1, skipped 59`, **41 of 42 posts
+    with a file, 41 completed rows from `/images/` and 0 from `/samples/`**.
+    The one failing post shows the whole mechanism in one chain — `.jpg` 404 → `.jpeg` `SERVER_FAILED` →
+    **retry accepted (`tries: 0`)** → retried `.jpeg` `SERVER_BAD_CONTENT` at `tries: 1` → `.png` 404 →
+    both `/samples/` forms 404 → failed. Its original is genuinely absent from the host, and the bounded
+    retry did not turn that into a loop.
+  - **Live regression, same listing** (`.unlazy/paired-secondfix.log`, `.unlazy/cand-worker-secondfix.json`):
+    `posts with a file 42/42`, `completed 42, failed 0`, `completed rows from /samples/ 1` (run #1) and
+    **0** (run #2). Before this fix the same harness measured `9 of 39` completed rows sitting on the
+    downscaled sample. The `SERVER_FAILED`-to-sample downgrade is no longer the normal outcome.
+  - **Cost so far.** 5 probes + 2 deterministic in-worker experiments + 1 in-worker retry/offscreen
+    observation run, with the fix's own source gate. (`.unlazy/dlpath.log`, `headerdiff.log`,
+    `headerdiff2.log`, `conc.log`, `slash-check.log`, `retry-exp.log`, `paired-retryobs.log`.)
+- **Next.** C-2 / the scan-cost questions stay behind `MAIN-02`'s own *Next*; the remaining live
+  regression (hover, e-hentai `/g/`, referer-retry > 10 MiB, and the FF tree's shorter interrupt branch)
+  is still outstanding and belongs to the batch run, not to a separate item.
 
 ## RESEARCH — unlocks a decision
 

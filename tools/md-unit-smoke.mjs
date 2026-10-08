@@ -3402,3 +3402,81 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     }
 }
 console.log('md-unit-smoke: candidate reachability locks hold (MAIN-02)');
+
+// --- MAIN-06: a TRANSIENT interrupt must retry the SAME url, not advance ---
+// Measured 2026-10-08: SERVER_FAILED did not reproduce with the url alone or at
+// concurrency 6 (5 of 6 completed in both waves; the single failure was a genuine
+// SERVER_BAD_CONTENT, a real 404), yet the interrupt branch always moved the chain
+// FORWARD — so one 5xx/rate event replaced a reachable original with the
+// downscaled sample. Only the transport/5xx class is retryable now; a real 404 and
+// a user cancel must keep the old behaviour.
+function cutRetryConstants(source) {
+    const start = source.indexOf('var MD_RETRYABLE_INTERRUPTS = [');
+    assert.ok(start >= 0, 'MAIN-06: the retryable-reason list is not declared');
+    const endMark = 'var MD_RETRY_BACKOFF_MS = 1200;';
+    const end = source.indexOf(endMark, start);
+    assert.ok(end > start, 'MAIN-06: the retry constant block is not terminated as expected');
+    return source.slice(start, end + endMark.length);
+}
+
+const retrySrc = readFileSync(join(repoRoot, 'src-mv3-overlay/mass-download/service-core.js'), 'utf8');
+const mdIsRetryableInterrupt = new Function(
+    `${cutRetryConstants(retrySrc)}\n${cutFnFor(retrySrc)('mdIsRetryableInterrupt')}\nreturn mdIsRetryableInterrupt;`
+)();
+// The retryable class: a passing server or transport event.
+assert.strictEqual(mdIsRetryableInterrupt('SERVER_FAILED'), true, 'MAIN-06: a 5xx/truncated transfer is retryable');
+assert.strictEqual(mdIsRetryableInterrupt('NETWORK_TIMEOUT'), true, 'MAIN-06: a transport timeout is retryable');
+assert.strictEqual(mdIsRetryableInterrupt('NETWORK_DISCONNECTED'), true, 'MAIN-06: a dropped connection is retryable');
+// The negative controls: these must keep advancing, never retry.
+assert.strictEqual(mdIsRetryableInterrupt('SERVER_BAD_CONTENT'), false, 'MAIN-06: a real 404 must still advance to the next candidate');
+assert.strictEqual(mdIsRetryableInterrupt('SERVER_FORBIDDEN'), false, 'MAIN-06: an auth refusal must not be retried (the host means it)');
+assert.strictEqual(mdIsRetryableInterrupt('USER_CANCELED'), false, 'MAIN-06: a user cancel is the user\u2019s verdict, not a failure to work around');
+assert.strictEqual(mdIsRetryableInterrupt('FILE_FAILED'), false, 'MAIN-06: a file error is not a server problem');
+assert.strictEqual(mdIsRetryableInterrupt(''), false, 'MAIN-06: an empty reason must not be treated as retryable');
+assert.strictEqual(mdIsRetryableInterrupt(undefined), false, 'MAIN-06: a missing reason must not be treated as retryable');
+assert.strictEqual(mdIsRetryableInterrupt('server_failed'), false, 'MAIN-06: the list is exact (Chrome\u2019s enum spelling), not fuzzy');
+
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const s = readFileSync(join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8');
+    const fn = cutFnFor(s)('mdRetryInterruptedDownload');
+    assert.ok(/mdIsRetryableInterrupt\(reason\)/.test(fn), `${tree}: MAIN-06 — the retry must be gated by the classification`);
+    assert.ok(/tries >= MD_MAX_SAME_URL_RETRIES/.test(fn), `${tree}: MAIN-06 — the retry budget must be enforced`);
+    assert.ok(/_retries: tries \+ 1/.test(fn), `${tree}: MAIN-06 — the retry must increment the attempt counter (else the budget never closes)`);
+    assert.ok(/return false;/.test(fn), `${tree}: MAIN-06 — the retry must be able to decline`);
+    assert.ok(!/mdSupersedeAttempt/.test(fn), `${tree}: MAIN-06 — the same url is retried, so its row must NOT be superseded`);
+    assert.ok(!/_slotReleased/.test(fn), `${tree}: MAIN-06 — the retry must build a FRESH task; carrying a released object would leak the slot`);
+    // The wiring: offered BEFORE the chain advances, and only after the cancel /
+    // duplicate-verdict guards (a canceled or already-judged download must not retry).
+    const retryCall = s.indexOf('mdRetryInterruptedDownload(existingTask, results[0].error)');
+    assert.ok(retryCall > 0, `${tree}: MAIN-06 — the interrupt branch must call the retry`);
+    const advanceCall = s.indexOf('advanceToNextCandidate(existingTask, interruptReason)', retryCall);
+    assert.ok(advanceCall > retryCall, `${tree}: MAIN-06 — the retry must be offered BEFORE the chain advances`);
+    assert.ok(s.indexOf('alreadyCanceled || !firstVerdict') < retryCall, `${tree}: MAIN-06 — a canceled or already-judged download must not retry`);
+    assert.ok(/if \(!scanInProgress \|\| userCanceled\) return;/.test(fn), `${tree}: MAIN-06 — the backoff must re-check the session before re-queuing`);
+    assert.ok(/newTask\._session = sessionId;/.test(fn), `${tree}: MAIN-06 — the retried task must join the CURRENT session, or its continuations are dropped as stale`);
+}
+console.log('md-unit-smoke: interrupt-retry locks hold (MAIN-06)');
+
+// --- MAIN-02, SECOND SITE: the filter-queue dedup must not eat an item's own twin ---
+// processFilterQueue's fileKey guard is the CROSS-ITEM dedup, but '.jpeg' collapses
+// onto '.jpg', so a candidate re-queued by the SAME item (…/<md5>.jpeg after its own
+// …/<md5>.jpg had already been registered) was skipped as 'Duplicate (same file)'.
+// Measured live 2026-10-08: 22 such rows and 12 posts left with no file, while a
+// page-side test proved every one of those originals reachable. The exemption must
+// be keyed on the item's OWN attempt history only — keying it on task.url would
+// exempt every first-time URL and disable cross-item dedup completely.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const s = readFileSync(join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8');
+    const idx = s.indexOf('const ownCandidate = ownKeys.has(dupKey)');
+    assert.ok(idx > 0, `${tree}: the filter-queue dedup must compute an own-candidate verdict`);
+    const win = s.slice(Math.max(0, idx - 1800), idx + 1200);
+    assert.ok(/if \(!ownCandidate && \(globalProcessedUrls\.has\(dupKey\)/.test(win),
+        `${tree}: the cross-item guard must be skipped ONLY for own candidates`);
+    assert.ok(/if \(Array\.isArray\(task\._attempts\)\)/.test(win),
+        `${tree}: the own-candidate set must come from task._attempts`);
+    assert.ok(/ownKeys\.add\(ak\)/.test(win), `${tree}: every own attempt url must contribute its fileKey`);
+    assert.ok(!/ownKeys\.add\(fileKey\(task\.url\)\)/.test(win),
+        `${tree}: ownKeys must NOT include the task's own url — that would disable cross-item dedup entirely`);
+    assert.ok(!/globalProcessedUrls\.delete/.test(win), `${tree}: the exemption must not delete cross-item bookkeeping`);
+}
+console.log('md-unit-smoke: filter-queue own-candidate locks hold (MAIN-02 second site)');

@@ -777,3 +777,45 @@ mechanism out of a wrapped live run; use a deterministic in-worker experiment.
 `node -e "..."` inside double quotes; every backticked span in the payload was command-substituted by
 bash and silently removed. Put long text in a FILE (`.unlazy/knowledge-append-12.md`) and have node read
 it — never inline backticks in a double-quoted `node -e`.
+## (13) Live-proof of a worker function: wrap the global binding, and read the row key carefully
+
+Three lessons from closing `MAIN-06` (2026-10-08).
+
+**Clearing the service-worker caches makes the NEXT launch slow, not broken.**
+After `Default/Code Cache` and `Default/Service Worker/ScriptCache` are deleted (§12), the first
+launch has to recompile the worker script. That launch produced
+`service worker awake before the page loads: false` / `NO SERVICE WORKER at startup - abort` — the
+harness's 30 x 1 s wake loop simply expired. Relaunching the same script against the same profile
+found the worker on the first second. So: **treat that abort as a retryable cold start.** Re-run once
+before suspecting the extension, the profile, or the source. Do not "fix" it by deleting more of the
+profile — the caches are the only thing that needed clearing, and the userScripts grant lives in
+`Secure Preferences`, which nothing here touches.
+
+**Proof that a worker function is live AND that it fires: wrap its global binding and count calls.**
+`function` declarations in the extension's classic background scripts become writable global
+properties, so an in-worker wrapper installed from node (the same trick
+`findBestUrlWithValidation` already uses) observes the real call, the real arguments and the real
+return value, with no product change:
+
+```js
+var orig = mdRetryInterruptedDownload;
+mdRetryInterruptedDownload = function (task, reason) {
+  var r = orig.apply(this, arguments);
+  self.__mwRetry.push({ reason: reason, returned: !!r, tries: (task && task._retries) || 0 });
+  return r;
+};
+```
+
+That is what turned "the fix should fire" into a measurement: **82 calls, 26 returns `true`** (all
+`SERVER_FAILED`, all `tries: 0`), and **56 returns `false`** for `SERVER_BAD_CONTENT`. It also exposed
+that `mdTryOffscreenDownload` was called 82 x and handled **0** on this host — so the offscreen tier is
+not what saves the item, the retry is. A wrapper installed on an ephemeral worker dies with it, so
+check `scan.gen` / `resumed` afterwards (a `gen: 1, resumed: false` run means the wrapper survived the
+whole scan).
+
+**The progress row is keyed by URL, so it cannot prove a retry did NOT happen.**
+A retried same-URL download keeps ONE row: the `"Retrying after ... (attempt N of 3)"` text is written
+when the retry is scheduled and is then overwritten by whatever the retry ends as. Therefore
+"0 rows mention a retry" is **not** evidence the retry never fired — it is exactly what a retry that
+succeeded looks like. Only an observer (above) can distinguish "never fired" from "fired and won".
+Recorded because the first reading of the `MAIN-06` regression run made the opposite inference.
