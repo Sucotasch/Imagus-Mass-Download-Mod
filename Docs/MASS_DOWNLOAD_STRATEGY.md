@@ -23,7 +23,7 @@
 
 ## 0. TL;DR для агента (30 секунд)
 
-1. **Не** мержить `src-mv3/` в upstream — там монолит старого мода.  
+1. **Не** мержить `archive/src-mv3/` в upstream — там монолит старого мода.  
 2. **Не** пытаться вынести content mass-download в отдельный runtime-файл: **`PVI` — IIFE-local**.  
 3. **Делай:** свежий upstream → `src-mv3-overlay/` + скопируй `mass-download/` + **~15 точечных вставок** (ниже) + UI-файлы мода + `DA_*` + `da` в defaults/hello.  
 4. **Источник правды для вставок content:** `mass-download/content-block.js` (не «из головы»).  
@@ -48,12 +48,12 @@
 |------|------------------|
 | **`src-mv3-overlay/`** | **Рабочая** версия: upstream + overlay-мод. **Цель наката** и **донор** адаптеров |
 | `Imagus-Reborn-base/` | Снимок/эталон upstream — **не править** (сверка) |
-| `src-mv3/` | Старый стабильный **монолит** мода — **не** база для re-base |
+| `archive/src-mv3/` | Старый стабильный **монолит** мода (**архив** с 2026-10-08) — **не** база для re-base |
 | `src/` | Legacy MV2 — игнор для MV3 re-base |
 
 ### 1.3 Почему не git-merge
 
-Upstream развивается (Shadow DOM, VideoJS, toolbar, gallery). Старый `src-mv3` вырезал/переписал крупные куски.  
+Upstream развивается (Shadow DOM, VideoJS, toolbar, gallery). Старый `archive/src-mv3` вырезал/переписал крупные куски.  
 **Стратегия:** каждый раз брать **чистый upstream** и **накладывать тонкий слой** mass-download (гибридный подход ниже).
 
 ### 1.4 Гибридный подход (утверждён и реализован)
@@ -624,7 +624,7 @@ grep MASS-DOWNLOAD content/content.js
 | **Copy-paste sections** | content markers from `content-block.js` |
 | **One-line / few-line edits** | importScripts, switch cases, `da` in hello/readCfg/pref_keys/defaults, manifest popup |
 | **Diff-merge carefully** | options.html section, locales, options.css |
-| **Do not copy from** | `src-mv3/` service monolith (другая раскладка) unless emergency |
+| **Do not copy from** | `archive/src-mv3/` service monolith (другая раскладка) unless emergency |
 | **Do not edit** | `Imagus-Reborn-base/` as product tree |
 
 ---
@@ -650,7 +650,7 @@ grep MASS-DOWNLOAD content/content.js
 
 ### 12.1 Эволюция
 
-1. `src-mv3/` — монолит mass-download внутри service/content (стабильная линия).  
+1. `archive/src-mv3/` — монолит mass-download внутри service/content (стабильная линия).  
 2. Исследование 2026-07-20 → гибридный overlay design.  
 3. **`src-mv3-overlay/`** — реализация: upstream + `mass-download/` + markers.  
 4. Аудит + фиксы concurrency/settings/cancel (см. Audit STATUS).
@@ -663,7 +663,7 @@ grep MASS-DOWNLOAD content/content.js
 | `mass-download/` с ADAPTERS.md, options-patch… | **4 файла**: service-init, service-core, md-dnr, content-block |
 | `_isElementVisible` dead | **Вызывается** в filter |
 | `_removeDownloadAllStatus` | **`_stopKeepAwake` + `_cleanupMonkeyPatch`** |
-| База = `src-mv3` | База re-base = **upstream** + донор **overlay** |
+| База = `archive/src-mv3` | База re-base = **upstream** + донор **overlay** |
 
 ### 12.3 Residual bugs (не блокируют re-base playbook)
 

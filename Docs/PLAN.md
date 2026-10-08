@@ -35,10 +35,12 @@ Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what 
 conditional block under it. **Decided is not started** — implementation waits for the owner's word.
 
 **Decided 2026-10-08 by the owner — no longer open:**
-- The duplicate `src-mv3/` tree: **archive** (not delete), so the tree leaves the root instead of
-  sitting there as a parallel source tree. Consequence checked: no gate or script references it —
-  `tools/`/`scripts/` grep clean — only `AGENTS.md` does (3 lines), to be updated with the move. The
-  one detail still being fixed is the form (in-repo `archive/` move vs a zip); nothing depends on it.
+- The duplicate `src-mv3/` tree: **archived — DONE 2026-10-08**. Owner chose an in-repo move, so the
+tree left the root (`git mv src-mv3 archive/src-mv3`) and stops being a parallel source tree instead
+of being deleted. Consequence checked before the move: no gate or script references it — `tools/` and
+`scripts/` grep clean — only `AGENTS.md` (3 lines) and `Docs/MASS_DOWNLOAD_STRATEGY.md` (6 lines) did,
+and both now carry the new path. **Gates re-run after the move**: `md-marker-check`, `md-ff-delta`,
+`md-unit-smoke`, `_chk_defaults` — all read the two overlay trees only, so nothing in them moved.
 - The manual "Save findings list" button (`S3″`): the owner did not know what it was. Explained
   below — it saves the **list of what the page found** (URLs), not the media, and cannot be read back;
   the existing **Save Log** already exports a richer version. Recommendation: drop it.
@@ -46,7 +48,8 @@ conditional block under it. **Decided is not started** — implementation waits 
 **The plan is fully assembled when:** every `MAIN` item names a symptom, evidence **and a gate**; every
 open audit item is either in `MAIN`, in `RESEARCH` with the decision it unlocks, or in `B` marked
 closed; and nothing is waiting on an unanswered question from the owner. Today `ROWS-2` is still a
-measurement rather than a task, and `src-mv3` a preference rather than a task.
+measurement rather than a task. `src-mv3` is now out of the way (archived), so it is no longer a
+preference waiting to be made.
 
 **Then, and only then, the next phase — capability and priority.** For each `MAIN` item, name what it
 needs before it can start: an existing gate, a gate that must be written, a live run, or a harness
@@ -328,7 +331,7 @@ out wrong and are corrected or removed — `PANEL-1` and `PIXIV-1` are **fixed**
 | §6.1 | ~~Queue persistence across a worker death~~ — **STALE as written: it is implemented.** `chrome.storage.session` holds `mdSessionSnapshot`; `mdSchedulePersist()` fires on every queue push and row change, `mdApplySnapshot()` runs on the next worker. FIX-7 / `RESUME-1` (2026-09-13) landed it — the audit's "проверено 2026-09-11: не реализована" predates that | `Audit` §6.1 needs its status corrected | What genuinely remains is the **loss window**: a death between Chrome writing a file and the ≤1 s debounced snapshot. That is `DUP-1`'s cause and is mitigated by `mdAdoptIfAlreadyDownloaded` |
 | §7.2 | Log loss on worker death: an item whose final status never reached the worker has no row anywhere. The snapshot restores queues and rows, but the terminal write can still be lost | partly addressed by §6.1's snapshot | Same ≤1 s window as `DUP-1-live`; no separate design needed once that is measured |
 | `R-07` | Top-frame guard in the content `downloadAll` | `Audit` §3 | Open **by decision**; revisit on a bug report |
-| §6.3 | Fate of the duplicate `src-mv3/` tree (archive or delete) | `Audit` §6.3 | **Decided 2026-10-08: archive** (owner). No tool or script references `src-mv3/`; only `AGENTS.md` does (3 lines), updated with the move |
+| §6.3 | Fate of the duplicate `src-mv3/` tree (archive or delete) | `Audit` §6.3 | **CLOSED 2026-10-08: archived** to `archive/src-mv3/` (owner chose an in-repo move). No tool or script referenced `src-mv3/`; `AGENTS.md` + `Docs/MASS_DOWNLOAD_STRATEGY.md` updated |
 | `BT-09`, `BT-12` | Deliberately untouched / needs a live FF+pixiv run | `Audit` §9.6 | `BT-12` needs the run |
 | — | Live regression run after the `BT` batch: hover, e-hentai `/g/`, referer-retry > 10 MiB | `Audit` §9.6 | Never done |
 | — | FF e-hentai Gallery Save (`REPORT_GALLERY_BATCH` §27); FF pixiv — zero log | `Audit` §9.5 | Live runs on Firefox |

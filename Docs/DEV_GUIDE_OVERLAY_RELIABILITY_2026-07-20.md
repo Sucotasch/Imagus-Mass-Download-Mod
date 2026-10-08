@@ -484,7 +484,7 @@ After `const blob = await response.blob();` insert `if (!scanInProgress) { ...; 
 | Silent semantic change to preserve policy without docs | `98dd15b` is intentional history |
 | Blanket `return true` in `handleMessage` | Channel closed / leaks |
 | Touch `Imagus-Reborn-base/` | Reference only |
-| Port fixes into `src-mv3/` unless asked | Different product line |
+| Port fixes into `archive/src-mv3/` unless asked | Different product line |
 
 ---
 

@@ -14,7 +14,7 @@ Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + ori
 |-----------|------|-------|
 | **`src-mv3-overlay/`** | **Active development (Chrome)** — fresh upstream + modular mass-download | **Yes (default)** |
 | **`src-mv3-overlay-firefox/`** | **Active development (Firefox)** — byte-copy of `src-mv3-overlay/` + **exactly 3 canonical delta files** (`manifest.json` with a `background.scripts` array, `background/service.js` with `mdAck` + native Referer headers, `mass-download/service-core.js` with download `incognito` + Referer headers). Lives in `mv3-version` since 2026-09-10 (the old `feature/overlay-firefox` is its ancestor). **Never** put `importScripts` in the FF `service.js` — an FF event page has no such API, the background dies silently, and the build shipped dead from the overlay port right up to v2026.8.20.9 | Yes (keep delta minimal — see `Docs/FIREFOX_OVERLAY.md`) |
-| `src-mv3/` | Older MV3 mod (monolithic mass-download inside service/content) | Only if fixing the stable `mv3-version` line |
+| **`archive/src-mv3/`** | Older MV3 mod (monolithic mass-download inside service/content). **Archived 2026-10-08** (owner decision, `Audit` §6.3) — was `src-mv3/` | No — reference only |
 | `src/` | Legacy MV2; built by `build.py` | Only for MV2 legacy |
 | `Imagus-Reborn-base/` | Upstream snapshot (hababr/Imagus-Reborn) | **Do not edit** — reference only (gitignored) |
 | `Docs/` | Developer docs (algorithm, structure, overlay strategy) | Docs only |
@@ -112,7 +112,8 @@ When re-applying onto a new upstream: merge upstream `content.js`, then re-inser
 | `src-mv3-overlay/data/sieve.json` | Extraction rules |
 | `src-mv3-overlay/manifest.json` | MV3 manifest |
 
-Stable older tree (same roles, monolithic): `src-mv3/background/service.js`, `src-mv3/content/content.js`.
+Stable older tree (same roles, monolithic), now archived: `archive/src-mv3/background/service.js`,
+`archive/src-mv3/content/content.js`.
 
 ## Architecture Gotchas
 
@@ -285,7 +286,7 @@ Details: `Docs/MASS_DOWNLOAD_ALGORITHM.md`, strategy & re-base: `Docs/MASS_DOWNL
 | Target | How |
 |--------|-----|
 | **MV3 overlay (current)** | No build — load `src-mv3-overlay/` |
-| **MV3 stable (`src-mv3`)** | No build — load `src-mv3/` |
+| **MV3 stable (`archive/src-mv3`)** | No build — load `archive/src-mv3/` |
 | **MV2 legacy** | `python build.py` (Java + Closure / YUI / htmlcompressor in `bin/`) → `imagus-<version>.zip` |
 
 ## Debugging
@@ -374,7 +375,7 @@ Historical bugs (fixed in overlay, 2026-07-20) — do not reintroduce:
 | `Docs/HASH_PREFIX_CONVENTION.md` | `#`-prefixed HD URL convention — read before touching dedup/`hiRes` logic |
 | `Docs/DEVELOPMENT_GUIDE.md` | Sieve maintenance, hotkeys, debugging |
 | `Docs/PROJECT_MV2.md` | Legacy `src/` only |
-| `README.md` | User-facing overview (primary install is `src-mv3-overlay`; a legacy `src-mv3` section remains) |
+| `README.md` | User-facing overview (primary install is `src-mv3-overlay`) |
 
 ## Conventions
 
