@@ -178,12 +178,31 @@ this file does not get a research item that does not change a `MAIN` decision (r
   validation GET carries **no Referer** and a hotlink gate answers 403 to all 5 candidates. **H2
   (timeout):** the group path validates with a **1500 ms** per-candidate timeout (`:4223`; the default
   is 3000 ms), so a slow `wimg.rule34.xxx` yields `reason: 'timeout'` and the same accounting.
-- **Next.** One measurement settles which: capture the per-candidate `reason` from
-  `validateSingleUrlContent` for `wimg.rule34.xxx` (403 vs `timeout` vs 404 vs `HTML page`). Today the
-  only trace is `pickReason: 'heuristic (validation failed)'`, which names neither. The fix direction
-  differs sharply: H1 → add the rule34 host(s) to the DNR registry (mirroring pximg; note the
-  `md-dnr.js` finding that DNR reaches only the SW fetch, so the *download* needs the offscreen tier),
-  H2 → instrument/re-raise the 1500 ms group timeout. Do not choose before the run.
+- **Step 2 done 2026-10-08 (live, CfT 137 scratch profile; `.unlazy/validate-probe1..6.log`) — BOTH
+  hypotheses are falsified, and the cause is none of the three names the audit offered.**
+  - The SW fetch (exactly what the validator does) returns **403 `text/html` in 44–232 ms**, for
+    thumbnails *and* full-size URLs, GET and HEAD.
+  - **H1 dead.** The page loads the very same thumbnails via `<img>` **with a Referer and with
+    `referrerPolicy:'no-referrer'`** — real network fetches (98–159 ms, cache-busted), `ok:true` both
+    ways — and setting the Fetch `referrer` init in the SW fetch changes nothing (still 403). **The host
+    does not gate on Referer**, so adding rule34 to the DNR registry would fix nothing.
+  - **H2 dead.** 44–232 ms is nowhere near the 1500 ms group timeout; nothing timed out.
+  - **The actual cause: a Cloudflare challenge.** The 403 headers carry `cf-mitigated: challenge`,
+    `server: cloudflare`, `cf-ray`, and the body is `<title>Rule34.xxx CAPTCHA</title>`. Cloudflare
+    challenges the **extension-origin** request (`Origin: chrome-extension://…`,
+    `Sec-Fetch-Site: cross-site`) regardless of cookies and regardless of any header the Fetch API can
+    set. **No header fix exists for this.**
+- **New framing — this defect does NOT explain the missing media.** The browser's own download request
+  is *not* challenged (run #3 landed 28 files), so "validation is impossible" costs **no file by
+  itself**. What it costs: ~5 wasted requests per group for the first 8 groups of every 30 s window, and
+  a silent switch to **unvalidated picks** (no size/type check, HTML/dead links still eligible — the
+  `FIX-3` ".htm garbage" case). The media that never reaches disk is the **219 of 313 elements that were
+  never resolved to a URL at all** (`unresolved 219`, `tWalkMs 30442`) — that is `MAIN-02`'s ground, not
+  `HOST-1`'s. **Priority implication: needs the owner's confirmation (see below).**
+- **Next (revised).** `HOST-1` (`G1`–`G10`) is now a **quality** fix, not a data-loss fix: quarantine
+  the host explicitly — stop the 5-request storm, stop pretending the pick was validated, and tell the
+  user "validation unavailable for this host" instead of silently downgrading. The candidate-side
+  question — *why were 219 of 313 elements never resolved* — moves to `MAIN-02`.
 - **Closes with.** Same listing, same counters, failures gone (or each remaining failure named).
 - **Cost so far.** 3 runs.
 
