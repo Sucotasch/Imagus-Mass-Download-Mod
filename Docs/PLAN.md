@@ -102,6 +102,7 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 | `MAIN-01` | `repro-host-quarantine` — a source-level contract test (cut functions out of `service-core.js` the way `md-unit-smoke` does) that an **open** breaker is read by the filter phase and by the download path, and that a pick decided while the breaker is open is not handed out unvalidated | The regression *is* "the breaker is read in one place only"; a test added afterwards would assert the new topology, not that the old defect is gone |
 | `MAIN-05` | An ending contract: the four `endedBy` values plus "transferred X of Y, unconfirmed Z" consistent with the worker's own counts | The whole point is an honest number; a check written after the fact can only describe whatever the code happened to print |
 | `MAIN-02` | A source-level **candidate-reachability** test, written *with* the guard fix: cut `fileKey`/`candidateKey`/`pickNextCandidate` out of `service-core.js` the way `md-unit-smoke` does (stubbing `globalProcessedUrls`, `getExcludedExtensions`, `isExcludedType`, `cachedPrefs`, `scanInProgress`) and assert that with the item's **own** `images/<md5>.jpg` registered, the `…jpeg` candidate is still reachable — plus the control (nothing registered) and the negative control (a **different** item's key still blocks it). The close is then a before/after **measurement** on the same listing (per-post file count, `_attempts` chain) | The regression *is* "the item's own identity blocks its own chain"; a test written afterwards could only describe the new behaviour. The negative control is what keeps the cross-item dedup guarantee from being silently traded away |
+| `MAIN-06` | None as a unit gate — the close is a page-vs-download comparison on the same URL (the page loads it, `chrome.downloads` reports `SERVER_FAILED`) | There is no pure function to assert; the proof is the refusal itself, measured twice |
 | `MAIN-03` | None — per-site baseline counters only | These are baselines, not fixes |
 | `MAIN-04` | None yet — blocked on `RES-02` | Nothing to prove until the trigger is known |
 
@@ -138,7 +139,7 @@ bug, not the file loss it was framed as, so the order below changes: the *loss* 
    trustworthy*: without it, `MAIN-02`/`MAIN-03` ask "was this scan complete?" of a tally that cannot
    answer. Do it second so the later measurements are honest. (Note: the ground-truth count in `MAIN-02`
    benefits directly — a run whose tail is silently trimmed would undercount what it found.)
-3. **`MAIN-01` — the quality fix (`G1`–`G10`).** Now bounded and understood: the host cannot be
+3. **`MAIN-01` — the quality fix (`G1`–`G10`), and with it `MAIN-06`.** The host cannot be
    validated from the extension origin (Cloudflare challenge), so the fix is to stop the 5-request
    storm and stop silently downgrading to unvalidated picks — not to add a Referer rule, which would
    do nothing. Keep it here because the *harm* is real but quality-only, and because the design already
@@ -392,17 +393,29 @@ this file does not get a research item that does not change a `MAIN` decision (r
     (`.unlazy/rule34-candidates.mjs`; the worker JSON is preserved as `cand-worker-before.json` /
     `cand-worker.json`, the chains as `cand-calls-before.json` / `cand-calls.json`):
 
-    | | before | after |
-    |---|---|---|
-    | posts with a downloaded file | 31 / 42 | **42 / 42** |
-    | outcomes | completed 41, **failed 2**, skipped 69 | completed **42**, **failed 0**, skipped 51 |
-    | completed rows from `/images/` (the real original) | 20 | **42** |
-    | completed rows from `/samples/` (downscaled) | **20** | **0** |
-    | completed URL extensions | jpg 20, png 18, webp 1, mp4 2 — **no `.jpeg`** | **jpeg 24**, png 15, mp4 3 |
-    | picks resolved as `.jpeg` | 0 | 6 |
+    **Two runs each**, because the pre-fix numbers vary widely (31/42 and 19/42), so a single “after” run
+    would not settle anything:
 
-    The fix did not merely recover the lost posts — it removed the **sample downgrade** entirely. Before,
-    half of the successful items were the downscaled sample standing in for the original.
+    | | before #1 | before #2 | after #1 | after #2 |
+    |---|---|---|---|---|
+    | posts with a downloaded file | 31 / 42 | 19 / 42 | **42 / 42** | 38 / 42 |
+    | outcomes | completed 41, failed 2, skipped 69 | completed 28, failed 15, skipped 74 | completed **42**, **failed 0**, skipped 51 | completed 39, failed 2, skipped 82 |
+    | completed rows from `/images/` (the real original) | 20 | — | **42** | 29 |
+    | completed rows from `/samples/` (downscaled) | **20** | — | **0** | 9 |
+    | completed URL extensions | jpg 20, png 18, webp 1, mp4 2 — **no `.jpeg`** | — | **jpeg 24**, png 15, mp4 3 | jpeg 12, png 16, jpg 9, mp4 1, webp 1 |
+    | picks resolved as `.jpeg` (`findBestUrlWithValidation`) | 0 | — | 6 | 12 |
+
+    The fix did not merely recover the lost posts — it removed the **sample downgrade** as the normal
+    outcome. Before, **half** of the successful items were the downscaled sample standing in for the
+    original; after, `.jpeg` originals appear at all (0 → 24/12), and in the best run every single
+    completed item came from `/images/`.
+  - **The residual is NOT the pick mechanism — measured 2026-10-08 (`MAIN-06`).** In after-run #2 the
+    nine items that still ended as samples were traced row by row: their chains walk
+    `.jpg → .jpeg → .png → sample`, i.e. **the `.jpeg` original IS now tried** (the fix working), and the
+    download of it interrupts as `SERVER_FAILED` while `.jpg`/`.png` correctly 404. A page-side load test
+    then proved all nine originals are reachable from the page (`.jpeg` for 8, `.png` for 1), and a
+    single-slash vs double-slash test proved the synthesised URL shape is not the cause. Filed as
+    `MAIN-06`.
   - **Harness lesson, recorded in `knowledge.md` §12.** Chrome served the **old compiled service-worker
     script** from the lab profile's `Code Cache` / `Service Worker/ScriptCache` after the source change,
     so the first “after” run still ran the unpatched function (`hasOwnKeys:false`). Changing a worker file
@@ -471,6 +484,39 @@ this file does not get a research item that does not change a `MAIN` decision (r
   `S2`/`S3`, so if that is ever seen, that is the moment to reconsider, not now (rule 1).
 
 ---
+
+### MAIN-06 — rule34 originals: the browser download of `/images/…` interrupts while the page loads it
+- **Symptom.** An item whose real original is `wimg.rule34.xxx//images/<shard>/<md5>.jpeg` ends up
+  downloading the **downscaled** `/samples/…` instead. Not a lost file — a quality loss.
+- **Found 2026-10-08** while closing `MAIN-02`: in after-run #2 nine of 39 completed items ended as
+  samples, and they were traced row by row (`.unlazy/cand-worker.json`, `.unlazy/paired-after2.log`).
+- **What is already excluded (measured, do not re-derive):**
+  * **Not the pick mechanism.** Each of the nine carries a single 8-candidate chain whose pick is
+    `images/<md5>.jpg` (`reason: breaker-open (unvalidated, wimg.rule34.xxx)`), and the run's rows show
+    it walking `.jpg → .jpeg → .png`, i.e. the `.jpeg` candidate is now reached
+    (`MAIN-02`'s fix; before it, `.jpeg` was never in the attempt chain at all).
+  * **Not a missing original.** A page-side `<img>` load test of all nine md5s
+    (`.unlazy/rule34-sample-check.mjs`, `sample-check.log`) found a reachable full-size image for
+    **9 of 9** — `.jpeg` for 8 (`2304x1536`, `3648x2496`, …), `.png` for 1 (`2006x1334`) — all far larger
+    than the `850x…` sample.
+  * **Not the URL shape.** `wimg.rule34.xxx/images/…` (single slash, what the sieve synthesises) and
+    `wimg.rule34.xxx//images/…` (double slash, what the page links) behave **identically** on the page
+    (`.unlazy/rule34-slash-check.mjs`, `slash-check.log`: 5/6 jpeg and 1/6 png for *both* forms — the
+    odd ones out are simply the posts stored under the other extension).
+- **The defect, stated precisely.** The **same URL string** that the page loads successfully is handed to
+  `chrome.downloads.download` (`method: BROWSER`, `source: group`) and Chrome reports
+  `interrupted: SERVER_FAILED`; the item then advances and the `/samples/…` download from the *same host*
+  succeeds. `.jpg`/`.png` on these posts report `SERVER_BAD_CONTENT` (= HTTP 404), which is correct —
+  those files genuinely do not exist — so the region is specific to the file that DOES exist.
+- **Why this looks like `MAIN-01`'s family.** An extension-origin fetch is refused while the page's fetch
+  is served, and the mod already has two mechanisms aimed at exactly that shape: the page-context
+  fetch tier (`mdSaveViaOffscreen` / `downloadWithReferer`) and the filter-phase referer-retry. Neither is
+  wired to a **download-stage** `SERVER_FAILED` today — `advanceToNextCandidate` just moves on.
+- **Next.** Measure the refusal at the download stage (does the request carry the page Referer? does the
+  offscreen/page-context fetch of the same URL succeed?), then decide whether `SERVER_FAILED` on a
+  candidate that a page-context fetch *can* serve should route through the existing tier instead of
+  advancing. Do it with `MAIN-01`, not before it — same host, same root question.
+- **Cost so far.** 2 page-side probes (both cheap), no product change.
 
 ## RESEARCH — unlocks a decision
 
