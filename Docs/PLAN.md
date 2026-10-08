@@ -259,14 +259,26 @@ this file does not get a research item that does not change a `MAIN` decision (r
     | 3 — `051f07e8…`, `da48ad1b…`, `020e34bb…` | **`.png` exists** | a `.png` candidate is the terminal failure |
     | 4 — `8af0a775…`, `26f03721…`, `10d2fd86…`, `ce5a80dd…` | **`.jpeg` exists** | recorded rows carry `.jpg`/`.png` (+ samples), no `.jpeg` — **but see the correction below** |
 
-  - **Cause A was a hypothesis and its evidence has been withdrawn (same day).** The first reading was
-    "the chain never tries `.jpeg`", from the rows recorded for those posts. **But the failure text says
-    "all 8 (or 10) candidate URLs failed"**, so the chain held more candidates than the four rows show —
-    and the progress table **evicts superseded rows first** (`mdEvictOldestRows` ranks superseded `0`; see
-    `RETRY-2`), so the recorded rows are an unreliable sample of what was tried. **Nothing may be fixed on
-    this reading.** Note also that the sieve *does* emit `.jpeg` (`Rule34.xxx-x-q-p`'s `to` uses
-    `#jpg jpeg png gif#`) and `candidateKey` preserves the extension, so the omission — if real — is in
-    neither of those places.
+  - **Cause A — re-established properly 2026-10-08 (second chain run with the row cap raised).** The
+    first reading was withdrawn because the table evicts superseded rows first. That was fixed the right
+    way: raise `cachedPrefs.da.maxProgressRecords` **in memory for the run only** (`100 → 20000`, no file
+    change), then read the chain. Result (`.unlazy/chain.log`, `chain-worker.json`):
+    - Failing items have exactly **4 rows**: `<md5>.jpg` and `<md5>.png` under `images/` and under
+      `samples/`; **`_candidateCount` is 8** — i.e. those 4 files × 2 HD variants.
+    - **The arithmetic now closes exactly.** The sieve's own list is `#jpg jpeg png gif#` (4 forms per
+      path). `.gif` is dropped **by design** — `da.excludedExtensions` defaults to `.svg, .ico, .gif`.
+      `.jpeg` is then collapsed into `.jpg` by the `.jpeg → .jpg` identity normalisation (`fileKey` in the
+      SW, `_normalizeUrlKey` in the content — the stage-4a contract). 4 → 3 → 2, × 2 paths = 4 files,
+      × 2 HD variants = the 8 of `_candidateCount`. **Nothing is unexplained.**
+    - **`.jpeg` arrives only from the page, never from synthesis:** all 5 `.jpeg` rows in the run carry a
+      `?<pid>` query (the post page's true URL) and **all 5 completed**; there are **0** synthesized
+      `.jpeg` candidates.
+    - **The defect, stated precisely:** the identity key maps `.jpeg`→`.jpg`, so the *real* file and a
+      *guessed* `.jpg` are treated as the same item — whichever is seen first wins. When the guess wins,
+      every candidate for an `.jpeg`-stored original is dead and the item fails. (Which of the two is
+      seen first is the one link not yet measured; the counts fit it in all 15 failures.)
+    - This is a **resolution/identity defect — `MAIN-02`'s ground, and it affects any host that stores
+      originals under `.jpeg`.**
   - **Cause B (3 posts) rests on solid ground.** For those posts the load test proves the target exists,
     and the terminal row is a transfer failure (`SERVER_FAILED` / "HTTP error other than 403/404 — often
     429"). That is fetch/download-stage, separate from the pick: 429 rate limiting, referer, or size.
