@@ -118,17 +118,27 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 
 ### Priority order
 
-1. **`MAIN-01` — the data loss.** The owner's actual complaint ("part of the media never downloads"),
-   and the one path that is provably wrong in the code today. Everything it needs already exists: it
-   had 3 runs, the failure signature is fully captured, the fix is designed (`G1`–`G10`), and the gate
-   is small. First because it is the only item losing files.
+**Revised 2026-10-08 after the `MAIN-01` measurement** (see `MAIN-01` step 2). `HOST-1` is a quality
+bug, not the file loss it was framed as, so the order below changes: the *loss* is localized first
+(cheap, and it decides whether there is a loss at all), and the two bounded quality fixes follow.
+
+1. **`MAIN-02` — localize the loss before fixing anything.** The owner's complaint ("part of the media
+   never downloads") no longer points at validation: the download path is not challenged. It points at
+   the **219 of 313 elements that were never resolved to a URL**. But "unresolved" is *not yet proven*
+   to mean "media we failed to get" — a rule34 listing is full of nav/ads/related links with no media,
+   so most of the 219 may be legitimately empty. **First step is one cheap ground-truth measurement, no
+   product change:** count from the page how many real posts/media the listing holds and compare with
+  313 candidates / 91 resolved / 28 downloaded. Only if a gap survives does `MAIN-02` become a loss
+   item; otherwise it drops back to the scan-cost item it was.
 2. **`MAIN-05` — the honest ending.** Cheap, unconditional, and it *makes every other run's numbers
    trustworthy*: without it, `MAIN-02`/`MAIN-03` ask "was this scan complete?" of a tally that cannot
-   answer. Do it second so the later measurements are honest. (Note: `MAIN-01`'s close-out itself
-   benefits — a run whose failures are silently trimmed would undercount them.)
-3. **`MAIN-02` — scan cost.** The second complaint, but expensive and risky (the walk scheduler; one
-   step at a time, a live run after each). It has its baseline run already, so it starts from data
-   rather than from design.
+   answer. Do it second so the later measurements are honest. (Note: the ground-truth count in `MAIN-02`
+   benefits directly — a run whose tail is silently trimmed would undercount what it found.)
+3. **`MAIN-01` — the quality fix (`G1`–`G10`).** Now bounded and understood: the host cannot be
+   validated from the extension origin (Cloudflare challenge), so the fix is to stop the 5-request
+   storm and stop silently downgrading to unvalidated picks — not to add a Referer rule, which would
+   do nothing. Keep it here because the *harm* is real but quality-only, and because the design already
+   exists; do not let it jump the loss question.
 4. **`MAIN-03` — breadth across the owner's real sites.** Real value, but it needs the two missing
    harness pieces above and produces baselines rather than fixes. Do it once `MAIN-01`/`MAIN-02` have
    shown the pipeline is sound on a hard site.
