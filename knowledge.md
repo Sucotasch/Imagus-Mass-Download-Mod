@@ -891,3 +891,17 @@ session's own clear, which cost one run to learn) and letting the worker die any
 a run can silently execute the OLD file — clear `Default/Code Cache` + `Default/Service Worker/ScriptCache`
 before any before/after, then assert what the worker actually has
 (`SWD_ASSERT_FN=mdStopWins` → `worker has: ["mdStopWins=function"]`).**
+**MAIN-01 (2026-10-08) — a host that refuses extension-origin validation must not be re-probed forever.**
+`wimg.rule34.xxx` answers 403 `cf-mitigated: challenge` to the extension's own fetch in 44–232 ms — GET
+and HEAD, thumbnail and full-size, with every header a real page sends — while the page's own `<img>` load
+of the same URL succeeds, i.e. validation of that host is impossible and no header fix exists. The cost was
+the cooldown's DESIGN: it was a constant 30 s, and expiring it wiped the host's whole slate, so every 30 s
+window bought another 8 groups × 5 requests of guaranteed 403s, and every pick that came out of it was
+marked `breaker-open (unvalidated, …)`. Each successive trip of the same host now doubles its own cooldown
+(30 s → 60 → 120 → 240 → 480 → 600 s cap), the trip count SURVIVES the cooldown being served, and it is
+released by the one thing that proves recovery — a validation that actually came back
+(`mdBreakerRecordSuccess`). The pick path is untouched on purpose: an open breaker still hands over the
+same heuristic `ordered[0]`, so this change removes requests and nothing else. `md-unit-smoke` executes the
+breaker with a stubbed `Date.now` and asserts the per-host isolation (D-7), the ceiling, prune keeping the
+escalation memory, the release on success, and the cooldown the log line claims — a mutation check (smoke
+against the unfixed file) fails as it must.
