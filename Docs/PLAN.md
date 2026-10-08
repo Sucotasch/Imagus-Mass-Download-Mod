@@ -34,11 +34,14 @@ Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what 
 `S3″` dropped (`Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` §15). Recorded as `MAIN-05` and the
 conditional block under it. **Decided is not started** — implementation waits for the owner's word.
 
-**Still needs a decision — none of it blocks the MAIN work:**
-- The fate of the duplicate `src-mv3/` tree (archive or delete, `Audit` §6.3). Cosmetic; the
-  `README.DEAD.txt` banner already stands.
-- Whether a manual "Save findings list" button is worth having — the only surviving use of the dropped
-  `S3″`. Low priority, and it may never be worth the UI.
+**Decided 2026-10-08 by the owner — no longer open:**
+- The duplicate `src-mv3/` tree: **archive** (not delete), so the tree leaves the root instead of
+  sitting there as a parallel source tree. Consequence checked: no gate or script references it —
+  `tools/`/`scripts/` grep clean — only `AGENTS.md` does (3 lines), to be updated with the move. The
+  one detail still being fixed is the form (in-repo `archive/` move vs a zip); nothing depends on it.
+- The manual "Save findings list" button (`S3″`): the owner did not know what it was. Explained
+  below — it saves the **list of what the page found** (URLs), not the media, and cannot be read back;
+  the existing **Save Log** already exports a richer version. Recommendation: drop it.
 
 **The plan is fully assembled when:** every `MAIN` item names a symptom, evidence **and a gate**; every
 open audit item is either in `MAIN`, in `RESEARCH` with the decision it unlocks, or in `B` marked
@@ -210,8 +213,17 @@ this file does not get a research item that does not change a `MAIN` decision (r
   un-ACKed tail) + `S4`. The real fix for the residual is *when* the ACK is sent — after
   `mdFlushSession()`, not after `filterQueue.push` — which is a more expensive form of `S2`. Do not
   build it before a measurement shows the loss.
-- **Dropped:** `S3′` (page-origin `chrome.storage`) and `S3″` (append a file on disk). Owner-agreed;
-  the only surviving trace of `S3″` is the parked "Save findings list" question below.
+- **Dropped:** `S3′` (page-origin `chrome.storage`) and `S3″` (a real file on disk). Owner-agreed.
+  **What `S3″` was, since the name is opaque** — and what the "Save findings list" button would save:
+  the page takes the **list of media it found** (the URLs of the candidates it discovered/queued) and
+  writes it to a real file in Downloads (a `Blob` + `<a download>`, or `chrome.downloads` on a blob
+  URL). It is **not** the media and **not** a download, and the extension **cannot read it back**
+  (`fetch('file://…')` needs a user-granted file access; `chrome.downloads` gives the name, not the
+  contents) — so it recovers nothing automatically. Its only value is a manual copy of the found URLs
+  to fall back on, and the existing **Save Log** already exports a richer version of the same thing
+  (the worker's item table: URL, status, reason, filters, methods). **Recommendation: drop** — its one
+  unique case, "the page found more than the worker accepted", is exactly the unmeasured trigger for
+  `S2`/`S3`, so if that is ever seen, that is the moment to reconsider, not now (rule 1).
 
 ---
 
@@ -316,7 +328,7 @@ out wrong and are corrected or removed — `PANEL-1` and `PIXIV-1` are **fixed**
 | §6.1 | ~~Queue persistence across a worker death~~ — **STALE as written: it is implemented.** `chrome.storage.session` holds `mdSessionSnapshot`; `mdSchedulePersist()` fires on every queue push and row change, `mdApplySnapshot()` runs on the next worker. FIX-7 / `RESUME-1` (2026-09-13) landed it — the audit's "проверено 2026-09-11: не реализована" predates that | `Audit` §6.1 needs its status corrected | What genuinely remains is the **loss window**: a death between Chrome writing a file and the ≤1 s debounced snapshot. That is `DUP-1`'s cause and is mitigated by `mdAdoptIfAlreadyDownloaded` |
 | §7.2 | Log loss on worker death: an item whose final status never reached the worker has no row anywhere. The snapshot restores queues and rows, but the terminal write can still be lost | partly addressed by §6.1's snapshot | Same ≤1 s window as `DUP-1-live`; no separate design needed once that is measured |
 | `R-07` | Top-frame guard in the content `downloadAll` | `Audit` §3 | Open **by decision**; revisit on a bug report |
-| §6.3 | Fate of the duplicate `src-mv3/` tree (archive or delete) | `Audit` §6.3 | Owner decision; the `README.DEAD.txt` banner stands |
+| §6.3 | Fate of the duplicate `src-mv3/` tree (archive or delete) | `Audit` §6.3 | **Decided 2026-10-08: archive** (owner). No tool or script references `src-mv3/`; only `AGENTS.md` does (3 lines), updated with the move |
 | `BT-09`, `BT-12` | Deliberately untouched / needs a live FF+pixiv run | `Audit` §9.6 | `BT-12` needs the run |
 | — | Live regression run after the `BT` batch: hover, e-hentai `/g/`, referer-retry > 10 MiB | `Audit` §9.6 | Never done |
 | — | FF e-hentai Gallery Save (`REPORT_GALLERY_BATCH` §27); FF pixiv — zero log | `Audit` §9.5 | Live runs on Firefox |
