@@ -102,7 +102,7 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 | `MAIN-01` | `repro-host-quarantine` — a source-level contract test (cut functions out of `service-core.js` the way `md-unit-smoke` does) that an **open** breaker is read by the filter phase and by the download path, and that a pick decided while the breaker is open is not handed out unvalidated | The regression *is* "the breaker is read in one place only"; a test added afterwards would assert the new topology, not that the old defect is gone |
 | `MAIN-05` | An ending contract: the four `endedBy` values plus "transferred X of Y, unconfirmed Z" consistent with the worker's own counts | The whole point is an honest number; a check written after the fact can only describe whatever the code happened to print |
 | `MAIN-02` | A source-level **candidate-reachability** test, written *with* the guard fix: cut `fileKey`/`candidateKey`/`pickNextCandidate` out of `service-core.js` the way `md-unit-smoke` does (stubbing `globalProcessedUrls`, `getExcludedExtensions`, `isExcludedType`, `cachedPrefs`, `scanInProgress`) and assert that with the item's **own** `images/<md5>.jpg` registered, the `…jpeg` candidate is still reachable — plus the control (nothing registered) and the negative control (a **different** item's key still blocks it). The close is then a before/after **measurement** on the same listing (per-post file count, `_attempts` chain) | The regression *is* "the item's own identity blocks its own chain"; a test written afterwards could only describe the new behaviour. The negative control is what keeps the cross-item dedup guarantee from being silently traded away |
-| `MAIN-06` | None as a unit gate — the close is a page-vs-download comparison on the same URL (the page loads it, `chrome.downloads` reports `SERVER_FAILED`) | There is no pure function to assert; the proof is the refusal itself, measured twice |
+| `MAIN-06` | A source-level **interrupt-classification** test, written *with* the retry: cut the interrupt branch's decision out and assert that a retryable reason (`SERVER_FAILED`) schedules a bounded same-URL retry while `SERVER_BAD_CONTENT` (a real 404) still advances — plus the live before/after (`completed rows from /samples/` → 0) | The regression is "every interrupt advances"; a test written afterwards could only describe the retry. The 404 arm is the negative control that stops the retry from swallowing genuinely dead candidates |
 | `MAIN-03` | None — per-site baseline counters only | These are baselines, not fixes |
 | `MAIN-04` | None yet — blocked on `RES-02` | Nothing to prove until the trigger is known |
 
@@ -126,28 +126,37 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 bug, not the file loss it was framed as, so the order below changes: the *loss* is localized first
 (cheap, and it decides whether there is a loss at all), and the two bounded quality fixes follow.
 
-1. **`MAIN-02` — the loss is localized and its cause is PROVEN (2026-10-08); the next step is the fix.**
-   The "219 of 313 unresolved" was **not** the loss (a rule34 listing holds ~8 DOM elements per post:
-   nav/ads/related). The real loss is the hard failures, and the cause is measured, not inferred: the
-   group's first pick (`images/<md5>.jpg` — an extension this host never serves) is registered in
-   `globalProcessedUrls` before it is known to work, and the fallback then discards its own `.jpeg` twin
-   as a `fileKey` duplicate of the URL that just failed. See `MAIN-02` → *Root cause*. The fix is a
-   single guard in `pickNextCandidate`, proven by the same two arms (a deterministic in-worker check and
-   a paired live run). Delay "unresolved"/scan-cost analysis until the guard is fixed, so its numbers
-   describe a pipeline that no longer silently loses the file.
+1. **`MAIN-02` — CLOSED 2026-10-08 (fixed and proven).** The "219 of 313 unresolved" was **not** the
+   loss (a rule34 listing holds ~8 DOM elements per post: nav/ads/related). The real loss was two
+   defects: (a) the group's first pick (`images/<md5>.jpg` — an extension this host never serves) was
+   registered in `globalProcessedUrls` before it was known to work, and the fallback then discarded its
+   own `.jpeg` twin as a `fileKey` duplicate of the URL that had just failed — **fixed** in
+   `pickNextCandidate`, in both trees, with a gate written alongside it
+   (`tools/md-unit-smoke.mjs` → *candidate reachability locks*, which fails on the unpatched source);
+   and (b) a transient download interrupt downgrading the item — now `MAIN-06`. Live before/after on the
+   same listing: posts with a file 31/42 → **42/42** (38/42 on the second run), `completed rows from
+   /samples/` 20 → **0** (9), `.jpeg` originals 0 → 24 (12). See `MAIN-02` → *Fix applied and proven*.
+   The scan-cost questions (`unresolved`/`tWalkMs`, `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md`) stay
+   parked until `MAIN-06` is done, so their numbers describe a pipeline that no longer drops files.
 2. **`MAIN-05` — the honest ending.** Cheap, unconditional, and it *makes every other run's numbers
    trustworthy*: without it, `MAIN-02`/`MAIN-03` ask "was this scan complete?" of a tally that cannot
    answer. Do it second so the later measurements are honest. (Note: the ground-truth count in `MAIN-02`
    benefits directly — a run whose tail is silently trimmed would undercount what it found.)
-3. **`MAIN-01` — the quality fix (`G1`–`G10`), and with it `MAIN-06`.** The host cannot be
-   validated from the extension origin (Cloudflare challenge), so the fix is to stop the 5-request
-   storm and stop silently downgrading to unvalidated picks — not to add a Referer rule, which would
-   do nothing. Keep it here because the *harm* is real but quality-only, and because the design already
-   exists; do not let it jump the loss question.
-4. **`MAIN-03` — breadth across the owner's real sites.** Real value, but it needs the two missing
+3. **`MAIN-06` — stop letting a TRANSIENT interrupt downgrade the item.** Newly measured (2026-10-08):
+   `SERVER_FAILED` does not reproduce in isolation or at concurrency 6, i.e. it is transient, yet the
+   interrupt branch always moves the chain FORWARD — so a one-off server/rate event silently replaces a
+   reachable original with the downscaled sample (9 of 39 completed rows in after-run #2). This is the
+   remaining half of the owner's rule34 complaint and the fix is bounded to one branch, so it goes
+   before the validation storm.
+4. **`MAIN-01` — the quality fix (`G1`–`G10`).** The host cannot be validated from the extension
+   origin, and the four probes of `MAIN-06` now **prove** no header fix exists (adding every header the
+   page sends, including all client hints and a real Referer, leaves the 403 untouched). So the fix is
+   to stop the 5-request storm and to stop handing out unvalidated picks — not a DNR rule. Quality-only
+   harm, design already exists.
+5. **`MAIN-03` — breadth across the owner's real sites.** Real value, but it needs the two missing
    harness pieces above and produces baselines rather than fixes. Do it once `MAIN-01`/`MAIN-02` have
    shown the pipeline is sound on a hard site.
-5. **`MAIN-04` — the self-opening second session.** Blocked on `RES-02`, and `RES-01` says the same
+6. **`MAIN-04` — the self-opening second session.** Blocked on `RES-02`, and `RES-01` says the same
    event costs nothing while it does not touch files. Lowest priority by the plan's own rules.
 
 **Research folded into the line, not a separate phase:** the `MAIN-01` "why does `wimg.rule34.xxx`
@@ -485,7 +494,7 @@ this file does not get a research item that does not change a `MAIN` decision (r
 
 ---
 
-### MAIN-06 — rule34 originals: the browser download of `/images/…` interrupts while the page loads it
+### MAIN-06 — rule34 originals: a TRANSIENT interrupt downgrades the item to the sample
 - **Symptom.** An item whose real original is `wimg.rule34.xxx//images/<shard>/<md5>.jpeg` ends up
   downloading the **downscaled** `/samples/…` instead. Not a lost file — a quality loss.
 - **Found 2026-10-08** while closing `MAIN-02`: in after-run #2 nine of 39 completed items ended as
@@ -516,7 +525,45 @@ this file does not get a research item that does not change a `MAIN` decision (r
   offscreen/page-context fetch of the same URL succeed?), then decide whether `SERVER_FAILED` on a
   candidate that a page-context fetch *can* serve should route through the existing tier instead of
   advancing. Do it with `MAIN-01`, not before it — same host, same root question.
-- **Cost so far.** 2 page-side probes (both cheap), no product change.
+- **⚠️ UPDATE (later the same day) — the “origin refused” reading above is WRONG, and four controlled
+  probes killed it.** The section above is kept only as the trail of how it was narrowed; the measured
+  conclusion is below.
+  * **The worker can download the very URL** (`chrome.downloads.download` from the extension worker on
+    `wimg.rule34.xxx//images/3942/<md5>.jpeg` → `state: complete`, **975,613 bytes on disk**;
+    `.unlazy/dlpath.log`). So it is not the extension's origin, not the host, not the URL.
+  * **Not a header.** A CDP header diff captured what each side really sends
+    (`.unlazy/headerdiff.log`): the page's `<img>` carries `Referer: https://rule34.xxx/`,
+    `Accept-Language`, `sec-ch-ua`/`-mobile`/`-platform` and had `cf_clearance` among its cookies; the
+    worker's fetch carried `Referer: ""` and none of the rest. Then every group was added to the
+    worker's request via `Network.setExtraHTTPHeaders` — one group at a time and all together — and
+    **none flipped the 403** (`.unlazy/headerdiff2.log`). `MAIN-01`'s conclusion that no header fix
+    exists is therefore now **proven by a controlled experiment**, not inferred from a single test.
+  * **Not the URL shape.** Single-slash (`/images/…`, what the sieve emits) and double-slash
+    (`//images/…`, what the page links) both complete through `chrome.downloads` alone
+    (`.unlazy/conc.log`, identical 975,613 bytes). The earlier page-side slash test already agreed.
+  * **Not plain concurrency.** Six different real originals at once, twice: **5 of 6 completed in both
+    waves**, and the one failure was `SERVER_BAD_CONTENT` — a genuine HTTP 404, because that post is
+    the one stored as `.png`. **Zero `SERVER_FAILED` under concurrency 6.**
+- **The defect, stated precisely (measured).** `SERVER_FAILED` is a **transient** server/rate event, not
+  a dead candidate — it did not reproduce in isolation or under load, and the same URL succeeds on
+  retry. But the interruption handler treats every interrupt the same way: it erases the stub, gives the
+  URL one extension-origin fetch (`mdTryOffscreenDownload` — which this host challenges), then calls
+  `advanceToNextCandidate` (`mass-download/service-core.js` ~:3928). **The chain therefore moves FORWARD
+  on a retryable failure.** For a `.jpeg` post that means `.png` (real 404) and then the **downscaled
+  sample**; where the sample is missing it is a total loss. `SERVER_BAD_CONTENT` (a real 404) *should*
+  advance — that part is correct; only the retryable class is mishandled.
+  * Fix direction: a **retryable** interrupt should re-try the SAME URL (bounded, with the existing
+    watchdog/slot discipline) before the chain downgrades; a 404 keeps advancing. That is a bounded
+    change to one branch, and the same before/after harness proves it (completed rows from `/samples/`
+    should go to 0, as they already did in after-run #1).
+  * **Not a piece of `MAIN-01` after all** — `MAIN-01` is the filter-phase validation storm; this is the
+    download-stage interruption branch. They share only the host.
+- **Next.** Measure the retry class in a live run (does a retried same-URL download succeed after a
+  `SERVER_FAILED`?), then implement the bounded retry with its own gate — the retry must not fight the
+  watchdog, the slot release, or `_interruptHandled` (one verdict per download, which is what stops a
+  double advance today).
+- **Cost so far.** 5 probes, no product change. (`.unlazy/dlpath.log`, `headerdiff.log`,
+  `headerdiff2.log`, `conc.log`, `slash-check.log`.)
 
 ## RESEARCH — unlocks a decision
 
