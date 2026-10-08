@@ -53,6 +53,80 @@ capability that does not exist yet. Two rules come from this project's own histo
 - **Harness freeze (rule 3).** The `ext-dev-loop` loop is good enough for live runs; a new lab
   capability must be justified by a specific `MAIN` item blocked without it — not by convenience.
 
+**Assembled 2026-10-08.** Every open audit item is now in `MAIN`, in `RESEARCH` with the decision it
+unlocks, or in `B` marked closed; every `MAIN` item names a symptom, evidence and the gate it closes
+with. The only unanswered questions left are the two owner preferences above, and neither gates a
+`MAIN` item — so the capability/priority pass below is done and the plan is complete for this phase.
+
+---
+
+## Capability and priority — 2026-10-08
+
+For each `MAIN` item: what it needs before it can start, and whether that thing already exists. This
+is the answer to "what research and tooling does the main work require", and the priority order to
+do it in.
+
+### What already exists (do not rebuild)
+
+- **A live run.** The `ext-dev-loop` loop + the CfT 137 scratch profile (userScripts grant open,
+extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the worker's own
+  diagnostics *in session* (`.unlazy/rule34-{ask,log,diag}.json`). Every `MAIN` item below that says
+  "a run" means this loop — no new capability.
+- **The four standing gates.** `md-unit-smoke` (dedup contract both trees + MIME/ext), `md-marker-check`
+  (5 marker sections byte-synced, both trees), `md-ff-delta` (exactly 3 canonical file deltas),
+  `_chk_defaults`. They cover the contracts the `MAIN` fixes can *break*, not the behaviours they
+  *change*. Run them with every one of those fixes; they are not the close-out.
+- **In-session diagnostics.** `scanDiagnostics` already carries `tWalkMs`/`groupsMs`/`downloadMs`/
+  `unresolved`, `byHost`/`byMethod`/`bySource`/`byErr`, `pickReason`, `candidateCount`, breaker logs.
+  This is what `MAIN-01`/`MAIN-02` close against.
+
+### What must be written (with the fix, never after it)
+
+| Item | Gate needed | Why it cannot be written later |
+|---|---|---|
+| `MAIN-01` | `repro-host-quarantine` — a source-level contract test (cut functions out of `service-core.js` the way `md-unit-smoke` does) that an **open** breaker is read by the filter phase and by the download path, and that a pick decided while the breaker is open is not handed out unvalidated | The regression *is* "the breaker is read in one place only"; a test added afterwards would assert the new topology, not that the old defect is gone |
+| `MAIN-05` | An ending contract: the four `endedBy` values plus "transferred X of Y, unconfirmed Z" consistent with the worker's own counts | The whole point is an honest number; a check written after the fact can only describe whatever the code happened to print |
+| `MAIN-02` | None as a unit gate — the close is a before/after **measurement** on the same listing (`tWalkMs`, `unresolved`) | A perf assertion would freeze an estimate, not a requirement |
+| `MAIN-03` | None — per-site baseline counters only | These are baselines, not fixes |
+| `MAIN-04` | None yet — blocked on `RES-02` | Nothing to prove until the trigger is known |
+
+### Harness capability genuinely missing (and whether it is justified)
+
+- **`MAIN-03` needs the Pagetual flow and per-site session state.** The owner's sites are driven with
+  the Pagetual userscript (appends later pages) and login-dependent galleries (e-hentai `/g/`). To
+  baseline them the scratch profile must install the userscript and hold the session. **Justified**
+  by `MAIN-03`; it is the one capability a `MAIN` item is blocked on. Build it when `MAIN-03` starts,
+  not before.
+- **`MAIN-05` needs a way to force an abnormal ending.** `page-silent` / `no-initiator` cannot be
+  observed on a run that ends cleanly; the close-out run must be able to close the page or kill the
+  worker mid-scan and keep the worker's final numbers. A minimal version (close the tab, then read the
+  worker) probably already fits the loop — confirm before writing anything. **Justified** by `MAIN-05`.
+- **`RES-02` needs SW sender instrumentation**, but that is a few lines of diagnostics inside
+  `handleOpenDownloadProgress`, not a harness capability. Not a scope item.
+
+### Priority order
+
+1. **`MAIN-01` — the data loss.** The owner's actual complaint ("part of the media never downloads"),
+   and the one path that is provably wrong in the code today. Everything it needs already exists: it
+   had 3 runs, the failure signature is fully captured, the fix is designed (`G1`–`G10`), and the gate
+   is small. First because it is the only item losing files.
+2. **`MAIN-05` — the honest ending.** Cheap, unconditional, and it *makes every other run's numbers
+   trustworthy*: without it, `MAIN-02`/`MAIN-03` ask "was this scan complete?" of a tally that cannot
+   answer. Do it second so the later measurements are honest. (Note: `MAIN-01`'s close-out itself
+   benefits — a run whose failures are silently trimmed would undercount them.)
+3. **`MAIN-02` — scan cost.** The second complaint, but expensive and risky (the walk scheduler; one
+   step at a time, a live run after each). It has its baseline run already, so it starts from data
+   rather than from design.
+4. **`MAIN-03` — breadth across the owner's real sites.** Real value, but it needs the two missing
+   harness pieces above and produces baselines rather than fixes. Do it once `MAIN-01`/`MAIN-02` have
+   shown the pipeline is sound on a hard site.
+5. **`MAIN-04` — the self-opening second session.** Blocked on `RES-02`, and `RES-01` says the same
+   event costs nothing while it does not touch files. Lowest priority by the plan's own rules.
+
+**Research folded into the line, not a separate phase:** the `MAIN-01` "why does `wimg.rule34.xxx`
+validation fail wholesale" question and `RES-02`'s sender hunt are both *inside* their `MAIN` item —
+this file does not get a research item that does not change a `MAIN` decision (rule 1).
+
 ---
 
 ## MAIN — product work
