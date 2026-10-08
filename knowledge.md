@@ -873,3 +873,21 @@ again, the end-of-generation record needs a mechanism that does not depend on `o
 **Reproduce:** `SWD_GROUP=X SWD_RUNS=6 node .unlazy/swd-ab.mjs` (add `SWD_NATIVE=1` for the
 no-debugger arm, `SWD_EVENTS=1` for the event ring, `SWD_PREFS='{"maxConcurrentDownloads":1}'` /
 `SWD_PREFS_ALT` + `SWD_PREFS_ALT_RUN` for a within-launch A/B), then `node .unlazy/swd-analyze.js`.
+
+**STOP-1 (fixed 2026-10-08) — a Stop that lands in the death window was lost, and that is the one part of
+this that cost the user control.** Everything a stop did died with the worker that received it: `userCanceled`
+lives in memory, and the snapshot drop is an ASYNC storage remove that a dying worker never finishes, so the
+next generation resumed the run from the last flushed snapshot. The stop is now written FIRST
+(`MD_STOP_KEY` in `chrome.storage.session`), cleared only when a NEW session starts, and the restore
+honours it through the ONE cancel path (`handleStopScanning()`), decided by a pure `mdStopWins(stopRec, snap)`
+that the smoke test executes. The timestamp comparison matters: without it a stop left over from an earlier
+run would cancel a session the user never stopped.
+
+Verified live by planting that record (after the session started — planting it earlier is erased by the new
+session's own clear, which cost one run to learn) and letting the worker die anyway:
+`swd-E5b` (no record) → after 2 deaths the run Finished, 64 downloaded, `canceled 0`;
+`swd-E5c` (record) → both deaths ended as `Stopped … 37 item(s) canceled` / `26 item(s) canceled`.
+**And a reminder that cost the first two attempts: the profile caches the COMPILED worker script (§12), so
+a run can silently execute the OLD file — clear `Default/Code Cache` + `Default/Service Worker/ScriptCache`
+before any before/after, then assert what the worker actually has
+(`SWD_ASSERT_FN=mdStopWins` → `worker has: ["mdStopWins=function"]`).**

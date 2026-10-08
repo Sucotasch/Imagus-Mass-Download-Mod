@@ -503,6 +503,10 @@ function resetMassDownloadSession() {
     mdWrittenIndex = null;
     userCanceled = false;
     completionNotified = false;
+    // A NEW session must not inherit the previous run's Stop: the record survives a
+    // stopped run on purpose (so a restore cannot undo it), so it is cleared here,
+    // where a run deliberately begins.
+    mdClearStopped();
     // Audit N-12: a tripped circuit breaker must not leak from the previous
     // session into this one. D-7: the state is per host now, so the reset is
     // one call over the whole map.
@@ -691,6 +695,9 @@ function handleReportSkippedItem(msg) {
 }
 
 function handleStopScanning() {
+    // FIRST, before the async snapshot drop below can be cut off: the fact that the
+    // user stopped this session is what a later generation must not undo.
+    mdMarkStopped();
     scanInProgress = false;
     contentScanDone = true;
     userCanceled = true;
@@ -940,6 +947,40 @@ function workerMarker() {
 // Retry re-runs the normal pipeline for it.
 const MD_SNAPSHOT_KEY = 'mdSessionSnapshot';
 const MD_SNAPSHOT_VERSION = 1;
+// The user's own Stop must survive the window it lands in (2026-10-08).
+// The worker dies mid-download; a Stop received in that window is SWALLOWED: the
+// next generation restores the session from the last flushed snapshot and runs it
+// to `done`, because everything the stop did — `userCanceled` is in-memory, and
+// mdDropSessionSnapshot() is an ASYNC remove that a dying worker never completes —
+// dies with the worker that received it. Live proof: paired-ending-stop2/3.log
+// (restored session came back with userCanceled = false) and the A/B of the same
+// day. The stop is the user's most direct control over a long run, so it is
+// recorded where it cannot be lost: one small storage.session record, timestamped.
+// A restore that finds a stop NEWER than the snapshot it is about to resume applies
+// the session and then cancels it exactly as a live stop does — same rows
+// ('Canceled by user'), same message to the page, no resumption.
+const MD_STOP_KEY = 'mdStoppedAt';
+
+function mdMarkStopped() {
+    try { mdSwallow(chrome.storage.session.set({ [MD_STOP_KEY]: { at: Date.now() } })); } catch (e) { /* never fatal */ }
+}
+
+function mdClearStopped() {
+    try { mdSwallow(chrome.storage.session.remove(MD_STOP_KEY)); } catch (e) { /* never fatal */ }
+}
+
+// Pure (no chrome) so the harness can EXECUTE the rule: does the recorded stop
+// belong to the session this snapshot describes? A stop OLDER than the snapshot's
+// last-alive stamp belongs to an earlier run — a new session clears the record, but
+// that clear is async too, so the comparison is what keeps a stale record from
+// cancelling a session the user never stopped.
+function mdStopWins(stopRec, snap) {
+    const at = stopRec ? Number(stopRec.at) : 0;
+    if (!at) return false;                       // no stop was ever recorded
+    const active = snap ? Number(snap.activeAt) : 0;
+    if (!active) return true;                    // a stop with nothing to compare against still ends the session
+    return at > active;
+}
 // Caps keep the snapshot far below the storage.session quota: the row table is
 // already capped by maxProgressRecords, the queues are the only unbounded part.
 const MD_SNAPSHOT_MAX_TASKS = 1500;
@@ -1602,7 +1643,7 @@ function mdRestoreSession() {
     if (mdRestoreStarted) return;
     mdRestoreStarted = true;
     let p;
-    try { p = chrome.storage.session.get(MD_SNAPSHOT_KEY); } catch (e) { return; }
+    try { p = chrome.storage.session.get([MD_SNAPSHOT_KEY, MD_STOP_KEY]); } catch (e) { return; }
     p.then(function (r) {
         const snap = r && r[MD_SNAPSHOT_KEY];
         if (!snap || snap.v !== MD_SNAPSHOT_VERSION) return;
@@ -1622,6 +1663,23 @@ function mdRestoreSession() {
         // rows/queues into a live scan. Never stomp it, and never drop the key:
         // that fresh snapshot is the live one now.
         if (scanInProgress) return;
+        // The Stop the user pressed outlived the worker that received it: apply the
+        // session (so the rows are on screen and marked as the stop would mark them)
+        // and then cancel it through the ONE cancel path — never a second,
+        // subtly-different one. The stop record is left in place until a new session
+        // starts: if this generation dies too, the next one must still honour it.
+        if (mdStopWins(r && r[MD_STOP_KEY], snap)) {
+            console.info(mdWorkerLabel() + ': the user stopped this session while its worker was gone'
+                + ' — restoring it only to cancel it, as a live stop does');
+            try {
+                mdApplySnapshot(snap);
+            } catch (e) {
+                mdAbortRecovery(e);
+                return;
+            }
+            handleStopScanning();
+            return;
+        }
         try {
             mdApplySnapshot(snap);
         } catch (e) {

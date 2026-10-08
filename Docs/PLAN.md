@@ -762,6 +762,22 @@ this file does not get a research item that does not change a `MAIN` decision (r
   window is **swallowed** (the restored session continues to `done`; seen twice,
   `paired-ending-stop2/3.log`), and any instrumented wrapper installed on the worker vanishes with it
   (`captured … calls: 0`).
+- **FIRST SYMPTOM FIXED 2026-10-08 — the swallowed Stop (the only part of this with a user-visible cost).**
+  Everything a stop did died with the worker that received it: `userCanceled` is in-memory, and the
+  snapshot drop is an **async** remove a dying worker never completes — so the next generation resumed
+  the run from the last flushed snapshot. The stop is now recorded where it cannot be lost
+  (`MD_STOP_KEY` in `chrome.storage.session`, written FIRST in `handleStopScanning`), cleared only when a
+  NEW session deliberately starts, and honoured by the restore through the **one** cancel path: a
+  restore that finds a stop newer than the snapshot it is about to resume applies the session and then
+  calls `handleStopScanning()` — the same rows, the same message to the page, no resumption. The
+  decision is a pure function (`mdStopWins`, executed by `tools/md-unit-smoke.mjs` → STOP-1 lock), and
+  the timestamp comparison is what keeps a stop from an earlier run from cancelling a fresh one.
+  **Verified live** (`swd-E5b` vs `swd-E5c`, same listing, same first-run shape that dies): with no
+  stop record the restored session finished — page text `Finished. Downloaded 64 file(s) · 22 item(s)
+  skipped`, `canceled 0`; with one, both deaths ended through the live-stop path — `Stopped. Downloaded
+  4 file(s) · 1 item(s) failed · 8 item(s) skipped · 37 item(s) canceled` and `Stopped. Downloaded 5
+  file(s) · 10 item(s) skipped · 26 item(s) canceled`. Cost of the change: one tiny storage write per
+  stop, one remove per new session, one extra key in an existing read — no timers, no new loops.
 - **The instrument is therefore not the gap — the CONTEXT is.** Measured the same day
   (`.unlazy/gen-compare.js` over all 13 logged runs, extension's own `sw.gen` as the label): **6 of 13
   runs died** (`stop2`, `stop3`, `stop4`, `stop6`, `stopped`, `retry`), 7 survived. On content features

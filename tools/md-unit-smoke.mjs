@@ -1018,7 +1018,14 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
                 `FIX-7: ${label} abort must surface non-terminal rows as failures (no invisible pending rows)`);
             // Race: the storage read is async — a scan started by this worker while
             // it was in flight already owns the state and must never be stomped.
-            assert.ok(/if \(scanInProgress\) return;[\s\S]{0,120}try \{\s*\n\s*mdApplySnapshot\(snap\);/.test(coreText),
+            // STOP-1 (2026-10-08) put a second apply on the same path (the stop
+            // branch), so the invariant is stated where it lives: the ownership
+            // guard must come BEFORE the first apply, and the apply must sit in its
+            // immediate continuation — not somewhere else in the function.
+            const restoreFn = cutFnFrom(coreText, 'mdRestoreSession');
+            const guardAt = restoreFn.indexOf('if (scanInProgress) return;');
+            const applyAt = restoreFn.indexOf('mdApplySnapshot(snap);');
+            assert.ok(guardAt >= 0 && applyAt > guardAt && (applyAt - guardAt) < 1400,
                 `FIX-7: ${label} must never restore on top of a session started during the read`);
             assert.ok(/if \(!\(Number\(snap\.workerStart\) < workerStartMs\)\) return;/.test(coreText),
                 `FIX-7: ${label} must refuse its own/newer snapshot (no self-restore, no double restore)`);
@@ -3480,3 +3487,43 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     assert.ok(!/globalProcessedUrls\.delete/.test(win), `${tree}: the exemption must not delete cross-item bookkeeping`);
 }
 console.log('md-unit-smoke: filter-queue own-candidate locks hold (MAIN-02 second site)');
+
+// --- The user's Stop must survive a worker restart (STOP-1, 2026-10-08) -------
+// Measured: the worker dies mid-download, and a Stop that lands in that window is
+// SWALLOWED — the next generation restored the session from the last flushed
+// snapshot and ran it to `done` (paired-ending-stop2/3.log: the restored session
+// came back with userCanceled = false). Nothing the stop did survives: userCanceled
+// is in-memory and the snapshot drop is an async remove that a dying worker never
+// completes. The stop is now recorded in storage.session, and a restore that finds a
+// stop NEWER than the snapshot it would resume must cancel instead of resume. The
+// rule is pure, so it is EXECUTED here; the wiring points are locked as text.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const core = readFileSync(join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8').replace(/\r\n/g, '\n');
+    assert.ok(/function mdStopWins\(stopRec, snap\)/.test(core),
+        `${tree}: STOP-1 — the stop-wins rule must be a pure function the harness can execute`);
+    assert.ok(/mdMarkStopped\(\);/.test(cutFnFrom(core, 'handleStopScanning')),
+        `${tree}: STOP-1 — a user stop must be recorded where a dying worker cannot lose it`);
+    assert.ok(/mdClearStopped\(\);/.test(cutFnFrom(core, 'resetMassDownloadSession')),
+        `${tree}: STOP-1 — a new session must not inherit the previous run's stop`);
+    const restore = cutFnFrom(core, 'mdRestoreSession');
+    assert.ok(/chrome\.storage\.session\.get\(\[MD_SNAPSHOT_KEY, MD_STOP_KEY\]\)/.test(restore),
+        `${tree}: STOP-1 — the restore must read the stop record together with the snapshot`);
+    assert.ok(/if \(mdStopWins\(r && r\[MD_STOP_KEY\], snap\)\)/.test(restore),
+        `${tree}: STOP-1 — a restore that finds a newer stop must not resume the session`);
+    assert.ok(/handleStopScanning\(\);/.test(restore),
+        `${tree}: STOP-1 — it must cancel through the ONE cancel path, never a second, subtly different one`);
+    // A stop OLDER than the snapshot belongs to an earlier run: cancelling a fresh
+    // session because of it would be a worse bug than the one being fixed.
+    const wins = new Function(`${cutFnFrom(core, 'mdStopWins')}\nreturn mdStopWins;`)();
+    assert.strictEqual(wins({ at: 2000 }, { activeAt: 1000 }), true,
+        `${tree}: STOP-1 — a stop recorded AFTER the snapshot ends the session`);
+    assert.strictEqual(wins({ at: 1000 }, { activeAt: 2000 }), false,
+        `${tree}: STOP-1 — a stop from an earlier run must NOT cancel a new session`);
+    assert.strictEqual(wins(null, { activeAt: 1000 }), false,
+        `${tree}: STOP-1 — no record means no stop`);
+    assert.strictEqual(wins({}, { activeAt: 1000 }), false,
+        `${tree}: STOP-1 — a malformed record must not cancel anything`);
+    assert.strictEqual(wins({ at: 5 }, null), true,
+        `${tree}: STOP-1 — a stop with no snapshot to compare against still ends the session`);
+}
+console.log('md-unit-smoke: the user stop survives a restart locks hold (STOP-1)');
