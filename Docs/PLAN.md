@@ -164,25 +164,28 @@ record is `Audit/AUDIT_STATUS_CURRENT.md` — §6–§7 for the oldest open item
 everything since 2026-09-12, and its footer index for a one-line-per-session history. Cite the audit
 IDs (`HOST-1`, `WALK-1`, …) in new work instead of inventing names.
 
-### A. Open and real
+### A. Open and real — status verified against the code 2026-10-08
+
+Every row below was re-checked by reading `src-mv3-overlay/` on 2026-10-08, not by trusting the
+summary of a summary. Line numbers drift; the function names are the stable citation. Three rows came
+out wrong and are corrected or removed — `PANEL-1` and `PIXIV-1` are **fixed** (see `B`), and §6.1's
+"not implemented" was **stale**.
 
 | Audit ID | What it is | Where the plan lives | What it still needs |
 |---|---|---|---|
 | `HOST-1` (+ `G1`–`G10`) | The breaker suppresses nothing: read in `findBestUrlWithValidation` only, invisible to the filter phase and the downloads — so an open breaker keeps hammering the host (8 candidates per item), and the picks go out unvalidated. **Today's MAIN-01 is this.** | `Docs/PLAN_96_FOLLOWUP_2026-09-13.md` — agreed, `⏳ не начато` | The `repro-host-quarantine` gate (not written yet), then the quarantine itself |
 | `WALK-1` / `P6` | The walk is sequential; each element is closed by the `da.resolutionTimeout` cap (8 s); the status is announced only every 20 items — worst case ~90 minutes of silence. **Today's MAIN-02 is this.** | plan item `P6`; `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` for the estimates | Speed edits only from P1/P1.1 data, one step at a time, live run after each (§`PERF-1` re-entry rules) |
-| `PANEL-1` | Panel and silent keep-awake are torn down at the end of the **scan**, not the session; the page is told nothing about the session end or the remainder | plan items `P2`/`P3` | Design of the live panel + ETA |
-| `RETRY-2` | Row eviction drops exactly the terminal rows a mass Retry would need — the button needs its own register (url + chain) in the worker and the snapshot | plan item `P5` (hard prerequisite for `R`) | Register + snapshot field |
+| `RETRY-2` | Row eviction still drops the oldest terminal rows, and `failed`/`canceled` share rank 1 with `completed` — a mass Retry cannot read its targets out of the table. **Verified**: `mdEvictOldestRows` ranks superseded `0` → finished `1` → live `2`, oldest first inside a rank; no separate register exists | plan item `P5` — **downstream of `R1`–`R11`** (not started), so nothing can consume it yet | Register + snapshot field |
 | `ROWS-2` | High 403 share on `wimg.rule34.xxx`, in the filter and in the browser download | needs a live measurement | A run; must count **items**, not rows (`SUPERSEDE-1` correction) |
 | `DUP-1-live` | `mdAdoptIfAlreadyDownloaded` was never exercised: no run since the fix had a real worker restart | — | One run **with** a restart **during** the downloads. Partial evidence from today: run #2 restarted (gen 2 at 65 s) and its 33 downloaded files contain **no ` (1)` name** — but that restart came after the downloads had finished, so the risky window (death between Chrome writing the file and the snapshot recording it) was probably never entered. Do not count it as verified. |
-| `PIXIV-1` (= `D2`) | Single save on pixiv dies on a content-side cross-origin `fetch` (`i.pximg.net` has no CORS) | `PLAN_96_FOLLOWUP` item `D2` | The offscreen tier for the single-save path (Chrome) |
 | `PIXIV-2` (= `D1`) | `case "download"` passes `sender.tab?.incognito` (a boolean) where a tab object is expected; `msg.tabId` is always lost in private windows | `PLAN_96_FOLLOWUP` item `D1` | Pass `sender.tab` (both trees) |
 | `HANDOFF-3` (= `S2`–`S5`) | No ACK on fire-and-forget commands, no outgoing retry queue, the page goes silent on `resumeGroupAnalysis` once the walk ended, and `handleDownloadMass` refuses to revive a closed session — together: late findings are dropped | `Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` — **awaits the owner's decision** | The owner's call on S2–S5 |
 | `R1`–`R11` | Mass Retry with one button | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
-| `C1` | New session while downloads are still live | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
+| `C1` | New session while downloads are still live | `PLAN_96_FOLLOWUP` | `⏳ не начато`, but the user-facing half is guarded (2026-09-14, verified in code): `mdStartDownloadAll` asks first — "Session still running: N downloaded, M item(s) left" with "Start over (cancel the rest)". `resetMassDownloadSession()` itself is unchanged: live `chrome.downloads` are neither cancelled nor stopped from writing into the new session |
 | `E1` | Diagnostics for "slow" elements | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
-| `F1`/`F2` | Docs and the local `Audit/` | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
-| §6.1 | **Queue persistence across a worker death** — the largest reliability gap; needs design work (layout, migration, privacy) | `Audit` §6.1 | Design; a partial mitigation exists (the progress tab rebuilds from the browser download manager) |
-| §7.2 | Log loss on worker death: `getDownloadLog` cannot recover items whose final status never reached the worker | = §6.1 | Same design |
+| `F1`/`F2` | Docs and the local `Audit/` | `PLAN_96_FOLLOWUP` | **Half done 2026-10-08**: `.gitignore` already carries `Audit/` as local-only (2026-09-14); `AGENTS.md` still described it as repository content and has been corrected |
+| §6.1 | ~~Queue persistence across a worker death~~ — **STALE as written: it is implemented.** `chrome.storage.session` holds `mdSessionSnapshot`; `mdSchedulePersist()` fires on every queue push and row change, `mdApplySnapshot()` runs on the next worker. FIX-7 / `RESUME-1` (2026-09-13) landed it — the audit's "проверено 2026-09-11: не реализована" predates that | `Audit` §6.1 needs its status corrected | What genuinely remains is the **loss window**: a death between Chrome writing a file and the ≤1 s debounced snapshot. That is `DUP-1`'s cause and is mitigated by `mdAdoptIfAlreadyDownloaded` |
+| §7.2 | Log loss on worker death: an item whose final status never reached the worker has no row anywhere. The snapshot restores queues and rows, but the terminal write can still be lost | partly addressed by §6.1's snapshot | Same ≤1 s window as `DUP-1-live`; no separate design needed once that is measured |
 | `R-07` | Top-frame guard in the content `downloadAll` | `Audit` §3 | Open **by decision**; revisit on a bug report |
 | §6.3 | Fate of the duplicate `src-mv3/` tree (archive or delete) | `Audit` §6.3 | Owner decision; the `README.DEAD.txt` banner stands |
 | `BT-09`, `BT-12` | Deliberately untouched / needs a live FF+pixiv run | `Audit` §9.6 | `BT-12` needs the run |
@@ -190,15 +193,26 @@ IDs (`HOST-1`, `WALK-1`, …) in new work instead of inventing names.
 | — | FF e-hentai Gallery Save (`REPORT_GALLERY_BATCH` §27); FF pixiv — zero log | `Audit` §9.5 | Live runs on Firefox |
 | `UI-COLOR-1` | Corrective counter colours are in the code but were never confirmed live; the owner was asked | `Audit` §10.14 | The owner's answer / one look |
 
-Smaller and already mitigated, kept here only so they are not re-discovered: §6.2 hotkey **Q**
-collides with `flipH` (mitigated — Ctrl/Shift required); §6.4 the GET fallback doubles traffic
-(inherent to validation, capped at 10 MiB); the `SERVER_BAD_CONTENT` → "HTTP 404 — dead link" wording
-(the audit flags the claim as stronger than what is known, since the same row carries our `GET/403`).
+Smaller and already mitigated — **verified in code 2026-10-08** so they are not re-discovered:
+§6.2 hotkey **Q** really does collide with `flipH` in `data/defaults.json` (`"flipH": "Q"` and
+`"downloadAll": "Q"`) and the mitigation is real (the content handler requires `e.shiftKey ||
+e.ctrlKey`); §6.4 the GET fallback doubles traffic (inherent to validation) and the cap is real
+(`MAX_FALLBACK_SIZE = 10 * 1024 * 1024`, mirrored in the content script); the `SERVER_BAD_CONTENT` →
+"HTTP 404 — dead link" wording is still exactly that string in the worker, and the audit's objection
+stands — it asserts a 404 while the same row can carry our own `GET/403`.
 
 ### B. Closed by decision or by measurement — do not reopen
 
 - **Worker death (`GEN-3`/`GEN-4`/`GEN-5`)** — see `RES-01` above: cause open, damage judged zero,
   hunt stopped while it does not cost files.
+- **`PANEL-1`** — **fixed 2026-09-14**, verified in code 2026-10-08: `mdEnterTail` stops only the
+  audio keep-awake (the walk is over, so the page no longer needs to stay unthrottled) and hands the
+  panel to `mdPollSessionStatus`, which renders the live session until the phase is `done`/`canceled`
+  and only then calls `_stopKeepAwake` with the ledger's numbers. The audit's §10.4 entry predates it.
+- **`PIXIV-1` (= `D2`)** — **closed by `SAVE-1`** (2026-09-21, `Audit` §10.17): the single-save
+  interrupt hook calls `mdSaveViaOffscreen` *before* asking the page, so the bytes are fetched from
+  the extension origin where the DNR Referer rule applies. Verified in code, both call site and
+  function exist in the worker.
 - **`SAMPLE-1`** — "rule34 duplicates at different sizes" = the `samples/…/sample_<hash>` preview vs
   the full `images/…/<hash>`: 23 ids were tried in both forms and **0 real pairs** exist on disk
   (dedup already collapses them). Measured, not a defect. Today's `sample_*.jpg` downloads are this,
@@ -226,6 +240,12 @@ integration, do not adopt them as our tasks.
 - **Two of the "new" findings were already in the audit**: `MAIN-01` is `HOST-1` (planned as G1–G10,
   never started) and `RES-01` reopened a hunt that `GEN-5` had closed by decision.
 - The `Save Log` investigation (`RES-03`) closed nothing at all.
+- A **code verification pass on 2026-10-08** (the section above) found three more stale entries:
+  `PANEL-1` and `PIXIV-1` were fixed in 2026-09-14 / 2026-09-21, and §6.1's "queue persistence is
+  not implemented" stopped being true on 2026-09-13. Only `HOST-1`, `WALK-1`, `RETRY-2`, `C1`, `E1`,
+  `PIXIV-2`, `HANDOFF-3`, `R-07`, §6.3, §6.4, the wording item and the two FF runs survive as
+  genuinely outstanding — everything else in `A` is unchanged because it was checked, not because it
+  was copied.
 - **Genuinely new today**: the rule34 live numbers (`walk 30.4 s`, `unresolved 219/313`,
   `byMethod BROWSER 94 / HEAD 5`, every failure `breaker-open (unvalidated, wimg.rule34.xxx)`) and the
   `getDownloadLog` payload shape. Both are recorded in `knowledge.md` §7 and cited by `MAIN-01`/`MAIN-02`.

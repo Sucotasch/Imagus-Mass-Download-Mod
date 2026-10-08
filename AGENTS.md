@@ -20,7 +20,7 @@ Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + ori
 | `Docs/` | Developer docs (algorithm, structure, overlay strategy) | Docs only |
 | `_tmp_upstream/`, `upstream_v2026.7.21/` | Temporary upstream diff/comparison files | Do not edit — transient (gitignored) |
 | `minified/` / `unminified/` | Pre-built sieve artifacts | Not main source |
-| `Audit/` | Audit reports (root `Audit.md` moved here 2026-08-23 as `FULL_AUDIT_2026-08-18.md`). **Entry point: `Audit/AUDIT_STATUS_CURRENT.md`** — consolidated status of every audit item, verified against code. Historical dossiers keep their original BUG-xx numbering — always qualify IDs with audit date (`BUG-03@0720` ≠ `BUG-03@0721`) | Reference |
+| `Audit/` | Audit reports (root `Audit.md` moved here 2026-08-23 as `FULL_AUDIT_2026-08-18.md`). **Entry point: `Audit/AUDIT_STATUS_CURRENT.md`** — consolidated status of every audit item, verified against code. Historical dossiers keep their original BUG-xx numbering — always qualify IDs with audit date (`BUG-03@0720` ≠ `BUG-03@0721`) | Reference — **local-only, gitignored** (`.gitignore` line 35, since 2026-09-14): it is NOT part of a clone, so never cite it as if the reader can open it |
 
 **Default rule:** work in `src-mv3-overlay/` unless the user explicitly names another tree.
 
