@@ -225,11 +225,29 @@ this file does not get a research item that does not change a `MAIN` decision (r
 - **Base doc.** `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` — estimates A–E; **C-2** (`cfg.hz.delay` vs
   `nowait`, bounds 37 s…222 s) was the biggest lever and had no measurement. This run supplies the
   missing baseline.
-- **Next.** Measure C-2 with **no product change**: what `hz.delay`/`nowait` actually were, and how
-  many of the 313 elements ever went through `resolve`. See §PERF-1 of
-  `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (do not touch the walk scheduler; one
-  step at a time; a live run after each; bump the version before a run).
-- **Cost so far.** 0 dedicated runs.
+- **Step 1a done 2026-10-08 (page recon, extension not used; `.unlazy/rule34-page-recon.mjs`, `recon.log`)
+  — what the page really holds and where each post leads.**
+  - The listing page holds **42 posts** (unique `page=post&s=view&id=NNN` links; 44 `<img>`, 33 wimg
+    thumbnails, `#post-list` 44 images).
+  - Each post page displays the **sample** (`#image` →
+    `https://wimg.rule34.xxx**//**samples/<shard>/sample_<md5>.jpg?…`) and **links the true original**:
+    `https://wimg.rule34.xxx**//**images/<shard>/<md5>.jpeg?…` — note the double slash and the shard
+    directory. Sampled **6/6** posts had a real full-size image.
+  - **The listing DOM contains only thumbnails** — no full-size URL — so for this site the extension
+    must *derive* the original through its sieve. That derivation is exactly what "resolution" does
+    here, and it is where a loss would have to come from.
+  - **Correction to my own earlier probe:** the `images/<md5>.jpeg` URL I had derived (no shard, single
+    slash) does not exist — that is why it failed in the validate probe. My URL was wrong, not the
+    host. The 403 finding is unaffected (it was measured on real thumbnails).
+  - **Retraction:** the guess that Pagetual had appended pages in run #3 to explain `313` vs `42` was
+    mine alone and is **not** evidence — Pagetual was never installed in this profile. The 313-vs-42
+    gap is currently **unexplained** and is no longer attributed to anything.
+- **Next (revised).** The paired measurement: one run that captures **both** the page's 42 posts **and**
+  the worker's per-item resolutions, then a **per-post diff** — which posts resolved, to which URL, and
+  which files landed. Only that diff can say whether the "loss" is real; the counters alone cannot.
+  Then C-2 (`hz.delay`/`nowait`) as before. See §PERF-1 of `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the
+  re-entry rules (do not touch the walk scheduler; one step at a time; a live run after each).
+- **Cost so far.** 1 recon run (no scan).
 
 ### MAIN-03 — the rest of the owner's sites
 - **Symptom.** `Errors.txt` (repo root) is the owner's real workflow, not a synthetic page.
