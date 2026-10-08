@@ -279,6 +279,17 @@ this file does not get a research item that does not change a `MAIN` decision (r
       seen first is the one link not yet measured; the counts fit it in all 15 failures.)
     - This is a **resolution/identity defect — `MAIN-02`'s ground, and it affects any host that stores
       originals under `.jpeg`.**
+  - **Where the two kinds of URL come from (read from the sieve, 2026-10-08).** The same element is
+    served by two competing paths in the `Rule34.xxx-x-q-p` entry:
+    * the **`img` rule** (thumbnail → synthesis): its `to` expands `…#jpg jpeg png gif#`, i.e.
+      **guesses**, which after `.gif` (excluded) and the `.jpeg`→`.jpg` collapse leave exactly
+      `{jpg, png}` — the 4 files × 2 HD = 8 of `_candidateCount`;
+    * the **`link` rule + `res`** (`page=post&s=view&id=…`): `res` fetches the **post page** and pulls
+      `og:image` — the **true** `…/<md5>.jpeg?<pid>` plus the `/samples/` form.
+    So the **only** path that can yield a real `.jpeg` is the post-page one; the `img` route cannot,
+    because the collapse removes `.jpeg` before synthesis. **Not yet measured: why the post-page path
+    fired for so few items** (5 of the run carried `.jpeg`, every one with `?<pid>` and every one
+    completed). Either way the post-page fetch belongs to `MAIN-02`'s walk cost, not to a separate item.
   - **Cause B (3 posts) rests on solid ground.** For those posts the load test proves the target exists,
     and the terminal row is a transfer failure (`SERVER_FAILED` / "HTTP error other than 403/404 — often
     429"). That is fetch/download-stage, separate from the pick: 429 rate limiting, referer, or size.
