@@ -1267,8 +1267,8 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `D-7: ${tree} — page-controlled host names must not grow the breaker map without bound`);
         assert.ok(/mdBreakerReset\(\);/.test(cutFnFrom(core, 'resetMassDownloadSession')),
             `D-7: ${tree} — a new session must reset the breaker (Audit N-12 intent)`);
-        assert.ok(/mdBreakerReset\(\);/.test(cutFnFrom(core, 'handleClearAll')),
-            `D-7: ${tree} — Clear All must reset the breaker`);
+        assert.ok(/resetMassDownloadSession\(\);/.test(cutFnFrom(core, 'handleClearAll')),
+            `D-7: ${tree} — Clear All must reset the breaker through the session owner`);
     }
 
     // --- D-10: REVERTED 2026-09-12 (after the owner's review) ---------------

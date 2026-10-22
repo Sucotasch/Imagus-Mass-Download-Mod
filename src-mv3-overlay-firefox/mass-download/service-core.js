@@ -1801,14 +1801,14 @@ function handleClearCompleted() {
 }
 
 function handleClearAll() {
-    handleStopScanning();
-    downloadProgress = Object.create(null); // BT-08: keep the null prototype
+    handleStopScanning();                 // cancels in-flight downloads and tells the page
+    resetMassDownloadSession();           // sessionId++, queues, dedup, retry state, ledger
+    downloadProgress = Object.create(null);
     downloadStats = { found: 0, prefiltered: 0, skipped: 0, downloaded: 0 };
-    globalProcessedUrls.clear();
-    downloadIdToTask.clear();
-    // Reset validation state too (Audit N-12): a tripped circuit breaker must
-    // not leak from the cleared session into the next one (D-7: per-host map).
-    mdBreakerReset();
+    downloadInitiatorTabId = null;
+    mdDropSessionSnapshot();
+    // items:{} is required: updateStatus without items does not clear the table.
+    sendToProgressTab({ cmd: "updateStatus", status: "", done: true, items: {}, stats: downloadStats });
 }
 
 function handleRetryDownload(msg, sender) {
