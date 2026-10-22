@@ -30,6 +30,7 @@ There is **no `package.json`, linter, or configured test runner** — vanilla JS
 
 ## Commands (run from repo root)
 
+- **Lab environment first:** `Docs/LAB_ENVIRONMENT.md` holds the verified constants (browser exe, reusable profile, extension id, download dir, port map, walled sites, host quirks, and the exact harness invocations that work). Read it before launching anything — do not re-derive those values every session.
 - **Build:** none for MV3 — load `src-mv3-overlay/` unpacked. MV2 legacy only: `python build.py` (needs Java; jars in `bin/`, targets `src/`).
 - **Verification scripts (all currently green):**
   - `node tools/md-unit-smoke.mjs` — MIME/ext helpers + **SIEVE/US locks** (`sieveUrlFor`/`jsDelivrMirror` EXECUTED: a mirror retry must have a URL, a non-GitHub repo still has one, "no repository configured" stays `null`; the missing-userScripts branch must open the options page once per browser session) + the rest below (`normalizeExt`, `getUrlExtension`, `isExcludedType`, `deriveFilename`) + **dedup contract**: SW `fileKey()` must equal content `_normalizeUrlKey()`, asserted for BOTH trees + the batch locks (D-1..D-8, ROWS-1, SUPERSEDE-1/2, RESUME-1, DIAG-1..3, HANDOFF-1/2, UNFIN/GEN, DUP-2/3/4: the restore-history matcher, the restore MARK (`mdIsRestoredTask`, executed against a CLONE) and the run-origin carry (`mdNextRunOrigin`) are executed, not grepped; the `onUserScriptMessage` registration must be top-level/synchronous/unique, `mdClassifySendError` is EXECUTED, and the unfinished-work counters / tab note / Saved-Log blocks are EXECUTED on the numbers of the 21:52 log). **Extraction gotcha:** it cuts functions out of source text assuming top-level declarations at column 0 — reformatting `service-core.js`/`content.js` breaks it.
@@ -911,3 +912,367 @@ new code was live. Clear `Default/Code Cache` + `Default/Service Worker/ScriptCa
 what the worker actually has, even when it is not a before/after comparison; the next launch then
 recompiles and may report the retryable "NO SERVICE WORKER at startup" (§13). After clearing, both trees'
 assert read `mdBreakerCooldownFor=function`.
+
+## 2026-10-09 (15) — MEASURED: the delay is not the walk's cost; the PAGE is
+
+First execution round of the new plan (items 1–2: `MAIN-02` remainder + `MAIN-08`), on the rule34
+listing, with a new harness `.unlazy/scan-ab.mjs` (N runs in ONE launch, per-run `hz.delay`, downloads
+pinned to the lab dir, `Browser.close` only). Artifacts: `.unlazy/scan-ab.json` (3 runs),
+`.unlazy/scan-ab2.json` (4 runs, alternating delays), logs `.unlazy/scan-ab-run2.log`,
+`scan-ab-ab2.log`; analysis `.unlazy/scan-ab-norm.mjs` (per-element normalization) and
+`.unlazy/scan-ab-diff.mjs` (per-file attribution over the INTERSECTION of the runs' own ground truths).
+
+**1. `cfg.hz.delay` is NOT the lever (C-2 dead as a setting change).** Raw walk times look like a win
+(`ab`: 43.0 s cold → 27.8 s warm same setting → 25.5 s at delay 50), but the page is not the same page
+twice, so the only honest unit is per element: `ms/element` — ab 142 (cold) / 86 / 80, ab2 65 (cold) /
+88 / 61 / 80. Warm means: **delay 50 → 83 ms/el (n=3), delay 300 → 74 ms/el (n=2)** — the *fast* arm is
+slower, and the spread inside one setting (61–88) is wider than the difference between settings. Two
+independent rounds, opposite signs, both inside noise. A third round settled it with the corrected harness (`.unlazy/scan-ab3.json`,
+warm: 300 → 29 151 ms walk / 63 ms/el; 50 → 29 007 and 30 722 ms / 53 and 92 ms/el): across all three
+rounds the warm means are **delay 50 → 79 ms/el (n=5)** vs **delay 300 → 70 ms/el (n=3)** — the arm the
+hypothesis expected to be fast is if anything slower. Nothing is gained, and `hz.delay` is also the
+hover delay for ordinary Imagus use — so it stays untouched. (Selection effect worth remembering: the
+COLD run was the slowest in round 1 (142 ms/el) and the FASTEST in round 2 (65) — even "first run is
+slow" does not hold as a rule here.)
+
+**2. The listing serves a different page every load — that, not the settings, dominates the walk.**
+`elements` per run: 303 / 325 / 318 (round 1) and 314 / 334 / 464 / 436 (round 2); `unresolved` 211–370.
+A +50 % swing in element count between two loads of one URL makes absolute `tWalkMs` meaningless for a
+speed claim (and the run-to-run differences the user feels are largely this). The base doc
+(`Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` §6-A/B/C) is still the right map: the measured pauses are
+43.6–46.0 s of a 171.9 s walk in THAT log, and their per-element normalisation has not been done yet.
+
+**3. `MAIN-08` (unstable results) got its first real answer, and it is part page, part metric.**
+Round 3 added the direct comparison (`.unlazy/scan-ab3.json`, runs 2 and 4, identical settings, both 42
+posts on the page): 2 post ids existed only in one run and 2 only in the other, so 36 posts were common;
+**run 2 delivered 35 of those 36, run 4 delivered 36** — post `18991854` (`61c907f9…`) has **no row at
+all** in run 2 (never resolved) while run 4 fetched its `.jpeg` (361 887 B). One post in 36, and it is a
+resolution miss, NOT a dead URL — the mechanism is named, the rate is one per listing per pair.
+ The
+delivered sets DO differ between runs (run 2 delivered one file run 1 did not — `…986ebb…png?18991809`,
+10.0 MB, completed, `BROWSER`; later runs brought 3–7 extra), and every extra file is real. Cause
+read from the data: the page's own post set differs between loads (elements 303→436), and thumbnails
+sometimes carry no md5 — so comparing "posts delivered" across runs, or against one run's ground
+truth, counts PAGE VARIANCE as loss. That is how round 1 produced a false `40/42` where the page-side
+diff later showed **0 posts without a delivered file**. Fix applied to the harness (each run keeps its
+own ground truth, `postsJudged` recorded) — the next round (`.unlazy/scan-ab3.json`) is the first one
+whose runs are comparable by construction.
+
+**4. `MAIN-07`: the death reproduced, at zero visible cost.** In the round-2 browser: generation 1
+started, **lived 40.9 s and ended `abrupt`**, generation 2 finished the run (44 completed rows,
+`abrupt` is the only label the platform can ever produce — see the `onSuspend` finding). Same
+fingerprint as the earlier A/B: the first session of a freshly started browser, ~40 s in, download
+phase (round 3 added **two more**: `.unlazy/scan-ab3.json` starts 1791542602723 → 1791542635576 →
+1791542643836, i.e. gen 1 lived 32.9 s, gen 2 only **8.3 s** — the restart-loop shape — and gen 3 served
+the remaining runs; across the two sessions: 3 deaths, 8 runs, all `abrupt`, no `Download lost…` row) — reproduced here by an independent harness, with no `Download lost…` row this time. So the
+death's *frequency* is confirmed and its *cost* remains the open half; `MAIN-07` stays on the list at
+issue 3–4, not as a hunt.
+
+**5. Delivery quality in every run of both rounds:** 41–57 completed rows, **0 `/samples/` rows**
+(round 2) and 1 (round 1), originals from `/images/`, formats `jpeg/png/mp4/webp/jpg`, largest file
+9.3 → 14.7 MB. The two closed fixes (`MAIN-02`, `MAIN-06`) hold on the same listing they were proven on.
+
+**Process lesson (the owner was right, and it cost him a visible hang).** Two `ls.exe` I launched
+blocked on the lab profile directory and **survived the tool's timeout** — the timeout does not kill
+the child. Two more orphans (`powershell.exe`, `tasklist.exe`) came from the two probes that timed out
+afterwards. All four are now killed, and process work is done only through bounded node scripts
+(`.unlazy/proc-check.mjs`, `node-leftovers.mjs`, `lab-alive.mjs`, `cdp-close.mjs`), which carry explicit
+timeouts and close browsers through CDP `Browser.close` — never `taskkill` by image name (a6a29ed).
+Rule for the lab from here: no `ls`/`find` over `.ext-dev-loop` or `.unlazy`, one browser per run,
+verify leftovers after every run.
+
+## 2026-10-09 (16) — the pause A/B ran: a strong hint, one confound, and a clean revert
+
+**Zero-cost split first (no new run).** `.unlazy/scan-ab-split.mjs` reads the walk's own pause constants
+out of `content.js` (group 100 ms @5759, single-URL/album 150 ms @5743/5756, unresolved 10 ms @5696,
+covered 10 ms @5645) and splits every measured walk: **pauses are 10.8–13.7 s of a 20–43 s walk**
+(30–50 %), and **~8.3 s of that is the group branch alone** (100 ms × 82–84 elements); unresolved adds
+2.2–4.9 s; the rest is 20–58 ms/element of real work. My first version of this tool mis-attributed the
+constants (it credited the album's 150 ms to the single-URL branch and called the album NOT FOUND) —
+caught and fixed, because a wrong constant silently distorts every number downstream.
+
+**Then the A/B (`.unlazy/pause-ab.mjs`, log `pause-ab.log`).** The lab profile grants the extension by
+PATH, so a copied tree would get a different extension id and lose the `userScripts` grant — the patch
+had to be in place, so the chain is *patch → 2 runs → revert + verify → 2 runs*, with the revert inside
+the same process (a crash cannot leave the tree patched). Result: `content.js` was restored **bit-exact**
+(`git hash-object` = `HEAD:` = `b72dfc03…`; `git diff HEAD` empty; a stale index stat entry showed it as
+modified until `git add` + `git reset` refreshed the cache — the content was never different).
+
+**Numbers (delay 300 everywhere, same listing, same hour):**
+
+| build | walks | ms/element | common posts (intersection) | delivered |
+|---|---|---|---|---|
+| group pause **20 ms** (`p20`) | 12.6 s, 12.5 s | **42, 30** | 40 | 39 of 40, 40 of 40 |
+| baseline 100 ms, after revert (`pbase2`) | 33.1 s, 35.0 s | **74, 112** | 31 | 31 of 31, 31 of 31 |
+| baseline, earlier launches (ab/ab2/ab3) | — | 20–92 (median ~70) | — | — |
+
+**Verdict: suggestive, NOT established — do not claim a speedup.** The two builds differ by 2–3× per
+element, but the baseline launch is confounded three ways: it ran second (page/network state), its
+runs completed **63 and 67** rows against the patched build's 41 and 45 (more real work per run), and
+its session recorded a worker death (`ends ["abrupt", null]`). Its own time per element (68–78 ms) is
+itself double the patched build's (29 ms) — so the difference is NOT explained by the removed pause
+alone. Also reproduced, in both builds: **one post of ~40 resolves in one run and not in the other**
+(`18991923` patched, `18991854` earlier) — the `MAIN-08` nondeterminism, now seen in three builds.
+Next design, already decided: alternate the builds **twice** in one hour (patched, baseline, patched,
+baseline ×2 runs) and report `ms/element` **and** `ms/completed row` with `elements`/`completed` beside
+them, on the intersection as the no-loss gate.
+
+**That alternated run happened the same day (4 launches `base, patched, base, patched`, `.unlazy/pause-ab-alt.mjs`,
+log `pause-ab-alt.log`, artifacts `scan-alt{1b,2p,3b,4p}.json`; analysis `scan-ab-builds.mjs`) — and it does
+NOT settle the question either.** Warm pool: `ms/element` **base 89 (68–112) vs patched 43 (30–49)** — clean
+separation — but `ms/completed row` **overlaps** (base 540 vs patched 478, patched max 668 > base max 595),
+and the patched launches happened to see bigger pages (420–599 elements) than the base launches (311–411)
+while page variance for one URL is 303–582. So the honest split is: **6.6 s of unconditional sleep per walk
+is arithmetic** (83 groups × 80 ms, group count stable at 80–84 across 15 runs), the rest is page noise.
+The one worrying datum: patched `alt4p#2` (599 elements / 500 unresolved) delivered **27 of 36** — the worst
+no-loss figure of all 12 runs, against 32–33/36 for every base run and 40/42 for `p20#2`. That is why the
+next step is an **intermediate 50 ms over more runs with the loss rate as the gate**, not the clock — and
+why nothing was shipped. Every patched launch was followed by a bit-exact revert (`hash-object` = `HEAD:`),
+verified twice inside the chain and once again afterwards from outside it.
+
+## 2026-10-09 (17) — 50 ms: a clean, arithmetic-sized win, and the instrument that had to be fixed first
+
+The 50 ms schedule (4 launches `base, patched, base, patched`, log `pause-ab-alt50.log`). With the
+corrected instrument two things became clear at once:
+
+| clean scan (run 1 of a launch) | walk | elements | ms/el | delivered (judged) | files written in window |
+|---|---|---|---|---|---|
+| base50 `alt1b#1` | 31.4 s | 331 | 95 | **42/42** | 42 |
+| patched50 `alt2p#1` | 27.7 s | 380 | 73 | **42/42** | 38 |
+| base50 `alt3b#1` | 32.8 s | 335 | 98 | **42/42** | 41 |
+| patched50 `alt4p#1` | 25.5 s | 543 | 47 | **42/42** | 40 |
+
+* **No loss at 50 ms:** every clean scan delivered **42/42** — the earlier `alt4p#2 27/36` scare was the
+  run-2 adoption artifact (see the next entry), not the pause.
+* **The saving is the arithmetic and nothing more:** 83 groups × 50 ms = **4.15 s** of unconditional sleep
+  removed, and the observed clean-scan gap is 4–7 s. That is the first number in this whole speed item
+  that is explained instead of merely measured.
+* **The confound is identified and it is launch ORDER, not the build:** patched launches sat 2nd and 4th,
+  and the listing grows as the table rolls — 4 of 4 patched launches saw bigger pages (380/543 vs 331/335
+  at 50 ms; 420–599 vs 311–411 at 20 ms). So `ms/element` is biased in the patched build's favour and the
+  20 ms "2–3× faster" reading is withdrawn here explicitly.
+* **Own time** (walk minus the branch pauses): base 20.7 / 22.0 s, patched 20.7 / 17.0 s — overlapping, so
+  the pause is the only consistently changed part.
+* **NOT SHIPPED, and the reason is rule 6:** the change is universal by construction (a timing constant,
+  not a site rule), but its *risk* — losing resolutions — can only be checked in the aggregate, and the
+  heterogeneous net (`MAIN-03`) does not exist yet. Until it does, this stays "measured, not shipped".
+* **Process flaw, recorded so it is not repeated:** the second schedule reused the first one's tags
+  (`alt1b`, `alt2p`) and **overwrote the 100/20 artifacts**. Their numbers live in `pause-ab-alt.log` and
+  in the plan, but the raw JSONs are gone. Tags now carry the experiment's parameter (`alt1p20`, `alt1b100`).
+
+## 2026-10-09 (18) — the "lost posts" in repeat runs are NOT losses: they are adoption + no-row
+
+Before trusting the loss gate I checked what a "missing" post actually is, and the answer changes the
+instrument (`.unlazy/scan-ab-rows.mjs` reads one run's page md5 set against its rows and against the
+files written in that run's window):
+
+| alt1b run | page posts (md5) | in ANY row | in a COMPLETED row | files written in the run's window | worker says |
+|---|---|---|---|---|---|
+| 1 (fresh session) | 42 | **42** | **42** | **42** | completed 43 |
+| 2 (same session) | 42 | **35** | **35** | **7** | completed **50** |
+
+So in the second scan of one launch: the worker reports 50 completed rows while only **7** files were
+actually written — the rest are the *adoption* path (already in Chrome's history) — and **7 posts of the
+page produce NO ROW AT ALL** (not resolved, not attempted, not even skipped-by-dedup, which would leave a
+row). My earlier "32/42 lost" numbers in repeat runs were this same artifact, and so was the "1 post in 40"
+reading of `MAIN-08` for run 2-vs-run-4 pairs. Consequences, applied immediately:
+* **Only the FIRST scan of a launch is a clean, comparable scan** (fresh content script, fresh session, no
+  adoption). Later runs inside one browser may still be used for *walk* numbers (the walk is content-side,
+  before any download), never for delivered-set comparisons.
+* A loss claim now needs the independent count: **files written inside the run's window by mtime**
+  (`filesInWindow`), not the row table.
+* The drain question is answered and closed: `mdPendingSnapshot()` is empty the moment the phase reads
+  `done` (`drained in 0.0s` in every run, `idleSec` 0–4), so the download tail does not overlap the read.
+* The remaining real question — **why 7 page posts produce no row at all in a fresh page load of the same
+  url** — is now the sharpest form of `MAIN-08`, and it is a *content-side* question (collection/prefilter/
+  resolution), not a download one.
+
+## 2026-10-09 (19) — the net's step 0: two of three issue pages need the owner's session, and four defects in my own instrument
+
+Executed the owner's choice (build `MAIN-03`'s heterogeneous net first). Two things came out, and the second
+one matters more than the first.
+
+**1. What the issue pages really offer in a FRESH lab profile** (`.unlazy/net-probe.mjs` → `net-probe.json`,
+`net-probe.log`; extension loaded, nothing triggered):
+
+| site | kind | imgs | videos | not-loaded | `?`-carrying srcs | wall |
+|---|---|---|---|---|---|---|
+| `e-hentai.org/g/4239205/…` | complaint | 1 | 0 | 1 | 0 | **Cloudflare security check** ("Один момент…") — the 1 img *is* the challenge |
+| `artuntamed.com/…/erotic-absurdities.2049/` | complaint | 3 | 0 | 0 | 0 | **"Log in \| ArtUntamed"** + "You must be logged-in to do that." |
+| `colorsuper.com/collections/all-swim` | control | 228 | 7 | 172 | 228 | none — loads |
+
+So `MAIN-03` is blocked on exactly one thing and only the owner can supply it: **a session in the lab
+profile** (log in once in the lab browser window — `.ext-dev-loop/cft-md/profile` is reused by every run — or
+export cookies). The profile is fresh by design, so the lab sees what an anonymous visitor sees. My first
+instinct, substituting public pages, was tried and is honestly weaker: Commons category (13 real
+`upload.wikimedia.org` files), `en.wikipedia.org/wiki/Cat` (59 imgs, 45 lazy), a Commons video category, and
+`news.ycombinator.com` as the no-media negative control are all reachable and ungated, but none is a page a
+user complained about (rules 2 and 6). Also fixed here: the probe's gate detector matched the word "Login"
+in colorsuper's **nav** and labelled an open shop page as gated — a detector that would have silently
+skipped good sites; it now matches wall wording only.
+
+**2. The instrumentation lied on the first new page shape.** The colorsuper scan was real and complete
+(1258 elements, 206 groups, walk 23.8 s of a 27.6 s scan, 174 downloads, 0 timeouts) while its own
+bookkeeping was wrong four ways at once:
+
+* `filesInWindow` counted **1 of 174** files. Cause: the window was `[sendMessage promise resolution,
+drain]`, and that promise settled **88 s into a 118 s scan** (the content script replies when the walk hands
+over). The window covered the last 4 s of the write burst. On rule34 the send resolved promptly, which is
+why the same code agreed with the rows there — *a check that only works when the instrument behaves is not a
+check.*
+* the drain gate declared the run finished on an **empty queue 4 s into a 25 s walk**, so the summary was
+read while the walk was still producing items.
+* the run had **no clock of its own**: nothing recorded how long the harness's own send took, which is what
+made the lag invisible.
+* delivery had **no baseline-first count** at all.
+
+All four fixed and re-validated on the same page: `triggerMs` (own send 27.6 s) is logged; the drain
+requires the queue *and* the download dir to stand still for two consecutive polls; the window starts from
+the scan's **own** age (`totalMs`), not from the send; and the independent count is `filesAdded = files
+after − files before the trigger`, which needs no window and no clock agreement. `filesInWindow` rose
+151 → 162, and `filesAdded 0` with byte-identical `labBytes` on a repeat scan is **correct**, not a bug:
+Chrome overwrites the same filenames (70/70 of that site's files carry mtimes inside the new window), so
+`filesAdded` counts *new* files and `filesInWindow` counts *rewrites* — a net site's **first** scan uses the
+first, a **repeat** uses the second.
+
+**Consequence for `MAIN-02`'s 50 ms result.** Its verdict rested on `postsWithFile 42/42` and the row table —
+neither of which these defects touch — but the `filesInWindow` column printed beside it was coincidentally
+right rather than independently right. The conclusion stands; its corroboration was weaker than it looked,
+and that is now noted where the number is used.
+
+**Harness capability check (rule 3, taken once):** the net needed **no new capability** — `scan-ab.mjs` takes
+the page as an env var (`AB_LISTING`), which is what "keep it generic, never a per-site special case" asks
+for. The only missing piece is the session, and that is an owner action, not code.
+
+## 2026-10-09 (20) — the lab's parameters are written down, the net's blocker is gone, and the session is real
+
+**1. The complaint was correct and the fix is a file, not willpower.** Every session was re-deriving the
+same values (browser exe, profile, extension id, download dir, ports, flags). They now live in
+**`Docs/LAB_ENVIRONMENT.md`**: the launch recipe with its two hard rules (the browser is launched detached
+so it survives the harness; it is closed **only** through CDP `Browser.close`, because a profile is written
+on *clean* shutdown), the port map per harness, the invocations that are known to work, the sites and their
+walls, and the host landmines. `knowledge.md` (Commands) and `AGENTS.md` (Docs map) point at it, so the next
+session reads it before launching anything. Also corrected: `lab-ports.mjs` swept only 9793–9808 and would
+have reported "no lab browser running" while a `scan-ab` window sat on 9821 — the range is now 9793–9831,
+with a note to add each new harness's port.
+
+**2. The owner's login works — and it was proven in a NEW launch, which is the only reading that can tell
+"cookies work" from "the page was already in memory".**
+
+| site | fresh launch, same profile, after the login |
+|---|---|
+| `e-hentai.org/g/4239205/…` | **open** — "Mercy - Overwatch, bronzegrenade [AI Generated] - E-Hentai Galleries", 10 imgs, logged-in nav. An anonymous launch had seen a Cloudflare interstitial *and* once "This content is not available in Russia.RU" |
+| `artuntamed.com/…/erotic-absurdities.2049/` | signed in, but the URL from the user issue is a **DEAD LINK, not a wall**: XenForo answers "Oops! We ran into some problems." with **0 posts**. The site's own link is the fix — `?media/albums/women-in-high-heels.1965/`, **24 media thumbnails** at `…/data/xfmg/thumbnail/<shard>/<id>-<hash>.jpg?<ts>`: a query-carrying **real file** URL, i.e. the BG-4 `fileKey` terrain |
+| `pixiv.net/en/users/37418653/following` | **signed in**, 30 imgs (`s.pximg.net` 18 / `i.pximg.net` 12, 12 lazy) — added to the probe as the signed-in media shape, and the host class where the Referer/DNR machinery lives |
+| `colorsuper.com/collections/all-swim` | control, unchanged (221–225 imgs, 172 lazy) |
+
+**3. Two defects in the login instrument, found because it was asked a question it had never been asked**
+(rule 3 — one fix each): it reported artuntamed **READY** on the XenForo **error page**, because it tested
+the logged-in nav (which an error page carries too) instead of the thread's own markup; and it would have
+waited out e-hentai's **geo** wall as if it were a challenge no click could ever pass. Both are named as
+states now — `geo` and `posts` — in the probe as well as the watcher.
+
+**4. New lab mode: `LAB_FREE=1` on `lab-login.mjs`.** The owner navigates the window himself and every page
+URL/title/marker is logged, with a clean close at the deadline. It exists because a site's *correct* URL is
+sometimes knowable only from the site (artuntamed threads are not directly navigable) — and it is how the
+album URL above was obtained without guessing.
+
+**5. Landmine, self-inflicted and recorded:** `lab-ports.mjs` **closes** every port it finds; I ran it as a
+"who is alive?" question and it shut the window the owner was using (mid-pixiv-login, one minute after the
+`logout:1` reading, so nothing was lost — the close is clean and the profile is written). Ask the ports
+yourself when a window must stay open; a watcher whose browser is closed by someone else dies with an
+unhandled rejection, which is not a run failure.
+
+**6. Scope.** Everything in this entry is lab/docs: `AGENTS.md`, `Docs/PLAN.md` (MAIN-03), `knowledge.md`,
+new `Docs/LAB_ENVIRONMENT.md`, plus `.unlazy/` instruments. No product file was touched, so the product
+gates were not re-run — that is a statement about what changed, not a claim that they pass.
+
+## 2026-10-09 (21) — the net's first run: one site measured, two sites the instrument cannot reach, and three ways I broke my own run
+
+**1. `e-hentai` gave a clean datum.** Both arms saw the same page (114 elements), walk **37.15 → 34.79 s**
+(−2.4 s, ~6 %), unresolved 54/54, delivered keys 19 → 20, **no loss**. The saving is consistent with the
+arithmetic already measured on rule34 (83 groups × 50 ms). Keyed on the download FILENAME, not the URL: the
+same gallery image came back from different H@H mirror hosts and path shapes between the arms, so a raw-URL
+diff read "19 lost / 20 gained" on an unchanged page — a false alarm that would have looked like
+catastrophic loss.
+
+**2. `artuntamed` is not reachable by the harness, and not because of a wall.** The trigger answers
+`Receiving end does not exist.` while the page is healthy: the user-script world is there (`ctx-probe.mjs`:
+context origin = the extension id, name "Imagus Reborn MD") and a **Ctrl+Q from inside the page runs a whole
+scan** (266 found / 124 filtered, `downloadMass` calls visible in the wrapped `chrome.runtime.sendMessage`).
+Two plausible mechanical causes found and fixed along the way (duplicate same-URL tabs mean the trigger can
+address a DIFFERENT document than the one read over CDP; the run's tab was created in the background) — the
+failure survived both, so it stays open with its evidence rather than with a story.
+
+**3. `pixiv` fails differently, and that difference is informative:** its listener EXISTS ("a listener
+indicated an asynchronous response by returning true, but the message channel closed before a response was
+received", after 141 s) — the harness's send never settles, so the run never starts. Two sites, two
+symptoms, one common factor: the trigger path, not the sites.
+
+**4. The epidemic behind it: an orphan lab browser on the port.** Chrome hands a new launch with a live
+`--user-data-dir` to the running instance, so the run's own browser is never created and every arm silently
+measures the orphan. Fixed by a refusal to start on an occupied port (exit 6) plus `.unlazy/lab-kill.mjs`
+(launcher PIDs **and** `netstat -ano` by port, never by image name). This is why "the same page that worked
+this morning" failed at noon.
+
+**5. My own interference, recorded because it invalidated data:** `kill <pid>` does not stop a backgrounded
+node harness (the driver kept launching browsers after the kill), and my port sweeps / a `taskkill` closed
+arm browsers mid-run — the colorsuper arms of the last run are not evidence of anything. Lesson repeated
+from earlier sessions in a new costume: **an instrument that acts while it observes is not an instrument.**
+
+**6. THE LOGS ALREADY ANSWERED THE QUESTION, AND I SHOULD HAVE OPENED THEM FIRST.** `log/` holds 69 of the
+owner's own Save Logs — rule34 34, artuntamed 11, pixiv 10, e-hentai 9, control 1 — and `.unlazy/logcost.mjs`
+reads them without any lab. What they say:
+
+* **The control site has ZERO failures** (colorsuper 0 of 100), while the complaint sites show
+  **rule34 36 % (1089 of 3021), pixiv 72 %, e-hentai 43 %** — **all three are capped-row-window figures, not delivery**
+  (see the withdrawal below: the uncapped ledger and `downloaded=` of those same runs read 191–307 files delivered) —
+  with named reasons: rule34 `477× HTTP 404`,
+  `336× SERVER_BAD_CONTENT`, **72× “all 8 candidate URLs failed”**; pixiv `108× 403/404` + `107×
+  SERVER_FORBIDDEN`; e-hentai `96× “Server returned HTML page”` + `42× invalid fetch options`.
+* **Two of those three sites' numbers are PRE-FIX and I nearly reported them as current:** `md-dnr.js`
+  (Referer for `i.pximg.net`) landed 2026-09-10 citing exactly that Sep-11 pixiv log, and today's `fetch`
+  calls carry only `{method/credentials/signal}` — so the pixiv 403s and e-hentai's “parameter options” are
+  addressed in the code. Stale data presented as current is the same error as a broken instrument, one layer up.
+* **rule34 — and my first reading of it was WRONG, which the owner caught.** I claimed from a top-10 table that
+  the chain proposes URLs this host does not serve. Full counts: `images *.png` 448 completed, `images *.jpg` 99,
+  `samples *.jpg` 481, `images *.jpeg` 101 — the host serves them. The honest split comes from matching every
+  FAILED row to COMPLETED rows **of the same md5**: **296 of 1089 (27 %) had a completed sibling** (the file was
+  obtainable — wasted attempts) and **793 (73 %) had none** (post unavailable in that run — ordinary churn, not a
+  defect). One shape is genuinely lopsided: `samples *.png` **490 failed vs 1 completed**, and whether the page
+  lists those URLs or the chain derives them is **not determined** — the shell died before I could read a failed
+  row's block, and “not determined” is what gets written down.
+* **And the row behind the lopsided shape says something else entirely:** the 490 `samples *.png` “failures” sit on
+  rows whose own fields read `pick: breaker-open (unvalidated, wimg.rule34.xxx) (8 candidates)` and
+  `attempts: GET/403 referer skipped: host pinned to browser download` — i.e. that *candidate pick* skipped
+  validation because the breaker was open.
+* **THIRD reading of the same rows — and this one is also WITHDRAWN (2026-10-09).** I turned that row into “the
+  breaker plus the pinned-host rule writes off the whole scan; that is the live rule34 defect” and wrote it in as a
+  finding. It is wrong, and the repo had already answered it: **`Docs/PLAN_96_FOLLOWUP_2026-09-13.md` Ф17** says the
+  `'browser'` pin is set only on transport deaths, never on 403/404, so `referer skipped: host pinned to browser
+  download` is a **decision, not a defect**; **Ф14** says the pinned browser download of the real URL came back
+  `SERVER_FAILED` (429/5xx) — the host refusing URLs it had already served. And the numbers were never mine to
+  claim: the same logs carry an **uncapped** ledger and the live `downloaded=` counter, and they read `11:10 →
+  downloaded=191, ledger completed=191 / failed=20`, `12:15 → downloaded=249, ledger completed=131 / failed=23`.
+  Runs that ship 191–249 files are not written-off scans; the `96 / 99 / 100 of 100 visible rows` figure was the
+  capped tail, the very bias the next bullet warns about, turned into a conclusion. I also proposed dropping the
+  `images *.jpg` / `samples *.jpg` candidate shapes — which deliver 99 and 481 completed files. **Reading rule:
+  uncapped sections and `downloaded=` first; the capped row table may suggest which items, never how many.**
+* **Bias I have to carry on every row-level number:** Save Log caps at `da.maxProgressRecords` (100) and drops the
+  oldest finished rows (“172 / 194 / 277 completed downloads are NOT listed below”), so per-row rates describe a
+  moving tail window. Where a log carries `Terminal items, uncapped` / the outcome ledger (the four newest do), use
+  those and the live `downloaded=` counter for counts at all — never the row table. Totals
+  (`elements`/`walk`/`groups`/`unresolved`) are fine; the failure *rate* is not.
+* **Lesson, same as the instrument ones:** a top-10 table is a summary, not evidence, and a failure reason is a
+  claim by the code, not a measurement of the server. Two commands — full counts and one row's fields — overturned
+  both conclusions I had already written into the plan.
+* **Speed, on the worst complaint site:** rule34 walk median 171.9 s (57.5–243.9) of a total ≈ walk,
+  `unresolved` 35 %, and **41 s of that walk (24 %) is the group branch's unconditional 100 ms** (groups 410).
+  artuntamed/e-hentai/pixiv logs predate the diagnostics block, so their split is not on disk.
+* **artuntamed is fine:** 11 of 11 album images at full size (4.6–8.2 MB, ~210 ms each) in the Sep-08 log; the
+  “junk” is ONE large banner per scan (`AU Welcome.jpg`, 359 KB) while the small chrome is correctly skipped
+  as “Too small”. So the site users complained about is *not* broken by this scan — the lab could not see that.
+
+**7. Product observation, seen once:** on artuntamed the scan schedules the site's own UI assets
+(`/styles/default/xenforo/au-cuffs-text-small.png`, `dofantasy-web-logo.png`, `empty.png`, `AU Welcome.jpg`)
+as downloads. If it reproduces it is a filter-quality item, not a harness note.

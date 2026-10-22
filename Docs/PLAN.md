@@ -22,6 +22,13 @@ Two ledgers, and the difference matters:
 4. **MAIN closes with a measurement. RESEARCH closes with a decision.**
 5. **Keep the cost column honest** (runs / wall time), and ask at every review: *did this change the
    plan?* If a week of work changes nothing in this file, that is the signal.
+6. **A change must be universal, and judged in the aggregate.** Measure it on the heterogeneous set of
+   sites taken from user issues (slow scan / unstable results), **worst site first, never the best**, and
+   the set always includes a control site nobody complained about. Reject a change whose benefit comes
+   from knowing the site: per-host branches, per-host thresholds and per-host extension preferences are a
+   smell, not a fix — site specifics belong in `data/sieve.json`, never in mass-download code. Two
+   directions are checked in the same run: **speed may not buy itself with lost resolutions**, and a
+   correctness fix may not buy itself with added per-item cost.
 
 Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what the user sees), the
 **evidence** (measured, with a date and the exact numbers), the **next step**, and the **cost so far**.
@@ -36,7 +43,20 @@ conditional block under it.
 
 **Execution is open (2026-10-08).** The owner has confirmed the plan is complete and asked to begin.
 No decision is outstanding; the priority order below governs which `MAIN` item starts first
-(`MAIN-01`), and each `MAIN` item still closes only on its own live measurement.
+(**`MAIN-02` remainder since 2026-10-09** — re-ordered, with the reason, in that section), and each
+`MAIN` item still closes only on its own live measurement.
+
+**2026-10-09 — platform research, and what it removed from the list.** Two open questions were answered
+from the platform's own documentation instead of by runs: `MAIN-01`'s header half (the block is the
+**extension origin**, not a missing header — the page's own loads of the same URLs pass) and `MAIN-07`'s
+label half (`runtime.onSuspend` is an event-page event; **no shutdown hook is needed** because state is
+written when it changes, and worker deaths can be observed without a debugger via `runtime.getContexts`).
+Neither answer closes a `MAIN` item by itself: `MAIN-01` still needs its probe, and `MAIN-07`'s own file
+cost turned up the same day (a restart can lose an in-flight download), so it went back on the list
+instead of staying parked. What the research *did* change is this file's order — no item is left waiting
+on a hook or a header that cannot exist, and rule34 is now the declared **discovery** site (most
+information per run: the recurring death plus the widest format/size range) while the issue-derived net
+stays the aggregate check that decides whether a change is universal (rule 6).
 
 **Decided 2026-10-08 by the owner — no longer open:**
 - The duplicate `src-mv3/` tree: **archived — DONE 2026-10-08**. Owner chose an in-repo move, so the
@@ -106,16 +126,17 @@ extension id `nknbbghpoclmikkfnbcdjbaonkebofgo`) run a listing and capture the w
 | `MAIN-05` | An ending contract: the four `endedBy` values plus "transferred X of Y, unconfirmed Z" consistent with the worker's own counts | The whole point is an honest number; a check written after the fact can only describe whatever the code happened to print |
 | `MAIN-02` | A source-level **candidate-reachability** test, written *with* the guard fix: cut `fileKey`/`candidateKey`/`pickNextCandidate` out of `service-core.js` the way `md-unit-smoke` does (stubbing `globalProcessedUrls`, `getExcludedExtensions`, `isExcludedType`, `cachedPrefs`, `scanInProgress`) and assert that with the item's **own** `images/<md5>.jpg` registered, the `…jpeg` candidate is still reachable — plus the control (nothing registered) and the negative control (a **different** item's key still blocks it). The close is then a before/after **measurement** on the same listing (per-post file count, `_attempts` chain) | The regression *is* "the item's own identity blocks its own chain"; a test written afterwards could only describe the new behaviour. The negative control is what keeps the cross-item dedup guarantee from being silently traded away |
 | `MAIN-06` | A source-level **interrupt-classification** test, written *with* the retry: cut the interrupt branch's decision out and assert that a retryable reason (`SERVER_FAILED`) schedules a bounded same-URL retry while `SERVER_BAD_CONTENT` (a real 404) still advances — plus the live before/after (`completed rows from /samples/` → 0) | The regression is "every interrupt advances"; a test written afterwards could only describe the retry. The 404 arm is the negative control that stops the retry from swallowing genuinely dead candidates |
-| `MAIN-03` | None — per-site baseline counters only | These are baselines, not fixes |
+| `MAIN-03` | None — it is a **net**, and the net *is* the check: same lever before/after on three heterogeneous pages, verdict taken on the worst one (rule 6) | It can only ever be a measurement; a written test afterwards would encode one site's numbers |
+| `MAIN-08` | None — the gate is the **pair of runs**: same listing twice, delivered sets diffed per post, every difference attributed | The property *is* "same input, same output"; a test written after the fix could only describe the fixed behaviour |
 | `MAIN-04` | None yet — blocked on `RES-02` | Nothing to prove until the trigger is known |
 
 ### Harness capability genuinely missing (and whether it is justified)
 
-- **`MAIN-03` needs the Pagetual flow and per-site session state.** The owner's sites are driven with
-  the Pagetual userscript (appends later pages) and login-dependent galleries (e-hentai `/g/`). To
+- **`MAIN-03` needs the Pagetual flow and held session state.** The net's pages are driven with the
+  Pagetual userscript (appends later pages) and include a login-dependent gallery (e-hentai `/g/`). To
   baseline them the scratch profile must install the userscript and hold the session. **Justified**
   by `MAIN-03`; it is the one capability a `MAIN` item is blocked on. Build it when `MAIN-03` starts,
-  not before.
+  not before — and keep it generic (a userscript + a session), never a per-site special case (rule 6).
 - **`MAIN-05` needs a way to force an abnormal ending.** `page-silent` / `no-initiator` cannot be
   observed on a run that ends cleanly; the close-out run must be able to close the page or kill the
   worker mid-scan and keep the worker's final numbers. A minimal version (close the tab, then read the
@@ -165,49 +186,119 @@ by what unblocks what.** Two things changed the ranking:
    `completed rows from /samples/` went to 0).
 **The live order (work items only):**
 
-1. **`MAIN-01` — the pick is never validated on a hard host (FIRST since 2026-10-08).** Moved ahead of
-   `MAIN-07` because of two measured facts: the death's user-visible cost — a swallowed Stop — is now
-   fixed (`STOP-1`), and the stage the death happens in is exactly the failure cascade this item removes
-   (instantly-failing `chrome.downloads` on unvalidated picks). It is also the item that decides whether
-   the address the extension picked is the right file at all. Measured: `byMethod`
-   `BROWSER 93, HEAD 3, REFERER 2` — **93 of 100 rows reach `chrome.downloads` unvalidated** because the
-   host's validation is Cloudflare-blocked, and four controlled probes now **prove** no header fix
-   exists (every header the page sends, including all client hints and a real Referer, leaves the 403
-   untouched). The work was therefore to stop the 5-request storm and to stop handing out unvalidated
-   picks — not a DNR rule. **The request-storm half was attempted on 2026-10-08 and REVERTED** (see the
-   section below: the saving is ~40 requests once per scan, the breaker resets with every session, and
-   the longer cooldown can skip a re-probe the same scan would otherwise have made). What is left here is
-   the honest-label half — saying out loud that the pick is unvalidated instead of downgrading silently.
-2. **`MAIN-07` — the worker dies and comes back silently (diagnosis, second).** Measured 2026-10-08: the
-   worker's own globals are replaced in mid-run (the probe's `self.__mfCalls` went 62 → 0 inside one
-   3 s poll) while Chrome reports **no** `targetCreated`, **no** `targetCrashed`, **no**
-   `Runtime.exceptionThrown` and logs nothing. **Correction 2026-10-08: the hooks DO exist** — read the
-   section below; this document first claimed they did not, because they live in
-   `mass-download/service-core.js` (importScripts'd into the worker) and were only searched for in
-   `background/service.js`. `self.addEventListener('error')` `:892`,
-   `self.addEventListener('unhandledrejection')` `:895`, `chrome.runtime.onSuspend` `:1645-1661`,
-   `mdRecordWorkerStart()` `:885`, and `mdWriteGenerationEnd` / `mdGenEndLabel` attribute each end as
-   `suspend` / `error: …` / `abrupt`. So "no error was recorded" is a REAL reading (the hooks were
-   installed and said nothing), not a missing instrument. Idle teardown is excluded (the worker
-   survived a 43 s idle window, so the keep-alive works), and so are a renderer crash and a recorded
-   exception. **What is missing is not the hook but the CONTEXT**, plus one real gap the code itself
-   names: the end write is async (`chrome.storage.session.set`) and can be cut off by an instant
-   teardown, so a `suspend` can still be filed as `abrupt`. Of the two live symptoms it explained, **one
-   is FIXED (2026-10-08, `STOP-1`): the swallowed Stop** — a restored session no longer comes back with
-   `userCanceled = false` and runs itself to completion; the other (instrumented wrappers vanishing
-   mid-run) is inherent to a restart and is not a defect. What is left here is therefore diagnosis plus
-   the death itself: the A/B narrowed it to the download stage's failure cascade, and "fix the label"
-   (the `onSuspend` correction above) is the cheap part of it.
-3. **`MAIN-02` remainder — scan cost (`C-2`).** `cfg.hz.delay` vs `nowait`, bounds 37 s…222 s, still
-   unmeasured. The only item here about **speed**, and it is measurable now that the pipeline no longer
-   drops files.
-4. **`MAIN-03` — breadth across the owner's real sites** (`e-hentai /g/`, `artuntamed`, `colorsuper`,
-   with the Pagetual userscript). This is where the owner actually works, so it is what turns the
-   rule34 result into a general one. It still needs the two missing harness pieces (Pagetual + a way to
-   force an abnormal ending) and produces baselines rather than fixes, which is why it follows the two
-   correctness items.
-5. **`MAIN-04` — the self-opening second session.** Blocked on `RES-02`; `RES-01` says the event costs
-   nothing while it does not touch files.
+**RE-ORDERED 2026-10-09 (assistant, on the owner's standing rule: order by what gets the user his files
+or his time, not by what is interesting to diagnose), then revised again the same day when the owner
+supplied the site facts.** The four facts that move the order: (a) the file loss is fixed and measured
+(posts with a file 19–31/42 → 41–42/42); (b) `MAIN-01`'s remaining half costs **no file by itself** — the
+browser's own download is not challenged, so the defect is quality only; (c) `MAIN-07`'s label half has
+been **closed by platform research** (see `MAIN-07` → *Platform replacements*), so no shutdown hook is
+worth building; (d) **`MAIN-07`'s file cost is real after all** — a restart can lose an in-flight
+download (`service-core.js:1539`, the row `Download lost when the background restarted`, seen live), and
+rule34 is the site where the death **recurs** while also carrying the widest format/size range (video
+included). So it is un-parked and rides the same sessions as items 1–2 instead of owning a separate hunt.
+
+1. **`MAIN-02` remainder — scan cost / `C-2` (`WALK-1`), FIRST since 2026-10-09.** The one remaining
+   complaint the owner can still feel on the site we can already run ("scanning takes so long it is not
+   worth it"), the only **speed** item, and the only one that needs **no new capability**: the harness,
+   the listing and the diagnostics all exist. Its lever is the largest measured one — `cfg.hz.delay` vs
+   `nowait`, bounds 37 s…222 s (`Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md`) — and its numbers only became
+   trustworthy now that the pipeline stops dropping files. **First measurement taken 2026-10-09 and it
+   killed the C-2 premise** (see the section: the delay setting is not the lever, the page's own element
+   count is — 303…582 across 11 runs — so every number is now per element). The step that follows is
+   **measurement, not a fix**: a page-side runtime wrapper that splits the walk's 70 ms/element into the
+   branch's fixed pause and the resolution round, so the A/B/C options in the base doc are chosen from
+   data. One step at a time, a live run after each (§`PERF-1` re-entry rules).
+2. **`MAIN-08` — the same page gives a different result on a second run (NEW 2026-10-09, SECOND).** One of
+   the two complaints the owner repeats from user issues ("нестабильность результатов"), and the only one
+   that costs files by definition: if run A delivers a file and run B does not, the difference is
+   randomness, not the site. It is **universal by construction** — the check is "same URL, twice, same
+   set", which needs no site knowledge and no new capability (the existing loop, two runs, the worker's
+   own counters, the progress table). Evidence is indirect and says the biggest source is already gone:
+   on the same listing, pre-fix runs gave 19–31 of 42 posts with a file; after the two identity-collision
+   fixes, 41–42 of 42 — i.e. most of the variance **was** the collision, and the residual (one run still
+   dropped a post the other delivered) is what this item must name or clear. Close: two runs, same
+   listing, same settings, identical delivered sets — or every difference named as a dead URL **at the
+   source**, proven by a page-side reachability test.
+   **Run it on rule34, and treat the pair as the death A/B too (2026-10-09).** rule34 is the most
+   problematic site we have — the death recurs there and it spans the widest range of formats and sizes we
+   can reach (images *and* video, samples *and* originals) — so it carries the most information per run
+   and is our **discovery** site; the heterogeneous net (`MAIN-03`) stays the aggregate check. That
+   matters here because a worker restart **is** a source of variance: it adopts in-flight downloads and
+   can lose one (`service-core.js:1539` → the row `Download lost when the background restarted`, seen live
+   and recorded in `MAIN-07`). Each of the two runs must therefore log the generation/restart marker next
+   to the delivered set — otherwise a death is measured as nondeterminism, the exact error this item
+   exists to avoid. If a death happens in either run, `MAIN-07`'s two cheap riders ride the same session.
+3. **`MAIN-03` — heterogeneity net: the sites from user issues (`e-hentai /g/`, `artuntamed`,
+   `colorsuper` + Pagetual), THIRD — and it is a NET, not a target list.** They were chosen because users
+   reported **slow scans and unstable results** there (`colorsuper` had no such report — it is the
+   control), and none of them is a place to special-case. Its purpose is the opposite: prove that a
+   **universal** change survives opposite kinds of page (login-gated gallery driven by Pagetual vs a
+   plain image listing) and catch the case where a "fix" for one site is a regression on another.
+   Consequences are read **in aggregate — the worst site, not the best** (rule 6), so a benefit that only
+   exists on one site is a **reject**. A run there that loses files outranks speed immediately. Blocked
+   only on the Pagetual + held-session harness, which rule 3 says to build when this starts (never
+   before).
+4. **`MAIN-01` leftover — the page-context probe, FOURTH.** Quality only, by its own measurement: an
+   unvalidated pick costs a wasted attempt and can land an HTML/dead link, but the block costs no file.
+   The header half is **closed by measurement** (four controlled probes) and must not be re-opened; the
+   storm half is **attempted and reverted**; the honest label is UI text. The one untried replacement is
+   the probe from the site's own document (`<img>`/`<video>` + cache-buster), which is a small, testable
+   change with a live close-out (`byMethod` stops being `BROWSER 93`, and picks on the host become
+   validated or are named as unvalidated).
+5. **`MAIN-07` — UN-PARKED 2026-10-09 (its own reopen trigger is met), riding items 1–2.** The trigger was
+   "a death that costs a file or a row", and the evidence exists: a restart adopts in-flight downloads and
+   loses one — the product itself writes `Download lost when the background restarted`
+   (`service-core.js:1539`; seen live in `.unlazy/candskip.log` and recorded in `MAIN-02`), and the owner
+   reports the death **recurs** on rule34 rather than being rare. This also honours `RES-01`'s reopening
+   on the owner's instruction (2026-10-08) instead of contradicting it. Everything the item *explained*
+   is still either fixed (`STOP-1`: the swallowed Stop) or inherent (wrappers die with the worker), and
+   its label half is settled by the platform research — **do not build a shutdown hook and do not
+   re-attempt `onSuspend`, and do not open a new hunt**. What is left is the two cheap riders, and they
+   belong in the same session as items 1–2 because a death corrupts their measurement: the mitigation A/B
+   first (space the download stage; the E3/E4 grid's `maxConcurrentDownloads = 1` arm had **0 deaths in 6
+   runs**), then re-define `abrupt` as "no heartbeat for X s" so a future death is attributable at all.
+6. **`MAIN-04` — the self-opening second session.** Blocked on `RES-02` (2 instrumented runs, kill
+   criterion already set); `RES-01` says the event costs nothing while it does not touch files.
+
+### Universal levers for the two complaints — and what is rejected (2026-10-09)
+
+Every candidate is judged on the whole heterogeneous set, worst site first, and must name the setting or
+second complaint it could hurt. Nothing here is built until the item it belongs to starts.
+
+| Lever | Complaint | Cost / complexity | Consequence check (aggregate) | Verdict |
+|---|---|---|---|---|
+| ~~`cfg.hz.delay` vs `nowait` (`C-2`) — the sieve's own per-element pacing, a **setting**, not site code~~ | slow scan | one setting, no code | **MEASURED 2026-10-09 and REJECTED as a lever** — 3 rounds, 11 runs, alternate delays in one launch; normalized per element (the page is not the same page twice) the *fast* arm is if anything slower: `ms/element` warm **delay 50 → 79 (n=5)** vs **delay 300 → 70 (n=3)**, with 61–88 inside a single setting. Nothing gained, and `hz.delay` is also the hover delay — so it stays untouched (`.unlazy/scan-ab{,2,3}.json`, `scan-ab-norm.mjs`) | **reject — measured, not a lever** |
+| ~~Per-element walk cost, measured by wrapping the walk in the PAGE~~ | slow scan | measurement only | **answered WITHOUT it, 2026-10-09:** the walk's own branch counts are already in the diagnostics and its pause constants are in `content.js`, so `.unlazy/scan-ab-split.mjs` splits every measured walk for free — pauses **10.8–13.7 s of 20–43 s (30–50 %)**, of which **~8.3 s is the group branch alone**. A page-side wrapper would have cost a harness build to learn what the artifacts already held | **superseded — do not build** |
+| **The group pause itself (100 ms × ~83 elements): 100 → 20 ms** | slow scan | one constant, 1 line | **A/B RUN 2026-10-09, REVERTED, verdict `suggestive`:** patched walks 12.6/12.5 s = **42/30 ms per element** vs baseline (same hour) 33.1/35.0 s = **74/112 ms/el**; no systematic loss (39–40 of 40 common posts vs 31 of 31). Confounded — the baseline launch completed **63/67** rows against 41/45, ran second, and recorded a worker death — and its own time per element (68–78 ms) is double the patched build's (29 ms), so the pause alone does not explain it. Nothing shipped; `content.js` verified bit-exact with `HEAD` afterwards | **needs the alternated A/B** (patched, baseline ×2, one hour, `ms/element` **and** `ms/completed row`) |
+| Status cadence (`every 20 items` — worst case ~90 min of silence, `WALK-1`/`P6`) | slow scan *felt* (silence reads as a hang) | UI text, no timers | message count per scan unchanged in order of magnitude | **cheap, universal** |
+| `res` post-page fetches: dedup + negative cache (`_mdResolveCache` already exists) | slow scan | small — reuse a cache the code owns | fetches per scan down, delivered set identical | **measure first** |
+| Lowering the per-element `da.resolutionTimeout` (8 s cap) | slow scan | one number | **hold by default**: it trades speed for resolution loss; only if the aggregate set is unchanged at the lower value | hold |
+| Parallelising the walk | slow scan | large | not possible without re-architecting: `PVI` has **one shared resolver timer**, which is why the content side must *serialize* resolutions (`_mdSerialized`) | **reject — do not rebuild** |
+| Site-specific tuning (per-host thresholds / extension preferences) | slow scan + instability | small per site, unbounded overall | moves the problem to the next site and duplicates `data/sieve.json` | **reject as a class** (rule 6) |
+
+### Coverage the measurements must have: formats and sizes (2026-10-09)
+
+The owner's facts — rule34 has the widest spread of formats and sizes we can reach, **video among them**,
+and on that site **video is found in the simple scan while the bulk of the media is found in the complex
+phase** — turn coverage into a check rather than a hope:
+
+- **Every aggregate reports by format and by size.** A run that counts only images can pass while a video
+  regression goes through. The delivered-set diff (`MAIN-08`) and every lever A/B (`MAIN-02` remainder)
+  carry a `jpg/jpeg/png/webp/gif/mp4` breakdown plus the largest file actually transferred in the run.
+- **Both phases are counted, separately.** Simple-scan finds (mostly video) and the complex-phase volume
+  are reported as separate numbers: a speed change that shortens the complex phase but loses the
+  simple-scan video is a **regression**, not a win.
+- **The size caps are part of "no functionality loss".** Every path that moves bytes has an explicit
+  bound — the offscreen tier's limit (`MAX_OFFSCREEN_FETCH` = 32 MiB, `offscreen/offscreen.js:50`, raised
+  from 10 MiB by the live pixiv run because 15 observed files exceeded it), `MAX_FALLBACK_SIZE` /
+  `MAX_PAGE_FETCH` (10 MiB; SW `service-core.js:408`, content `content.js:5889`) and `da.minImageSize` /
+  `minVideoSize` — so any change touching those paths is checked against a **large** file, not a
+  thumbnail. "Cheaper in the common case, silently drops the biggest file" is the failure mode this
+  bullet exists to catch.
+
+**Not on the list, deliberately:** nothing. `MAIN-05` stays dropped, `RES-03` stays closed, and no item
+below is research-only — each of the six names the user-visible thing it changes (files, seconds,
+control) and the gate it closes with.
 
 **Closed, and staying closed (no work left; keep them locked by their gates):** `MAIN-02` (the `fileKey`
 collision, both sites) and `MAIN-06` (the transient-interrupt retry) — fixed, gated and measured live on
@@ -272,7 +363,16 @@ this file does not get a research item that does not change a `MAIN` decision (r
     `server: cloudflare`, `cf-ray`, and the body is `<title>Rule34.xxx CAPTCHA</title>`. Cloudflare
     challenges the **extension-origin** request (`Origin: chrome-extension://…`,
     `Sec-Fetch-Site: cross-site`) regardless of cookies and regardless of any header the Fetch API can
-    set. **No header fix exists for this.**
+    set. **No header fix exists for this — correct, and checked 2026-10-09: the header half was never
+    the open question. The CONTEXT half was.** The same run that killed H1 recorded the counter-case:
+    the page's own `<img>` loads of those identical thumbnails returned `ok:true` (98–159 ms,
+    cache-busted) **with and without a Referer**. So the wall is the extension origin, not rule34 — and
+    the replacement is a **page-context probe**: validate by loading the candidate in the site's own
+    document (`<img>`/`<video>` + cache-buster, `onload`/`onerror`, `naturalWidth`) instead of an
+    extension-origin `fetch`. CORS-free, no headers, no DNR. The product already owns a page-context
+    network path (`triggerRefererDownload` → content `fetch` with `credentials:'include'`); the probe is
+    the same idea for the question "does this URL exist and how big is it". **Untested, and it is the
+    last unexplored option for validated picks on this host class.**
 - **New framing — this defect does NOT explain the missing media.** The browser's own download request
   is *not* challenged (run #3 landed 28 files), so "validation is impossible" costs **no file by
   itself**. What it costs: ~5 wasted requests per group for the first 8 groups of every 30 s window, and
@@ -299,6 +399,72 @@ this file does not get a research item that does not change a `MAIN` decision (r
 - **Cost so far.** 3 runs.
 
 ### MAIN-02 — scan cost on real listings
+- **MEASURED 2026-10-09 (first execution round of the plan, 3 launches / 11 runs, artifacts
+  `.unlazy/scan-ab{,2,3}.json` + logs, analysis `scan-ab-norm.mjs`): the `C-2` premise is DEAD, and the
+  measurement also explains why the walk time "varies":**
+  * **The delay is not the walk's cost.** Raw walk times look like a win for `hz.delay = 50`
+    (`ab`: 43.0 s cold → 27.8 s warm at 300 → 25.5 s at 50), but the page is not the same page twice,
+    so the honest unit is **per element**: warm means **delay 50 → 79 ms/el (n=5)** vs **delay 300 → 70
+    ms/el (n=3)** — the supposed fast arm is *slower*, and the spread inside one setting is 61–88. Two
+    rounds gave opposite signs; all of it is noise. `hz.delay` also serves the ordinary hover path, so
+    it is not touched. **`C-2` is closed as a setting change: measured, no lever.**
+  * **The listing itself is the dominant variable.** `elements` per run: 303 / 325 / 318 (round 1),
+    314 / 334 / 464 / 436 (round 2), 411 / 314 / 461 / **582** (round 3); `unresolved` swings with it
+    (211–492). A +50 % swing in element count between two loads of ONE URL makes absolute `tWalkMs`
+    meaningless for a speed claim — and it is a large part of what the user experiences as *slowness*.
+    Any speed number from now on is reported **per element** (and per candidate) with `elements` beside it.
+  * **What is left of the speed item, now with its size measured — and the pause A/B result (2026-10-09).**
+    The split (`.unlazy/scan-ab-split.mjs`, pause constants read from `content.js`): the walk's own
+    pauses are **10.8–13.7 s of every 20–43 s walk (30–50 %)** — **~8.3 s of that is the group branch
+    alone** (100 ms × 82–84), unresolved adds 2.2–4.9 s — so the base doc's `§6-A/B` had the right
+    target and no new harness was needed to see it.
+    **The A/B was run and reverted** (`.unlazy/pause-ab.mjs`, log `pause-ab.log`; patch → runs →
+    bit-exact revert → runs): patched (`20 ms`) walks **12.6 / 12.5 s**, **42 / 30 ms per element**;
+    baseline the same hour **33.1 / 35.0 s**, **74 / 112 ms/el**; delivered **39–40 of 40** common posts
+    (patched) vs **31 of 31** (baseline) — no loss in either. **Verdict: `suggestive`, not established** —
+    the baseline launch ran second, completed **63/67** rows against 41/45, and recorded a worker death;
+    its own per-element time (68–78 ms) is double the patched build's (29 ms), so the removed pause does
+    NOT explain the whole gap. Nothing was shipped and `content.js` is verified bit-exact with `HEAD`.
+    **The alternated A/B was run (2026-10-09, 4 launches: `base, patched, base, patched`, 2 runs each;
+    `.unlazy/pause-ab-alt.mjs`, `scan-ab-builds.mjs`) and it does NOT settle it — recorded as such.**
+    Warm runs pooled: **`ms/element` base 89 (68–112, n=3) vs patched 43 (30–49, n=3)** — clean
+    separation — but **`ms/completed row` overlaps** (base 540, 503–595 vs patched 478, 278–668), and the
+    two build groups saw systematically different pages (patched launches: 420–599 elements; base
+    launches: 311–411). With page variance measured at 303–582 elements for ONE url, three warm runs per
+    build cannot separate the pause from the page.
+  * **What IS solid is arithmetic, not a measurement:** the group branch pays its 100 ms
+    **unconditionally**, and the branch count is stable across 15 runs (80–84 groups), so removing it
+    removes **~6.6 s of guaranteed sleep per walk** (83 × 80 ms) — ~20–25 % of a walk of that size. The
+    change cannot make a walk slower; the only open question is whether that sleep is **load-bearing**.
+  * **And there is a loss signal, on the worst page:** patched `alt4p#2` (599 elements, 500 unresolved)
+    delivered **27 of 36**, the worst no-loss figure of all 12 runs, while every base run sat at 32–33 of
+    36 and patched `p20#2` at 40 of 42. One run is not a verdict, but by rule 6 (worst case first, no
+    functionality loss) it is exactly the reason not to ship 100→20 yet.
+  * **50 ms MEASURED 2026-10-09 (4 launches `base, patched, base, patched`, log `pause-ab-alt50.log`),
+    and the answer is clean: a ~4 s win with no loss.** On the **clean scans** (run 1 of each launch — the
+    only comparable ones, see `MAIN-08`): base **31.4 s / 331 elements / 95 ms·el⁻¹ / 42 of 42 delivered**
+    and **32.8 s / 335 / 98 / 42 of 42**; patched **27.7 s / 380 / 73 / 42 of 42** and
+    **25.5 s / 543 / 47 / 42 of 42**. The saving is the arithmetic and nothing more — 83 groups × 50 ms =
+    **4.15 s** of unconditional sleep removed, observed gap 4–7 s — and the earlier 20 ms scare
+    (`alt4p#2 27/36`) was the repeat-run adoption artifact, not the pause. Own time (walk minus the branch
+    pauses) overlaps between builds (base 20.7/22.0 s vs patched 20.7/17.0 s), so the pause is the only
+    consistently changed part.
+  * **Withdrawn here explicitly:** the 20 ms reading of "2–3× faster per element". The patched launches sat
+    2nd and 4th and the listing grows as its table rolls — 4 of 4 patched launches saw **bigger** pages
+    (380/543 vs 331/335 at 50 ms), which flatters `ms/element`.
+  * **Status: measured, NOT shipped — and the only thing missing is the aggregate (rule 6).** The change is
+    universal by construction (a timing constant, not a site rule), so what it needs is the **worst-site
+    check on the heterogeneous net**, which is `MAIN-03`'s harness and does not exist yet. Recommendation:
+    build that net next and run this as its first A/B — the same runs then serve `MAIN-03` and close this
+    item. Until then nothing here touches the product.
+  * **Process flaw recorded:** the 50 ms schedule reused the 20 ms schedule's artifact tags and **overwrote
+    its raw JSONs**. The numbers survive in `pause-ab-alt.log` and above; tags now carry the parameter
+    (`alt1p20` / `alt1b100`).
+  * **Corroboration downgraded 2026-10-09 (see `knowledge.md` (19) and `MAIN-03` step 0).** The delivered
+    verdict here rests on `postsWithFile 42/42` and the row table, which the instrument defects do not
+    touch — but the `filesInWindow` column printed beside those numbers was **dated from the harness's own
+    send**, so on rule34 it happened to be right rather than independently right. The 50 ms conclusion
+    stands on the rows; do not quote the window column as a second, independent confirmation.
 - **Symptom.** "Scanning takes so long it is not worth it" (rule34, e-hentai).
 - **Evidence** (2026-10-08, run #3, worker's own diagnostics): content `elements 313`,
   `unresolved 219` (**70 %**), `groups 84`, `tWalkMs 30442`, `totalMs 31866`, `timeouts 0`;
@@ -544,13 +710,217 @@ this file does not get a research item that does not change a `MAIN` decision (r
 - **Cost so far.** 1 recon run + 4 paired/chain runs + 2 candidate-capture runs + 2 deterministic
   in-worker experiments + 1 page load test.
 
-### MAIN-03 — the rest of the owner's sites
+### MAIN-03 — the heterogeneous net: the sites from user issues
 - **Symptom.** `Errors.txt` (repo root) is the owner's real workflow, not a synthetic page.
+- **Reframed 2026-10-09 on the owner's constraint (recorded as rule 6).** These three sites are a **test
+  net, not a backlog of site-specific fixes**: `e-hentai /g/` and `artuntamed` are the pages users
+  complained about (**slow scan, unstable results**); `colorsuper` is the **control** — nobody reported a
+  problem there, so a change that helps the two and hurts the control is a regression, not a fix.
 - **Items.** `e-hentai.org/g/4239205/772b354d68/`, `artuntamed.com/…/erotic-absurdities.2049/`,
   `colorsuper.com/collections/all-swim`. Note the owner uses the **Pagetual** userscript
   (greasyfork 438684) on these sites, so the extension must cope with media appended by later pages.
-- **Next.** Baseline counters per site, same in-session capture as run #3.
-- **Cost so far.** 0 runs.
+- **What it may and may not produce.** Baselines and an **aggregate** verdict (worst site first); it may
+  not produce per-host branches, per-host thresholds or per-host extension preferences — that class is a
+  **reject** (rule 6), because site specifics belong in `data/sieve.json`. A run here that loses files
+  outranks the speed item immediately.
+- **Next.** Baseline counters per site, same in-session capture as run #3; then the same lever twice
+  (before/after) on the whole set.
+- **Step 0 done 2026-10-09 — page probe before any harness was built** (`.unlazy/net-probe.mjs` →
+  `net-probe.json`, `net-probe.log`; extension loaded, no scan, fresh lab profile):
+
+  | site | kind | imgs | videos | lazy | `?`-carrying srcs | wall |
+  |---|---|---|---|---|---|---|
+  | `e-hentai.org/g/4239205/…` | complaint | 1 | 0 | 1 | 0 | **Cloudflare check** ("Один момент…") — the 1 img *is* the challenge |
+  | `artuntamed.com/…/erotic-absurdities.2049/` | complaint | 3 | 0 | 0 | 0 | **"Log in \| ArtUntamed"**, "You must be logged-in to do that." |
+  | `colorsuper.com/collections/all-swim` | control | 228 | 7 | 172 | 228 | none — loads and scans |
+
+- **Blocked on the owner, and on nothing else: a session in the lab profile.** Two of the three issue pages
+  are anonymous-hostile (Cloudflare / member-only), and the lab profile is fresh by design. Fix: log into
+  `e-hentai` and `artuntamed` **once** in the lab browser window (profile `.ext-dev-loop/cft-md/profile` is
+  reused by every run), or hand over exported cookies. Until then the net's shape coverage comes from
+  session-free pages, which is a **strictly weaker** test (rules 2/6): Commons category (media grid, 13 real
+  `upload.wikimedia.org` files), `en.wikipedia.org/wiki/Cat` (article, 59 imgs / 45 lazy), a Commons video
+  category, and `news.ycombinator.com` as the no-media **negative control** — all reachable and ungated,
+  none of them a site a user complained about.
+- **Step 0b done 2026-10-09 — the owner logged in and the blocker is gone.** The lab's fixed
+  parameters (browser exe, reusable profile, extension id, download dir, port map, launch recipe, gates)
+  now live in **`Docs/LAB_ENVIRONMENT.md`**, because this step was spent re-deriving values that never
+  change. Every fact below comes from a **new** launch after the login (`net-probe.mjs`, which now prints
+  `logoutLinks` / `posts` / `loginForms` / `geoBlock` next to `gated`):
+
+  | site | after the owner's login |
+  |---|---|
+  | `e-hentai.org/g/4239205/…` | **open** — "Mercy - Overwatch, bronzegrenade [AI Generated] - E-Hentai Galleries", 10 imgs, `gated:false`. The earlier anonymous reading was a Cloudflare interstitial, and once "This content is not available in Russia.RU" — a **geo** wall, now its own state in the probe |
+  | `artuntamed.com/…/erotic-absurdities.2049/` | **signed in** (nav carries the owner's account) but this URL answers XenForo **"Oops! We ran into some problems."** with **0 posts** — a **dead link, not a wall**. Replacement taken from the site itself: `?media/albums/women-in-high-heels.1965/` — **24 media thumbnails** at `artuntamed.com/data/xfmg/thumbnail/<shard>/<id>-<hash>.jpg?<ts>`, i.e. a query-carrying **real file** URL (the BG-4 `fileKey` terrain). Thread URLs there are not directly navigable for a stranger, so the site's own link is the only reliable source — obtained with the new free-navigation mode (`LAB_FREE=1`) |
+  | `pixiv.net/en/users/37418653/following` | **signed in** as the owner (30 imgs, `s.pximg.net` 18 / `i.pximg.net` 12, 12 lazy). Added to the probe as the **signed-in media** shape — and the host class where the Referer/DNR machinery lives (`mass-download/md-dnr.js`), so the net can exercise the session path, not only the anonymous one |
+  | `colorsuper.com/collections/all-swim` | control, unchanged (221–225 imgs, 172 lazy) |
+
+- **Persistence was proven, and it took a new launch to prove it.** The profile keeps the session only if
+  the browser is closed through **CDP `Browser.close`** (a profile is written on clean shutdown), and only
+  a **fresh** launch can distinguish "cookies work" from "the page was already in memory". That fresh
+  launch is the table above.
+- **Two defects in the login instrument, found and fixed in place** (rule 3): it reported artuntamed
+  **READY** on the XenForo error page (it tested the logged-in nav, which an error page carries too, not the
+  thread content), and it would have waited out the e-hentai **geo** block as if it were a challenge. Both
+  are recorded under "instrument rules" in `Docs/LAB_ENVIRONMENT.md`.
+- **Step 0c done 2026-10-09 — the delay lever's FIRST run over the net (`.unlazy/pause-net.mjs`, log `pause-net-fixed.log`, artifacts `scan-<page>-{p50,b100}.json`; `NET_ONLY=recompute` rebuilds the verdicts from those artifacts without re-running anything). One clean scan per arm, build order alternated by page. Honest split — one site measured, two blocked by the instrument, one spoiled by my own interference:**
+
+  | page | base → patched (50 ms) | verdict |
+  |---|---|---|
+  | `e-hentai /g/4239205/…` | walk **37150 → 34785 ms**, elements **114 → 114** (the same page in both arms), unresolved 54 → 54, delivered keys **19 → 20**, **lost 0** | **readable datum**: on this page the removed pause cost nothing and shortened the walk ~6 % |
+  | `artuntamed` album | — | **NOT MEASURABLE by the harness**, and not for a wall: the trigger answers `Could not establish connection. Receiving end does not exist.` while the page is demonstrably healthy — `ctx-probe.mjs` finds the user-script world (origin = the extension id, name "Imagus Reborn MD") and a **Ctrl+Q from inside the page runs a whole scan** (266 found / 124 filtered, `downloadMass` items in the message stream). Open |
+  | `pixiv …/following` | — | the listener **exists** here (the error is the other one: *"a listener indicated an asynchronous response by returning true, but the message channel closed before a response was received"*, after 141 s) — the harness's send never settles, so no run. Open |
+  | `colorsuper` (control) | — | the last run's arms are **unusable because I killed their browser myself** (port sweep / taskkill while diagnosing), and the previous run's failures came from an **orphan browser attached to port 9821**. Inconclusive, not a finding |
+
+- **Two harness defects found on the way (both fixed, neither sufficient — the artuntamed failure is still open).**
+  (a) The trigger addressed *the first tab whose URL contains the host*, while every reading of the run happens over CDP on the target the harness created — with two same-URL tabs those are two **different documents** (tabs-probe showed both), so the harness could message a page it never inspected; now duplicates are closed and every candidate is tried, reporting the one that answered.
+  (b) The run's tab was created as a **background** tab; it is now activated before anything else, because the one place the scan demonstrably works on artuntamed is a foreground tab.
+- **And the root of that whole epidemic: a lab browser that already answers on the port is NOT this run's browser.** Chrome hands a new launch with a live `--user-data-dir` to the running instance, so the run's own browser is never created and every arm silently measures the orphan (symptoms: "no CDP endpoint", then a healthy endpoint that keeps coming back on 9821). `scan-ab.mjs` now **refuses to start** on an occupied port (exit 6) and says to run the cleaner; `.unlazy/lab-kill.mjs` is that cleaner (recorded launcher PIDs **plus** `netstat -ano` by port — never by image name, so the owner's own Chrome is untouched).
+- **Product observation, recorded before it is forgotten (not an item yet): on artuntamed the scan schedules the site's OWN UI assets as downloads** — `/styles/default/xenforo/au-cuffs-text-small.png`, `dofantasy-web-logo.png`, `dofantasy-web-text.png`, `empty.png`, `AU Welcome.jpg` all appear as `downloadMass` calls in the Ctrl+Q run's own message stream. Seen once; if it reproduces it is a filter-quality item (`MAIN-01`-class), not a harness note.
+- **Step 0d done 2026-10-09 — the owner's OWN Save Logs answer the question the net was built to ask**
+  (`log/`, 69 files; analysed by `.unlazy/logcost.mjs` → `.unlazy/logcost.json`, no lab, no CDP). Per-site,
+  **item level** (this part works for every log version) — and the control is the only clean site:
+
+  | site | logs (dates) | rows | completed | skipped | **FAILED** | filter p50 |
+  |---|---|---|---|---|---|---|
+  | `rule34` | 34 (Sep 11–21, current build) | 3021 | 1152 | 780 | **1089 (36 %)** | 242 ms |
+  | `pixiv` | 10 (Sep 7–12, **pre-fix**) | 297 | 63 | 16 | 215 (72 %) | 146 ms |
+  | `e-hentai` | 9 (Aug 23–Sep 12, **pre-fix**) | 322 | 171 | 11 | 140 (43 %) | 670 ms |
+  | `artuntamed` | 11 (Sep 6–12) | 102 | 80 | 21 | 1 | — |
+  | `colorsuper` (control) | 1 | 100 | 90 | 10 | **0** | 88 ms |
+
+- **The failure REASONS, which are the fix list, not a rate:** `rule34` — 477× HTTP 404 “dead link”, 336×
+  `SERVER_BAD_CONTENT` → alternate, 76× 503, **72× “all 8 candidate URLs failed”**; `pixiv` — 108× “Server
+  rejected the URL (403/404)” + 107× `SERVER_FORBIDDEN` (**the Referer class — already addressed**:
+  `mass-download/md-dnr.js`, added 2026-09-10, cites that very log, and the current `fetch` calls carry only
+  valid options, so the e-hentai `Type error for parameter options` of the Sep-12 logs is gone too —
+  **those two sites' numbers are pre-fix and must not be quoted as current**); `e-hentai` — 96× “Server
+  returned HTML page” + 42× invalid fetch options (pre-fix).
+- **CORRECTED 2026-10-09 (owner challenged the first reading, and was right).** The first claim — “the chain
+  proposes URLs this host does not serve” — was made from a top-10 table and **over-generalised**: the full
+  counts show the host serves them fine (`images *.png` **448** completed, `images *.jpg` **99**, `samples *.jpg`
+  **481**, `images *.jpeg` **101**, `images *.mp4` **22**). What the md5 pairing actually says
+  (`.unlazy/logcost.mjs`, `MD5PAIR=rule34` — every FAILED row matched against COMPLETED rows of the **same md5**
+  in the same log):
+
+  | rule34, all 34 logs | rows | meaning |
+  |---|---|---|
+  | FAILED with a completed sibling | **296 of 1089 (27 %)** | the file WAS obtainable — wasted attempts, not lost files |
+  | FAILED with **no** sibling | **793 (73 %)** | the post is unavailable in that run (removed/dead) — **normal churn, not a product defect** |
+
+  The lopsided shape **`samples *.png` (490 failed vs 1 completed)** was chased down to a row; the row's own
+  fields read `pick: breaker-open (unvalidated, wimg.rule34.xxx) (8 candidates)` and
+  `attempts: GET/403 referer skipped: host pinned to browser download`, i.e. that *candidate pick* skipped
+  validation because the breaker was open.
+- **WITHDRAWN 2026-10-09 (the owner rejected it, and the repo already had the answer).** The claim that
+  followed from that row — “the breaker plus the pinned-host rule writes off a whole scan, and that is the live
+  rule34 defect” — is **withdrawn as unfounded**. Three things kill it, all on disk:
+  1. **The row window did not measure the scan.** The same logs carry an **uncapped** item list and an **uncapped
+     outcome ledger**, plus the live `downloaded=` counter — the only number the cap cannot falsify. In the very
+     runs I called write-offs: `11:10` → `downloaded=191`, ledger `completed=191 / failed=20 / skipped=298`; `12:15`
+     → `downloaded=249`, ledger `completed=131 / failed=23 / skipped=8`. A run that delivers 191–249 files is not a
+     scan written off. The `96 / 99 / 100 of 100 visible rows` figure came from the capped tail — the exact bias
+     the note below warns about, applied to a conclusion anyway.
+  2. **The behaviour is documented as intentional, a week before I re-opened it.** `Docs/PLAN_96_FOLLOWUP_2026-09-13.md`
+     **Ф17**: the `'browser'` pin is set only on transport deaths (`isTransport`), never on 403/404, so
+     `referer skipped: host pinned to browser download` is a decision, not a defect. **Ф14** of the same file: the
+     pinned-host browser download of the *real* URL came back `SERVER_FAILED` (429/5xx) while guessed `.jpg`
+     variants came back `SERVER_BAD_CONTENT` — the host was refusing URLs it had already served, which is a server
+     condition, not something the extension caused.
+  3. **The proposed fix could have cost delivery.** `images *.jpg` (99 completed) and `samples *.jpg` (481
+     completed) are among the shapes I suggested dropping — dropping them would have removed candidate forms that
+     are demonstrably delivering files.
+  Reading rule that replaces the theory: **uncapped ledger and `downloaded=` first; the capped row table may shape
+  a hypothesis about which items, never about how many.**
+- **Bias warning on every row-level rate in this block.** Save Log caps the list at `da.maxProgressRecords`
+  (100 here) and drops the oldest finished rows first — these logs say so themselves (“172 / 194 / 277 completed
+  downloads are NOT listed below”). So the per-row failure rates are computed over a **moving tail window**, not
+  over the scan. The totals (`elements`, `walk`, `groups`, `unresolved`) are unaffected; the `1089 FAILED` figure
+  is not a scan-level rate and must not be quoted as one. **And four of these logs carry better data that was
+  ignored** (`11:10`, `11:38`, `12:15`, `14:01` — each has one `Terminal items, uncapped` section): an uncapped
+  item list, an outcome ledger, and the live `downloaded=` counter — the number the cap cannot falsify. Where
+  those exist the row table must not be used for any count at all; the uncapped sections are the count.
+- **Speed, measured on the worst complaint site only (rule34, the only site whose logs carry `Scan diagnostics`):**
+  walk median **171.9 s** (57.5–243.9), total ≈ walk, `unresolved` **35 %** of candidates, `groups` median 410 →
+  the group branch's unconditional 100 ms is **41 s = 24 % of the walk** (50 ms removes ~20 s, 20 ms ~33 s).
+  `artuntamed`/`e-hentai`/`pixiv` logs predate that block, so their walk split is unknown from data on disk.
+- **Cost so far (this step), counted from the logs' own `=== ARM` lines — not from memory.** **20 arms
+  attempted across four runs**: 2 valid (`ehentai`, `pause-net-sanity.log` — the pair in the table above),
+  and **18 without a usable pair**: `artuntamed` 6, `pixiv` 6, `colorsuper` 6 (`pause-net-rest.log`,
+  `pause-net-rest2.log`, `pause-net-fixed.log`, 6 arms each — per-arm exits are in those logs). Wall time
+  ≈90 min including the diagnosis. Nothing ships on this.
+- **The net works and needs no per-site code: proven on a shape the harness had never seen.**
+  `AB_LISTING=<url> AB_RUNS=1 AB_DELAYS=300 node .unlazy/scan-ab.mjs` on the colorsuper collection: **1258
+  elements, 206 groups, walk 23.8 s of a 27.6 s scan, 174 downloads, 0 timeouts, exit 0**. `postsOnPage 0`
+  there is the rule34 ground-truth probe degrading as designed (no post links), which is why the delivered
+  count comes from the dir-based counters.
+- **Step 0 also found and fixed four defects in my own instrument** (rule 3: one fix, not an investigation;
+  details in `knowledge.md` (19)). All four surfaced only because a new page shape behaved differently:
+  `filesInWindow` was dated from the **`sendMessage` promise resolution** (on colorsuper that settled 88 s
+  into a 118 s scan) and counted **1 of 174** files; the drain gate broke on an **empty queue 4 s into a
+  25 s walk**; the run had **no clock** for its own send (`triggerMs`, now logged); and delivery had **no
+  baseline-first count**. Now `filesAdded`/`bytesAdded` (files before the trigger → after) is the
+  window-free check, and the window starts from the scan's **own** age. Re-validated on the same page:
+  `filesInWindow` **151 → 162**, `filesAdded 0` with byte-identical `labBytes` — which is **correct** for a
+  repeat scan (Chrome overwrites the same filenames; 70/70 of that site's files carry mtimes in the new
+  window). Net consequence: the **first** scan of a site uses `filesAdded`, a **repeat** uses
+  `filesInWindow`.
+- **Cost so far.** 0 A/B runs. Probes: 2 launches (step 0), 1 login session + 1 verification launch
+  (step 0b), plus 1 free-navigation window to obtain the artuntamed URL.
+
+### MAIN-08 — the same page gives a different result on a second run (NEW 2026-10-09)
+- **Symptom, from user issues and repeated by the owner:** "unstable results" — the same listing scanned
+  twice does not deliver the same files, so the user cannot tell a dead link from a bug.
+- **Evidence (indirect, and it says the main source is already fixed).** Same listing, same settings:
+  pre-fix runs delivered a file for 19–31 of 42 posts; after the two `fileKey`-collision fixes, 41–42 of
+  42. So most of the variance **was** the identity collision (`MAIN-02`), and the residual — after-run #2
+  dropped one post after-run #1 delivered — is what this item must either name or clear. Direct evidence
+  (two clean runs compared set-by-set) has **not** been taken yet.
+- **Cross-check added 2026-10-09 — a worker restart is itself a source of variance.** On rule34 the death
+  recurs, and a restart adopts in-flight downloads and can lose one (`Download lost when the background
+  restarted`, `service-core.js:1539`). The pair of runs must therefore carry the generation/restart marker
+  next to the delivered set: without it, a death would be measured as nondeterminism in the pick, and the
+  item would be closed on the wrong cause.
+- **Why it is universal and cheap.** The check is "same URL twice, same set". It knows nothing about any
+  site, needs no new harness capability (the existing loop, two runs, the worker's own counters and the
+  progress table) and returns a number instead of an impression.
+- **MEASURED 2026-10-09 (first direct evidence, `.unlazy/scan-ab3.json`, comparison over the INTERSECTION
+  of the runs' own ground truths — `scan-ab-diff.mjs ab3 2 4`).** Two runs with **identical settings** on
+  the same listing: both saw 42 posts, but **2 ids existed only in one run and 2 only in the other**, so
+  the comparison runs over **36 common posts**. Of those 36, **run 2 delivered 35 and run 4 delivered
+  36** — post `18991854` (`61c907f9…`) has **NO ROW AT ALL** in run 2 (never resolved) while run 4
+  delivered its `.jpeg` (361 887 B, completed, after a `.jpg` 404 supersede). So the difference is **real
+  nondeterminism in the resolution step**, not a dead URL and not the pick: the element was either not
+  collected or its resolution came back empty. One post in 36 — that is the size of the effect on this
+  listing, and it is now attributable instead of anecdotal.
+- **Protocol correction the same run forced (do not skip it).** The listing does **not** serve the same
+  page twice: rounds 1–3 measured `elements` 303 / 325 / 318, 314 / 334 / 464 / 436, 411 / 314 / 461 /
+  **582** and post sets that differ by 2–4 ids between loads. Comparing "posts delivered" against ONE
+  run's ground truth therefore counts **page variance as loss** — round 1 produced a false `40/42` that
+  way (the page-side diff then showed **0** posts without a delivered file). The harness keeps a ground
+  truth **per run** now (`postsJudged`, `gtMd5`), and every future diff is taken over the **intersection**,
+  with page variance reported as a first-class number next to it.
+- **INSTRUMENT CORRECTED 2026-10-09 — the biggest "loss" in repeat runs was the instrument, and the real
+  residue is content-side (`.unlazy/scan-ab-rows.mjs`).** In one launch on the same listing: run 1 (fresh
+  session) had **42/42** page posts in a completed row and **42** files written in its window; run 2 had
+  **35/42** in a completed row while the worker reported **completed 50** and only **7** files were written
+  — the rest were the *adoption* path — and **7 of the page's posts had no row at all**. So: (a) only the
+  **first** scan of a launch is a clean comparable scan (later runs may serve walk numbers, never
+  delivered-set comparisons); (b) a loss claim needs the independent count `filesInWindow` (files written
+  inside the run's window by mtime), not the row table; (c) the drain hypothesis is closed —
+  `mdPendingSnapshot()` is empty the moment the phase reads `done` (`drained in 0.0s`, `idleSec` 0–4);
+  (d) **the sharpest remaining form of this item is content-side: why do ~7 page posts produce no row at
+  all on a fresh load of the same url?** That is a collection/prefilter/resolution question, and it is
+  what "unstable results" most likely means to the user.
+- **Next.** First-scan-only runs, same listing; the delivered count comes from `filesInWindow`, and the
+  missing posts are traced on the content side (were they collected? prefiltered out? did resolution
+  return empty?) rather than through the row table. Any difference is
+  then either a dead URL **at the source** (proven by the page-side reachability test the earlier items
+  already use) or a real nondeterminism to localise — in the pick order, the walk order, or the breaker
+  state, all of which are universal, not per-site.
+- **Closes with.** Two runs with identical delivered sets, or every difference attributed and one of them
+  filed as its own item. It cannot close by argument, only by the pair of runs.
+- **Cost so far.** 0 dedicated runs.
 
 ### MAIN-04 — session reset on a worker restart
 - **Symptom.** A second mass-download session opened by itself after the worker restarted; that path
@@ -855,12 +1225,64 @@ this file does not get a research item that does not change a `MAIN` decision (r
   `chrome.downloads` operations at full parallelism**: every documented Chrome termination condition is
   excluded, so this is either an undocumented interaction in that stage or a Chrome bug — and it is
   reproducible on demand in this lab (first run of a fresh browser, default settings).
+- **REPRODUCED 2026-10-09 (3 deaths in 2 fresh browser sessions, 8 runs) — and none of them cost a file.**
+  `.unlazy/scan-ab2.json`: generation 1 **lived 40.9 s and ended `abrupt`**, generation 2 finished the
+  run. `.unlazy/scan-ab3.json`: **two** deaths — gen 1 lived 32.9 s, gen 2 only **8.3 s** (the restart-loop
+  shape), gen 3 served the remaining runs. All three match the earlier fingerprint (first session of a
+  freshly started browser, download phase, ~30–45 s in) and all three are labelled `abrupt` — which the
+  platform research says is the **only** label the product can ever produce. The runs completed anyway
+  (44–61 completed rows) and no `Download lost when the background restarted` row appeared in any of the
+  11 artifacts, so the **frequency** of the death is confirmed and its **cost** remains the open half.
+  Nuance for honesty: this harness polls the worker with short CDP evals every 4 s, so these deaths were
+  measured with a debugger present; the earlier native arm (zero attaches) also saw deaths, so this does
+  not re-open the "the lab causes it" question, but it does not close it either.
+- **UN-PARKED 2026-10-09 (owner's report + a recorded lost download).** The reopen condition — "a death
+  that costs a file or a row" — **is met**: on a restart the extension adopts in-flight
+  `chrome.downloads` entries and, when the entry is gone, writes the row `Download lost when the
+  background restarted` (`service-core.js:1539`; seen live in `.unlazy/candskip.log`, recorded in
+  `MAIN-02` → *One note on the live run*), and the owner reports the death **recurs** on rule34. So this
+  is no longer diagnosis-only and no longer parked: the mitigation below goes first, the label
+  re-definition second, and the shutdown hook never (it cannot exist).
 - **Next, and it is no longer a hunt but a mitigation to try (with the measurement already in place):**
   (1) space the download stage — do not refill a freed slot instantly after a failure; a short backoff
   after N consecutive failures (the download-stage twin of the existing filter-stage circuit breaker),
   measured with this harness (same listing, same first-run shape, deaths before / after); (2) re-run the
   E3/E4 grid with more repetitions to see whether "first session + 3-way + cascade" holds; (3) fix the
-  label problem above (the `onSuspend` correction) so a future death can be attributed at all.
+  label problem above (the `onSuspend` correction) so a future death can be attributed at all — the
+  **platform replacements for that missing hook were researched 2026-10-09 (below); the answer is "no
+  shutdown hook is needed", not "MV3 cannot do it".**
+- **PLATFORM REPLACEMENTS, researched 2026-10-09 (owner's question: was an MV3 substitute looked for at
+  all, or was "not available in MV3" assumed?).** It was assumed — that is why hours went into
+  instrumenting a hook that can never fire. What the platform actually offers, from the lifecycle doc
+  (`developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle`, read 2026-10-09):
+  * **Termination is three documented conditions and no `suspend` callback** — 30 s inactivity, one
+    request/API call >5 min, a `fetch()` answer >30 s. There is no event for "about to be killed", and
+    `runtime.onSuspend` is documented against the **event page** (MV2), so the `suspend` label is
+    unfixable as written.
+  * **Replacement 1 — don't need the hook: persist eagerly.** The same doc's rule is "persist data
+    rather than using global variables"; a shutdown flush only exists to save in-memory state. Writing
+    the state when it changes (which `MD_STOP_KEY`, the snapshot and `mdWorkerStarts` already do) makes a
+    death cost nothing to flush — that is the honest replacement for the end label.
+  * **Replacement 2 — observe the death from a PAGE, no debugger.** `chrome.runtime.getContexts()`
+    (Chrome 116+; **already used in this codebase** for the offscreen document, `service-core.js:2332`)
+    reports live extension contexts of type `BACKGROUND`. A poll from the progress/options tab answers
+    "did the worker the page was talking to go away, and when" — exactly what the A/B grid had to attach
+    CDP to measure. This is the native substitute for `Target.setDiscoverTargets`.
+  * **Replacement 3 — know how long it lived, not why it died.** A deadline the worker refreshes while
+    it runs (heartbeat) plus the next start's timestamp gives last-seen-alive → restart; nothing in the
+    platform exposes a cause, so "abrupt" must be re-defined as "no heartbeat for X s", not as a verdict
+    about Chrome's decision.
+  * **Replacement 4 — the idle timer is beaten by traffic the product already makes, and the doc says
+    why:** extension API calls reset the timer (Chrome 110+), **long-lived messaging keeps the worker
+    alive** (114) while merely *opening* a port does not, WebSocket activity resets it (116), and alarms
+    can now be as short as 30 s (120). The 25 s `getPlatformInfo` tick, the 0.5 min alarm and the
+    offscreen document (its messages reset the timer since 109) are all in that set.
+  * **Upstream is still open on our exact symptom:** Chrome issue tracker **487746357** (2026-02-25),
+    "service worker is being unloaded (terminated) by the browser despite exchanging heartbeat
+    messages". That is the death with no error, no crash and no label — a platform ticket, not our hook.
+- **What the research does NOT change.** No API distinguishes a graceful stop from a hard kill, so the
+  `suspend` vs `abrupt` distinction stays unanswerable; the mitigation experiment (spacing the download
+  stage) is unaffected and is still the only product-side lever the measurements point at.
 - **Closes with.** A live run in which the extension itself reports the restart AND the setting change /
   mitigation that made the death stop happening across the A/B grid. (A run that merely completes is not
   a close: the recovery masks the death by design.)

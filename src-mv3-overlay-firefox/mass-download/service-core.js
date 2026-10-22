@@ -3774,8 +3774,20 @@ chrome.downloads.onChanged.addListener(function (delta) {
     // A user cancel can arrive as an `error`-only delta after `interrupted`
     // already passed through the generic branch. Handle it before the stall
     // watchdog and before `if (delta.state)`, idempotently.
+    // F-10b (2026-10-22 live, pixiv: 54/54 rows "Canceled by user"): Chrome also
+    // emits a USER_CANCELED `error`-only delta for a download whose interrupted
+    // entry this worker just ERASED — every server verdict below (SERVER_FORBIDDEN
+    // / SERVER_FAILED / SERVER_BAD_CONTENT) erases its history entry, and the erase
+    // of an interrupted item comes back as a user cancel a moment later. That
+    // trailing delta is the echo of our own cleanup, never the user's decision: the
+    // item's verdict is already taken and its offscreen retry / candidate advance is
+    // still in flight. Reading it as a cancel overwrote the row and aborted the tier
+    // that had just been marked 'pending'. Only the FIRST verdict may be a user cancel.
     const userErr = delta.error?.current || "";
     if (userErr.startsWith("USER_")) {
+        // F-10b: a verdict already exists for this download (see above) — leave the
+        // row and the slot to the interrupted branch that owns them.
+        if (existingTask._interruptHandled) return;
         const alreadyCanceled = downloadProgress[existingTask.url]
             && downloadProgress[existingTask.url].status === "canceled";
         existingTask._interruptHandled = true;

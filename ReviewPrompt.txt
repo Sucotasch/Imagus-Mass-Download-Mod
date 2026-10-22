@@ -1,86 +1,133 @@
-Perform a full engineering code review of this entire project and automatically write what you find to new Audit.md.
+# Independent repository audit and bug hunt
 
-This is NOT only a security scan.
-I want a broad, senior-level code review and cleanup across the whole repo. 
-Aggressively hunt for failure modes, edge cases, and broken assumptions
-Systematically test and identify:
-Violated invariants and unchecked assumptions.
-Resource limits, leaks, and OOM traps.
-Silent error suppression and exception handling gaps.
-Deadlocks, async race conditions, and ordering dependencies.
+Perform a full, evidence-based engineering audit of this repository. This is not a security-only scan,
+not a style review, and not a summary of existing notes. The deliverable is a ranked list of findings
+that another engineer can reproduce and fix.
 
-Your goal is to improve:
-- correctness
-- code quality
-- logic consistency
-- maintainability
-- readability
-- robustness
-- test quality
-- architecture hygiene
-- error handling
-- typing and interface consistency
-- configuration consistency
-- dependency hygiene
-- security where relevant
+## What this code is, and the load to assume
 
-What to review:
-1.Bugs, broken logic, edge-case failures, incorrect assumptions, and fragile behaviour.
-2.Inconsistencies in code style, naming, abstractions, interfaces, return shapes, data handling, and conventions.
-3.Poor coding standards and bad practices for the language/framework used in the repo.
-4.Duplicated logic, over-complex code, dead code, unclear responsibilities, and confusing module boundaries.
-5.Missing validation, weak error handling, poor logging patterns, and unsafe defaults.
-6.Tests that are missing, weak, flaky, outdated, or inconsistent with the actual behaviour.
-7.Type issues, schema mismatches, null handling problems, and contract inconsistencies between modules.
-8.Config, CI/CD, Docker, infra, and dependency issues where they affect reliability, maintainability, or correctness.
-9.Security vulnerabilities too, but as one part of the review — not the only focus.
-10.Suggestions for code refactoring, if necessary to comply with the instructions in this request.
+A Manifest V3 browser extension: Imagus hover-media resolution plus a mass-download subsystem.
+It runs with `<all_urls>`, `downloads`, `userScripts`, `declarativeNetRequest`, `history`, `storage`,
+and (Chrome) `offscreen`. Pages are hostile input. The remote sieve feed is executable rule text.
+The MV3 service worker can be killed at any moment, including mid-download. Assume one user, but
+hundreds of DOM candidates, concurrent downloads, multiple frames, and both Chrome and Firefox.
 
-How to work:
+## Independence rules
 
-1.Commit all changes first, then ispect the whole repository structure first.
-2.Identify the main languages, frameworks, package managers, test tools, linters, type checkers, formatters, and build tools.
-3.Infer the repository’s coding patterns and intended architecture before changing code.
-4.Run all existing validation commands where available:
-   - tests
-   - lint
-   - type checks
-   - build
-   - static analysis
+- Do not treat `AGENTS.md`, `Docs/`, `knowledge.md`, `Audit/`, issue notes, or commit messages as
+  evidence. Read them only as hypotheses to test. A claim is true only when you verify it in source
+  at HEAD, in the upstream snapshot, in configuration/data, or in a run you performed.
+- Do not reuse a finding from an existing report. If the same defect is real, prove it again from
+  code and give a fresh reproduction.
+- Separate upstream defects from mod defects. The reference tree is `Imagus-Reborn-base/src/`;
+  diff against it before blaming the mod, and check whether a mod-only guard hides an upstream bug.
+- No style taste, no "consider", no vague worries. Every finding needs a trigger and an oracle.
 
-5. Review the codebase holistically, not file-by-file in isolation.
-6. Automatically write to Audit.md the issues you find.
-7. Suggest fix and improvements. Prefer minimal, safe, production-ready changes.
-8. Preserve existing intended behaviour unless the behaviour is clearly broken, inconsistent, unsafe, or low quality.
-9. Add or update tests where needed to lock in important fixes.
-10. Don't rely on assumptions; read the actual code. Before suggesting changes, develop specific solutions. Assess their consequences holistically, ensure you have found the best solutions, and verify that they will not lead to errors, performance degradation, or loss of functionality. Continue improving until no further safe, high-confidence fixes are obvious.
+## Start from the rawest material
 
-Review standard:
-- Act like a meticulous principal engineer performing a real repository-wide review.
-- Don't change anything in the code. Do not stop at reporting; Prepare specific fixes and provide a detailed description in Audut.md of the issues found and their solutions, including examples of ready-to-use code.
-- Do not focus only on security.
-- Prioritise correctness and logic first, then consistency and maintainability, then standards and cleanup.
-- Avoid cosmetic-only refactors unless they materially improve clarity, consistency, or defect risk.
-- Avoid speculative rewrites when evidence is weak.
-- When several patterns exist in the repo, standardise toward the cleaner and more maintainable one when safe.
+1. Source at HEAD: `src-mv3-overlay/` (Chrome), `src-mv3-overlay-firefox/` (3-file delta),
+   `src/` (legacy MV2), `archive/src-mv3/`, `tools/`, `scripts/`, `build.py`, manifests,
+   `data/defaults.json`, `data/sieve.json`, `_locales/`, `offscreen/`, `lib/`.
+2. Upstream: `Imagus-Reborn-base/src/` and the real `git diff` between it and the overlay.
+3. Git history: `git log -S`, `git blame`, reverted/experimental commits, release tags.
+4. Runtime evidence you generate now: a fresh Chrome for Testing profile (and Firefox where possible),
+   local HTTP fixture pages, CDP console/network/worker/download inspection, the download folder,
+   `chrome.downloads.search`, and the extension's Save Log.
+5. Only then, existing logs or reports, and only to challenge or corroborate your own evidence.
 
-Pay special attention to:
-- inconsistent naming and unclear intent
-- mismatched data models and implicit assumptions
-- repeated logic that should be centralised
-- brittle conditionals and edge cases
-- partial error handling
-- poor separation of concerns
-- hidden side effects
-- confusing public APIs
-- test gaps around critical logic
-- drift between code, config, and tests
-- places where the implementation contradicts the apparent intent
+## Methods a principal engineer would actually use here
 
-At the end, return:
+- **Threat model first.** Enumerate trust boundaries: page DOM -> user-script world, content -> SW,
+  SW -> offscreen, SW -> DNR, remote sieve feed -> `Function()`, options/popup -> storage, page ->
+  downloads. For each, name what a hostile page or a compromised feed can reach.
+- **Full static read of the runtime paths**, not a file-by-file skim. Trace: hover `find -> resolve
+  -> set`; scan -> prefilter -> resolve -> group -> filter -> download -> progress -> Save Log;
+  gallery save; single save; sieve update; session snapshot/restore; stop/cancel; worker death.
+- **Differential analysis** against the upstream snapshot. Classify every delta as mod feature,
+  upstream hardening, or regression. Read upstream `content.js`, `background/service.js`,
+  `options/`, `SieveUI`, `common/app.js`.
+- **Property and fuzz tests** for pure or extractable logic: URL normalization, `fileKey` vs
+  `_normalizeUrlKey`, `candidateKey`, filename derivation/sanitization, MIME/ext mapping,
+  stop-word matching, size parsing, interrupt mapping, outcome ledger transitions, row eviction,
+  generation arrays. Use seeded random inputs plus hand-picked adversarial cases.
+- **Live dynamic tests** on local fixture pages: duplicate URLs, `#` HD URLs, query cache-busters,
+  front-controller URLs, lazy images, `<picture>/<source>`, iframes, shadow DOM, detached nodes,
+  data/blob URLs, huge DOMs, stop-words, concurrent downloads, a forced worker stop mid-run, a
+  second scan while one runs, Stop during worker death, gallery save, and the progress tab.
+  Verify bytes and names on disk, not just rows in the UI.
+- **Browser lifecycle tests**: kill the service worker, reload the extension, close/reopen the tab,
+  let the offscreen document idle out, and verify restore/adopt/stop behavior.
+- **Cross-browser check**: verify the Firefox tree's 3-file delta is sufficient; run it if Firefox
+  is available; otherwise list exactly which claims remain unverified.
+- **Test-the-tests**: for each lock, ask what mutation would make it fail. Extract-and-grep locks
+  that pass on broken code are findings. Do not trust `md-unit-smoke` because it says "all
+  assertions passed".
+- **Supply chain**: remote sieve URL, jsDelivr fallback, `Function()` execution, `build.py`
+  downloads, bundled `lib/` files, release zips, permissions, CSP, `web_accessible_resources`,
+  update cadence, and whether a remote update can change executable behavior.
+- **Resource bounds**: storage quotas, snapshot size, row/list growth, blob/object-URL lifetime,
+  offscreen memory cap, concurrency caps, timers that outlive their owner, AbortControllers,
+  unhandled rejections, and every `setInterval`/`setTimeout` that can leak.
 
-1.A detailed Audit.md document describing the issues found, their fixes, the rationale behind those solutions, and other necessary information, enabling a junior developer to begin making fixes without having to re-examine the entire codebase.
+## Hunt list (in priority order)
 
-2.remaining concerns not safely fixable automatically
+1. Correctness and data loss: wrong URL chosen, files lost/overwritten/deleted, duplicate
+   downloads, wrong filename, wrong MIME/size, wrong extension, failed item marked complete,
+   complete item marked failed, dedup collapsing distinct files, restore re-downloading or
+   adopting the wrong file.
+2. Races and lifecycle: worker death between write and snapshot, stop lost, two scans, restore
+   while a download is in flight, offscreen document closed mid-transfer, DNR rule removed while
+   a download runs, tab closed during scan, `onChanged` double-verdict, slot leaks.
+3. Security and privacy: remote code execution via sieve rules, XSS in options/progress/SieveUI,
+   unsanitized filenames, path traversal in `get_file`, credential leaks, cross-origin fetches,
+   overbroad DNR, message handlers that trust page-controlled data, permissions that exceed need.
+4. Upstream bugs and mod regressions: null guards, regex/ReDoS, `eval`/`Function`, options races,
+   message bus errors, `chrome.*` API misuse, Firefox event-page differences.
+5. Tests and evidence: locks that cannot fail, tests that assert implementation text instead of
+   behavior, missing coverage on the risky paths above, and docs that contradict the code.
+6. Maintainability only where it changes defect risk: duplicated logic, giant files with mixed
+   responsibilities, dead code, misleading names, hidden side effects, brittle conditionals.
 
-3.assumptions made
+## Evidence bar
+
+Every finding must contain:
+
+- **Severity:** Must fix / Should fix / Nice to have.
+- **Location:** exact file and line range, plus the upstream twin if it exists.
+- **What happens:** a concrete input, page, or sequence of events that produces a wrong result.
+- **Why it happens:** the root cause in the code, not a guess.
+- **Proof:** a command, test, CDP trace, file on disk, or minimal script that someone else can run.
+  If the proof is a test, show that it fails on the current code.
+- **Smallest fix:** the minimal safe change, with code only when it clarifies.
+- **If skipped:** the user-visible consequence.
+- **Residual uncertainty:** what you did not verify, named honestly.
+
+A finding without a trigger is not a finding. A pattern match is not a finding until you show the
+path that reaches it. Do not report the same root cause twice under two symptoms.
+
+## Output
+
+Write the report to `Audit/AUDIT_INDEPENDENT_<YYYY-MM-DD>.md` (the `Audit/` directory is local-only
+and gitignored). Keep the chat summary short: the top findings, the counts, and the open questions.
+
+Report structure:
+
+1. **What this repo does** and the load assumed.
+2. **Coverage ledger:** files/areas read, commands run, live tests run, and what was not read.
+3. **Findings**, numbered across all groups, most important first, each with the evidence bar above.
+4. **Cross-cutting risks** that are not single-line bugs: trust model, update channel, MV3 lifecycle,
+   Firefox parity.
+5. **Test/verification gaps** and the smallest oracle that would close each one.
+6. **What a top professional would do next** that this audit did not do (with the reason).
+7. **Assumptions** and **not checked**.
+
+## Constraints
+
+- Do not change product code, tests, data, or configuration. This is a report.
+- Do not commit anything. The working tree may contain user changes; record `git status` instead.
+- Do not install dependencies, overwrite user profiles, or delete user files. Use a fresh/temporary
+  profile and a dedicated download directory.
+- If a live run would be destructive or needs a human login, stop and list it as unverified.
+- Prefer portable Node scripts over shell tools that may not exist on Windows.
+- Stop when the high-risk paths are covered and every reported finding is proved. More findings are
+  not better; verified findings are.

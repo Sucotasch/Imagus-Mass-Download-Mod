@@ -316,6 +316,25 @@ h4 ~ .prow {
     text-align: right;
     flex-grow: 0;
 }
+/* Mass-download setting hints: a wrapped second line under the row.
+   Width:0 + min-width:100% is load-bearing: sections are sized to max-content,
+   so a normal flex item contributes its whole localized line to the page width
+   (long ru text stretched the page ~150px). A zero intrinsic contribution lets
+   the row keep its width from the labels; the percentage min-width then fills
+   that row at layout time, and the text wraps instead of widening the page.
+   The span.da-hint selector is needed to outrank `.prow > span:not(.clean)`
+   (flex-shrink:0 / float:right), which otherwise keeps the hint on one line. */
+.prow > span.da-hint {
+    flex: 0 1 0;
+    width: 0;
+    min-width: 100%;
+    float: none;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 16px;
+    padding: 0;
+}
 .prow input[type="text"] {
     width: 300px;
 }

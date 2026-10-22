@@ -3439,6 +3439,30 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
 }
 console.log('md-unit-smoke: candidate reachability locks hold (MAIN-02)');
 
+// --- F-10b: the trailing USER_CANCELED of our own erase() is not a user cancel ---
+// Measured live 2026-10-22 (pixiv, `Pixiv imagus-mass-download-log-2026-10-22T13-22-52.txt`):
+// every item ended as "Canceled by user" (54/54, downloaded=0) although the user
+// pressed nothing. The worker's own instrumented run
+// (`.unlazy/pixiv-cancel-trace.mjs`) showed the sequence: the browser download is
+// `interrupted` with SERVER_FORBIDDEN, the interrupted branch ERASES that history
+// entry (Fix A) and starts the offscreen retry, and Chrome then emits a second,
+// `error`-only delta for the SAME id — USER_CANCELED. F-10's new USER_* branch read
+// that echo as the user's verdict: it overwrote the row, set _interruptHandled and
+// released the slot, so the offscreen fetch that had just been marked 'pending'
+// aborted itself ("row is canceled"). The verdict of an already-interrupted
+// download belongs to the interrupted branch; only the FIRST verdict may be a
+// user cancel.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const s = readFileSync(join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8');
+    const branch = /if \(userErr\.startsWith\("USER_"\)\) \{([\s\S]*?)releaseDownloadSlot\(existingTask\);\s*return;\s*\}/.exec(s);
+    assert.ok(branch, `${tree}: F-10 — the USER_* verdict branch is missing`);
+    assert.ok(branch[1].includes('if (existingTask._interruptHandled) return;'),
+        `${tree}: F-10b — a USER_CANCELED trailing our own chrome.downloads.erase() must not be read as a user cancel`);
+    assert.ok(branch[1].indexOf('if (existingTask._interruptHandled) return;') < branch[1].indexOf('updateDownloadProgress'),
+        `${tree}: F-10b — the guard must run before the row is marked canceled`);
+}
+console.log('md-unit-smoke: F-10b lock holds (trailing USER_CANCELED is not a user cancel)');
+
 // --- MAIN-06: a TRANSIENT interrupt must retry the SAME url, not advance ---
 // Measured 2026-10-08: SERVER_FAILED did not reproduce with the url alone or at
 // concurrency 6 (5 of 6 completed in both waves; the single failure was a genuine
