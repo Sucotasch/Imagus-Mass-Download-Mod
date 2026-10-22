@@ -589,6 +589,19 @@ function handleRegisterProgressTab(msg, sender) {
     });
 }
 
+// Stable page-order insertion: equal orders keep arrival order, so a restored
+// legacy task with order 0 never jumps ahead of another order-0 task.
+function mdInsertDownload(task) {
+    const order = Number(task._order) || 0;
+    let lo = 0, hi = downloadQueue.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((Number(downloadQueue[mid]._order) || 0) <= order) lo = mid + 1;
+        else hi = mid;
+    }
+    downloadQueue.splice(lo, 0, task);
+}
+
 function handleDownloadMass(msg, sender) {
     // Do NOT revive a stopped session here (Audit N-02): a downloadMass racing
     // with stopScanning would reopen scanInProgress and start downloads after
@@ -602,7 +615,9 @@ function handleDownloadMass(msg, sender) {
         isPrivate: sender.tab?.incognito,
         source: 'element',
         isHd: !!msg.isHd,
-        elementInfo: msg.elementInfo || null
+        elementInfo: msg.elementInfo || null,
+        _order: ++mdPageOrder,
+        _session: sessionId
     });
     processFilterQueue();
     mdSchedulePersist();
@@ -1175,6 +1190,7 @@ function mdSnapshotTask(t) {
         attempts: Array.isArray(t._attempts) ? t._attempts.slice(-12) : null,
         candidateCount: t._candidateCount != null ? t._candidateCount : null,
         pickReason: t._pickReason || null,
+        order: t._order || 0,
         offscreenTried: !!t._offscreenTried,
         // A materialized payload: the NEXT worker can only re-run the fetch.
         volatile: !!(t._objectUrl || t._blob)
@@ -1183,6 +1199,8 @@ function mdSnapshotTask(t) {
 
 function mdTaskFromSnapshot(s) {
     if (!s || typeof s.url !== 'string' || !s.url) return null;
+    const order = Number(s.order) || 0;
+    if (order > mdPageOrder) mdPageOrder = order;
     return {
         url: s.url,
         referer: s.referer || '',
@@ -1199,7 +1217,9 @@ function mdTaskFromSnapshot(s) {
         _attempts: Array.isArray(s.attempts) ? s.attempts.slice() : null,
         _candidateCount: s.candidateCount != null ? s.candidateCount : null,
         _pickReason: s.pickReason || null,
-        _offscreenTried: !!s.offscreenTried
+        _offscreenTried: !!s.offscreenTried,
+        _order: Number(s.order) || 0,
+        _session: sessionId
     };
 }
 
@@ -1367,6 +1387,7 @@ function mdBuildSnapshot() {
         // taking-over worker reads it from here (the dying one cannot report).
         inflight: mdInflightList(),
         sessionId: sessionId,
+        pageOrder: mdPageOrder,
         // FIX-DUP-4: the RUN's original start, so the next generation's history query does
         // not narrow to this worker's uptime — that sliding window is what let the run write
         // 43 second copies of its own files.
@@ -1466,6 +1487,7 @@ function mdApplySnapshot(snap) {
     let droppedVolatile = 0;
 
     sessionId = Number(snap.sessionId) || sessionId;
+    mdPageOrder = Number(snap.pageOrder) || 0;
     mdScanDiagnostics = snap.scanDiagnostics && typeof snap.scanDiagnostics === 'object'
         ? snap.scanDiagnostics : null;
     // Phase stamps of the interrupted generation: the groups span and the
@@ -1897,7 +1919,9 @@ function handleRetryDownload(msg, sender) {
             url: ensureAbsoluteUrl(msg.url),
             referer: msg.referer,
             isPrivate: sender.tab?.incognito,
-            source: 'retry'
+            source: 'retry',
+            _order: ++mdPageOrder,
+            _session: sessionId
         });
         processFilterQueue();
     }
@@ -1953,6 +1977,7 @@ function handleRefererDownloadReady(msg, sender) {
         return;
     }
 
+    const base = downloadProgress[url]?.task || null;
     const task = {
         url: url,
         referer: msg.referer || '',
@@ -1963,7 +1988,8 @@ function handleRefererDownloadReady(msg, sender) {
         contentType: type,
         fileSize: size,
         filterMethod: 'REFERRER',
-        httpStatus: 200
+        httpStatus: 200,
+        _order: base?._order ?? ++mdPageOrder
     };
     task._session = sessionId;
     // Platform split (RESTORED — with a runtime capability check):
@@ -1981,7 +2007,7 @@ function handleRefererDownloadReady(msg, sender) {
     } else if (msg.objectUrl) {
         task._objectUrl = msg.objectUrl;
     }
-    downloadQueue.push(task);
+    mdInsertDownload(task);
     processDownloadQueue();
 }
 
@@ -2060,7 +2086,8 @@ async function handleRefererDownloadFailed(msg) {
                     base || { url: url, filterMethod: 'REFERER-PROBE', httpStatus: 0 },
                     'referer transport fail: ' + pErr + ' → retry without cookies'),
                 _candidateCount: base && base._candidateCount != null ? base._candidateCount : null,
-                _pickReason: base ? (base._pickReason || null) : null
+                _pickReason: base ? (base._pickReason || null) : null,
+                _order: base?._order ?? ++mdPageOrder
             };
             probeTask._session = sessionId;
             updateDownloadProgress(url, 'pending', 0, 'Retrying page fetch without cookies', null, probeTask);
@@ -2114,7 +2141,8 @@ async function handleRefererDownloadFailed(msg) {
         // from the base task into the browser-context download task.
         _attempts: attempts,
         _candidateCount: base && base._candidateCount != null ? base._candidateCount : null,
-        _pickReason: base ? (base._pickReason || null) : null
+        _pickReason: base ? (base._pickReason || null) : null,
+        _order: base?._order ?? ++mdPageOrder
     };
     task._session = sessionId;
     // Fix B: same rule as triggerRefererDownload's pinned branch — a
@@ -2129,7 +2157,7 @@ async function handleRefererDownloadFailed(msg) {
         }
         return;
     }
-    downloadQueue.push(task);
+    mdInsertDownload(task);
     processDownloadQueue();
 }
 
@@ -2414,6 +2442,7 @@ function triggerRefererDownload(task) {
             fileSize: 0,
             filterMethod: 'BROWSER',
             httpStatus: task.httpStatus || 0,
+            _order: task._order,
             _candidates: Array.isArray(task._candidates) ? task._candidates : [],
             _attempts: recordCandidateAttempt(task, 'referer skipped: host pinned to browser download'),
             _candidateCount: task._candidateCount != null ? task._candidateCount : null,
@@ -2421,7 +2450,7 @@ function triggerRefererDownload(task) {
         };
         pinnedTask._session = sessionId;
         updateDownloadProgress(task.url, 'pending', 0, 'Host pinned to browser download', null, pinnedTask);
-        downloadQueue.push(pinnedTask);
+        mdInsertDownload(pinnedTask);
         processDownloadQueue();
         return Promise.resolve();
     }
@@ -2637,13 +2666,14 @@ async function processFilterQueue() {
 
                 if (passed) {
                     task.filterTimeMs = Date.now() - filterStart;
+                    if (task._session !== sessionId) continue;
                     if (!scanInProgress) {
                         // Audit N-22: a user cancel is not a size/type skip —
                         // the task is already marked 'canceled'.
                         updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
                         continue;
                     }
-                    downloadQueue.push(task);
+                    mdInsertDownload(task);
                     processDownloadQueue();
                 } else {
                     task.filterTimeMs = Date.now() - filterStart;
@@ -2758,12 +2788,13 @@ async function processFilterQueue() {
 
                             if (passed) {
                                 task.filterTimeMs = Date.now() - filterStart;
+                                if (task._session !== sessionId) continue;
                                 if (!scanInProgress) {
                                     // Audit N-22: see HEAD path — canceled is
                                     // not a skip.
                                     updateDownloadProgress(task.url, 'canceled', 0, 'Canceled', null, task);
                                 } else {
-                                    downloadQueue.push(task);
+                                    mdInsertDownload(task);
                                     processDownloadQueue();
                                 }
                             } else {
@@ -3198,7 +3229,7 @@ function processDownloadQueue() {
         if (history === 'check') {
             task._historyChecked = true;
             task._historyPending = true;
-            downloadQueue.push(task);
+            mdInsertDownload(task);
             mdAdoptIfAlreadyDownloaded(task);
             continue;
         }
@@ -3490,6 +3521,7 @@ function advanceToNextCandidate(task, reason) {
         fileSize: 0,
         httpStatus: 0,
         filterMethod: 'BROWSER',
+        _order: task._order,
         _session: task._session,
         _candidates: task._candidates,
         // FIX-2/FIX-3: the attempt chain and the selection telemetry follow
@@ -3515,7 +3547,7 @@ function advanceToNextCandidate(task, reason) {
     const advHash = mediaHashKey(next.url);
     if (advHash) globalProcessedMediaHashes.add(advHash);
     updateDownloadProgress(next.url, 'pending', 0, 'Trying alternate URL...', null, newTask);
-    downloadQueue.push(newTask);
+    mdInsertDownload(newTask);
     processDownloadQueue();
     return true;
 }
@@ -3693,6 +3725,7 @@ function mdRetryInterruptedDownload(task, reason) {
         fileSize: task.fileSize || 0,
         httpStatus: task.httpStatus || 0,
         filterMethod: 'BROWSER',
+        _order: task._order,
         _session: task._session,
         _candidates: Array.isArray(task._candidates) ? task._candidates : [],
         _attempts: recordCandidateAttempt(task, 'retry after ' + reason),
@@ -4280,7 +4313,9 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
                         : [],
                     // FIX-3: selection telemetry for the progress row / Save Log.
                     _candidateCount: Array.isArray(pick.ordered) ? pick.ordered.length : 0,
-                    _pickReason: pick.pickReason || null
+                    _pickReason: pick.pickReason || null,
+                    _order: ++mdPageOrder,
+                    _session: sessionId
                 };
                 filterQueue.push(task);
                 processFilterQueue();

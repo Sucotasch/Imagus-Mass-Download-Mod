@@ -2853,6 +2853,9 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         const drive = new Function('downloadQueue', 'mdAdoptIfAlreadyDownloaded', 'marks', `
 var mdRestoredKeys = new Set();
 ${markSrc}
+// F-15: the guard block re-queues through the sorted insert; the sandbox only
+// needs FIFO semantics for this termination test.
+function mdInsertDownload(t) { downloadQueue.push(t); }
 (marks || []).forEach(mdMarkTaskRestored);
 ${cutFnSource(core, 'mdHistoryGuard')}
 let iterations = 0;
