@@ -503,7 +503,7 @@ function handleMessage(message, sender, sendResponse) {
             // in the alterDownload interrupt hook (onChanged below) which
             // re-ensures + retries once before giving up.
             mdDnrEnsureForTask(msg);
-            download(msg, sender.tab?.incognito, sendResponse);
+            download(msg, sender.tab, sendResponse);
             return true;
         case "history":
             if (chrome.extension?.inIncognitoContext || sender.tab?.incognito) break;
@@ -859,6 +859,8 @@ async function getFilenameFromHeaders(url) {
 const downloadItems = {};
 async function download(msg, tab, sendResponse) {
     if (!msg.url) return;
+    const tabId = tab && typeof tab === "object" ? tab.id : null;
+    const incognito = tab && typeof tab === "object" ? tab.incognito === true : false;
 
     const ext = msg.priorityExt ?? msg.ext;
 
@@ -901,7 +903,7 @@ async function download(msg, tab, sendResponse) {
     };
 
     if (platform === "firefox") {
-        params.incognito = tab.incognito;
+        params.incognito = incognito;
     }
 
     let id;
@@ -916,7 +918,7 @@ async function download(msg, tab, sendResponse) {
 
     // save info in case we need to use alternative downloading method
     if (!msg.alterDownload) {
-        msg.tabId = tab.id;
+        msg.tabId = tabId;
         msg.sendResponse = sendResponse;
         msg._objectUrl = objectUrl;
         downloadItems[id] = msg;
