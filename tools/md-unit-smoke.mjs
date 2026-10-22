@@ -1452,8 +1452,8 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             `SUPERSEDE: ${tree} — the filter-phase requeue must mark the rejected candidate too`);
         assert.ok(!/trying alternate URL/.test(coreCode),
             `SUPERSEDE REGRESSION: ${tree} — no row may claim "trying alternate URL": at the chain's end nothing is retried`);
-        assert.ok((coreCode.match(/mdItemFailedText\(/g) || []).length === 10,
-            `SUPERSEDE: ${tree} — all 9 exhausted-chain sites + the definition must use mdItemFailedText`);
+        assert.ok((coreCode.match(/mdItemFailedText\(/g) || []).length === 11,
+            `SUPERSEDE: ${tree} — all 10 exhausted-chain sites + the definition must use mdItemFailedText`);
         assert.ok(/all ' \+ n \+ ' candidate URLs failed/.test(cutFnFrom(core, 'mdItemFailedText')),
             `SUPERSEDE: ${tree} — the terminal row must say how many candidates died`);
         // 2026-09-21 (owner report): "all 9 candidate URLs failed" was read as nine

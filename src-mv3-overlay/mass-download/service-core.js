@@ -2007,12 +2007,19 @@ async function handleRefererDownloadFailed(msg) {
         try { failHost = new URL(url).host; } catch (e) { failHost = ''; }
         if (failHost && refererHostModes[failHost] !== 'browser') refererHostModes[failHost] = 'browser';
     }
-    // Stage 5b: the content-script fetch returned an explicit 4xx/5xx (the
-    // URL is definitively dead) — skip straight to the next candidate.
-    if (base && /^HTTP [45]\d\d$/.test(msg.error || '')) {
-        // FIX-2: the dead attempt is recorded in the chain before advancing;
-        // the old row stays visible as a failed attempt (see advance).
+    // Stage 5b: the content-script fetch returned an explicit 4xx/5xx — skip
+    // straight to the next candidate. 404/410 are definitive: without one, do
+    // not build a doomed browser download for the same dead URL. A 403 still
+    // falls through (cookies may satisfy it in the browser context), and 5xx/429
+    // may recover there too.
+    const httpStatus = base ? Number((/^HTTP (\d{3})$/.exec(msg.error || "") || [])[1]) : 0;
+    if (httpStatus >= 400 && httpStatus < 600) {
         if (advanceToNextCandidate(base, 'referer ' + (msg.error || 'HTTP error'))) return;
+        if (httpStatus === 404 || httpStatus === 410) {
+            updateDownloadProgress(url, "failed", 0,
+                mdItemFailedText(base, "HTTP " + httpStatus), null, base);
+            return;
+        }
     }
     // FIX-2: record the dead referer attempt BEFORE building the task (the
     // base task may be missing — a synthetic stub keeps the chain going).
