@@ -3420,14 +3420,14 @@
             pdsp(e);
         },
 
-        keyup_space: function (e) {
-            if (PVI.spaceIsDown && shortcut.key(e) === "Space") {
+        keyup_pause: function (e) {
+            if (PVI.pauseIsDown && shortcut.key(e) === (cfg.keys.pause || "Space")) {
                 PVI.PLAYER.options({ inactivityTimeout: PVI.PLAYER._isAudio ? 0 : cfg.hz.hideControlsDelay });
                 PVI.PLAYER.controls(cfg.hz.hideControlsDelay >= 0 || PVI.PLAYER._isAudio);
                 PVI.PLAYER.userActive(PVI.PLAYER._isAudio || cfg.hz.hideControlsDelay === 0);
-                if (PVI.spaceIsDown === 1) {
+                if (PVI.pauseIsDown === 1) {
                     PVI.playerIsPaused = !PVI.PLAYER.paused();
-                } else if (PVI.spaceIsDown === 2) {
+                } else if (PVI.pauseIsDown === 2) {
                     PVI.PLAYER.playbackRate(1);
                 }
                 if (PVI.playerIsPaused) {
@@ -3435,8 +3435,8 @@
                 } else {
                     PVI.PLAYER.play();
                 }
-                PVI.spaceIsDown = 0;
-                win.removeEventListener("keyup", PVI.keyup_space, true);
+                PVI.pauseIsDown = 0;
+                win.removeEventListener("keyup", PVI.keyup_pause, true);
             }
         },
 
@@ -3473,10 +3473,10 @@
                 return;
             }
 
-            if (PVI.state === 4 && PVI.isVideo() && key === "Space" && !e.shiftKey && !e.ctrlKey) {
+            if (PVI.state === 4 && PVI.isVideo() && key === (cfg.keys.pause || "Space") && !e.shiftKey && !e.ctrlKey) {
                 if (e.repeat) {
-                    if (PVI.spaceIsDown === 1) {
-                        PVI.spaceIsDown = 2;
+                    if (PVI.pauseIsDown === 1) {
+                        PVI.pauseIsDown = 2;
                         PVI.playerIsPaused = PVI.PLAYER.paused();
                         PVI.PLAYER.play();
                         PVI.PLAYER.playbackRate(2);
@@ -3485,8 +3485,8 @@
                         PVI.PLAYER.userActive(true);
                     }
                 } else {
-                    PVI.spaceIsDown = 1;
-                    win.addEventListener("keyup", PVI.keyup_space, true);
+                    PVI.pauseIsDown = 1;
+                    win.addEventListener("keyup", PVI.keyup_pause, true);
                 }
 
             } else if (e.altKey && e.shiftKey) {

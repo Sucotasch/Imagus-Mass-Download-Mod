@@ -96,6 +96,7 @@
 		"hz_history": "H",
 		"framePrev": ",",
 		"frameNext": ".",
+		"pause": "Space",
 		"downloadAll": "Q"
 	},
 	"da": {
