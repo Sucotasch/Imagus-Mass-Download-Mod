@@ -33,6 +33,11 @@ let progressTabPromise = null;
 // no download — so nothing can move it without a new event (the wake-up alarm,
 // a message, or a worker restart).
 var mdLastProgressAt = 0;
+// Monotonic page order assigned when an item is found. The download queue is
+// kept sorted by it so filter-completion timing cannot reorder files (F-15).
+var mdPageOrder = 0;
+// Last failed snapshot write, surfaced in the tab/log instead of lost silently.
+var mdSnapshotError = null;
 
 function mdPendingSnapshot() {
     return {
@@ -44,7 +49,8 @@ function mdPendingSnapshot() {
             && activeFilters === 0 && activeDownloads === 0 && activeRefererRetries === 0,
         // Seconds since the last row changed anything. Context for the tab; it is
         // NOT the freeze test (a big file with no progress events also sits here).
-        idleSec: mdLastProgressAt ? Math.round((Date.now() - mdLastProgressAt) / 1000) : null
+        idleSec: mdLastProgressAt ? Math.round((Date.now() - mdLastProgressAt) / 1000) : null,
+        snapshotError: mdSnapshotError || null
     };
 }
 
@@ -513,6 +519,8 @@ function resetMassDownloadSession() {
     mdBreakerReset();
     filterQueue = [];
     downloadQueue = [];
+    mdPageOrder = 0;
+    mdSnapshotError = null;
     contentScanDone = false;
     // Audit N-19 (corrected): orphaned requests from a previous session must
     // not write rows into the new one. handleStopScanning aborts them on
@@ -985,6 +993,54 @@ function mdStopWins(stopRec, snap) {
 // already capped by maxProgressRecords, the queues are the only unbounded part.
 const MD_SNAPSHOT_MAX_TASKS = 1500;
 const MD_SNAPSHOT_MAX_KEYS = 4000;
+// Headroom under the 10 MiB storage.session quota: a serialized snapshot must
+// fit even when rows carry large elementInfo/candidate/attempt payloads.
+const MD_SNAPSHOT_MAX_BYTES = 7 * 1024 * 1024;
+
+function mdSnapshotBytes(snap) {
+    try { return new Blob([JSON.stringify(snap)]).size; }
+    catch (e) { return JSON.stringify(snap).length; }
+}
+
+function mdStripSnapshotHeavy(list) {
+    (Array.isArray(list) ? list : []).forEach(function (entry) {
+        const task = entry && entry.task ? entry.task : entry;
+        if (!task || typeof task !== "object") return;
+        task.elementInfo = null;
+        task.candidates = null;
+        task.attempts = null;
+    });
+}
+
+function mdFitSnapshot(snap, limit) {
+    if (mdSnapshotBytes(snap) <= limit) return snap;
+    snap.processedUrls = (snap.processedUrls || []).slice(-1000);
+    snap.processedHashes = (snap.processedHashes || []).slice(-1000);
+    if (mdSnapshotBytes(snap) <= limit) return snap;
+    for (const key of ["rows", "filterQueue", "downloadQueue"]) {
+        const list = Array.isArray(snap[key]) ? snap[key] : [];
+        snap[key] = list;
+        while (list.length > 100 && mdSnapshotBytes(snap) > limit) {
+            list.splice(0, Math.max(1, list.length >> 1));
+        }
+    }
+    if (mdSnapshotBytes(snap) > limit) {
+        snap.scanDiagnostics = null;
+        snap.hostModes = Object.create(null);
+    }
+    if (mdSnapshotBytes(snap) > limit) {
+        mdStripSnapshotHeavy(snap.rows);
+        mdStripSnapshotHeavy(snap.filterQueue);
+        mdStripSnapshotHeavy(snap.downloadQueue);
+    }
+    if (mdSnapshotBytes(snap) > limit) {
+        snap.rows = (snap.rows || []).slice(-100);
+        snap.filterQueue = [];
+        snap.downloadQueue = [];
+        mdStripSnapshotHeavy(snap.rows);
+    }
+    return snap;
+}
 // 1 s, not less: the download phase fires a delta per chunk, and each flush
 // serializes the whole row table + both queues. On a death the loss is at most
 // one second of row transitions, which the onSuspend flush mostly eliminates.
@@ -1058,7 +1114,8 @@ function mdScanPhaseReport() {
         scanTailMs: (mdScanPhases.drained && mdScanPhases.scanDone)
             ? mdScanPhases.drained - mdScanPhases.scanDone : null,
         totalMs: sessionStartTime ? end - sessionStartTime : null,
-        drained: !!mdScanPhases.drained
+        drained: !!mdScanPhases.drained,
+        snapshotError: mdSnapshotError || null
     };
 }
 
@@ -1371,11 +1428,27 @@ function mdFlushSession() {
     if (mdPersistBusy) { mdSchedulePersist(); return; }
     if (!scanInProgress) { mdDropSessionSnapshot(); return; }
     let snap;
-    try { snap = mdBuildSnapshot(); } catch (e) { return; }
+    try { snap = mdFitSnapshot(mdBuildSnapshot(), MD_SNAPSHOT_MAX_BYTES); } catch (e) { return; }
     mdPersistBusy = true;
     const done = function () { mdPersistBusy = false; };
+    const write = function (payload) {
+        return chrome.storage.session.set({ [MD_SNAPSHOT_KEY]: payload });
+    };
     try {
-        chrome.storage.session.set({ [MD_SNAPSHOT_KEY]: snap }).catch(function () {}).then(done);
+        write(snap).then(function () { mdSnapshotError = null; })
+            .catch(function () {
+                // A transient serializer/quota difference gets a genuinely
+                // smaller payload, not the same 7 MiB object again.
+                let compact;
+                try { compact = mdFitSnapshot(mdBuildSnapshot(), 2 * 1024 * 1024); }
+                catch (e) { throw e; }
+                return write(compact).then(function () { mdSnapshotError = null; })
+                    .catch(function (e2) {
+                        mdSnapshotError = (e2 && e2.message) || "snapshot write failed";
+                        console.warn(manifest.name + ": session snapshot lost: " + mdSnapshotError);
+                    });
+            })
+            .then(done, done);
     } catch (e) {
         done();
     }
@@ -1589,6 +1662,7 @@ function mdApplySnapshot(snap) {
     };
 
     ensureSessionKeepalive();
+    mdSnapshotError = null;
     // A full mirror: whatever the tab was showing was stale by definition. Its
     // registration died with the previous worker, so the page re-registers on
     // its own once its liveness probe sees the new session start (the progress

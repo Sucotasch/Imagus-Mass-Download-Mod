@@ -1807,6 +1807,7 @@ var activeFilters = ${filters};
 var activeDownloads = ${downloads};
 var activeRefererRetries = ${retries};
 var mdLastProgressAt = ${lastAt};
+var mdSnapshotError = null;
 ${cutFnFrom(core, 'mdPendingSnapshot')}
 return mdPendingSnapshot;`)();
         // The 21:52 run: 68 queued, nothing in flight, 12 s since a row changed.
