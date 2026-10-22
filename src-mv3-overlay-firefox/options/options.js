@@ -388,7 +388,20 @@ var save = async function () {
                     if (grant[1]) {
                         grant[1] = grant[1].trim();
                         host = { op: ";", txt: grant[1].substr(1) };
-                    } else host = { op: grant[2], url: grant[3].trim() };
+                    } else {
+                        var grantOp = grant[2];
+                        var grantUrl = grant[3].trim();
+                        if (grantOp.length === 2) {
+                            try {
+                                new RegExp(grantUrl, "i");
+                            } catch (e) {
+                                alert("Invalid regular expression: " + e.message);
+                                fld.focus();
+                                return;
+                            }
+                        }
+                        host = { op: grantOp, url: grantUrl };
+                    }
                     parsed.push(host);
                 }
             }
@@ -422,7 +435,11 @@ var save = async function () {
     const sieveRepoInputSave = document.getElementById("sieveRepository");
     if (sieveRepoInputSave) prefs.sieveRepository = sieveRepoInputSave.value.trim();
 
-    await Port.send({ cmd: "savePrefs", prefs: prefs });
+    const saveRes = await Port.send({ cmd: "savePrefs", prefs: prefs });
+    if (saveRes?.error) {
+        alert("Save failed: " + saveRes.error);
+        return;
+    }
     await readCfg();
     applyCustomCssOptions();
     updateSavedValues();

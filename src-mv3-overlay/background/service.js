@@ -400,11 +400,9 @@ async function toggleIgnoreElementMenu(enabled) {
 }
 
 let prefsMutex = Promise.resolve();
-let saveError = null;
-
 async function updatePrefs(prefs, callback) {
     prefs = prefs || {};
-    saveError = null;
+    let saveError = null;
 
     let defaults = await (await fetch("/data/defaults.json")).json();
     let storedPrefs = await cfg.get(Object.keys(defaults));
@@ -445,23 +443,24 @@ async function updatePrefs(prefs, callback) {
         }
     }
 
-    if (newPrefs.grants?.length > 0) {
-        let grants = newPrefs.grants || [];
-        let processedGrants = [];
-        for (let i = 0; i < grants.length; ++i) {
-            if (grants[i].op !== ";") {
-                processedGrants.push({
-                    op: grants[i].op,
-                    url: grants[i].op.length === 2 ? RegExp(grants[i].url, "i") : grants[i].url,
-                });
+    const grants = Array.isArray(newPrefs.grants) ? newPrefs.grants : [];
+    const processedGrants = [];
+    for (let i = 0; i < grants.length; ++i) {
+        const grant = grants[i];
+        if (!grant || typeof grant.op !== "string" || typeof grant.url !== "string") continue;
+        if (grant.op === ";" || grant.op.length < 1 || grant.op.length > 2 || !grant.url) continue;
+        if (grant.op.length === 2) {
+            try {
+                new RegExp(grant.url, "i");
+            } catch (e) {
+                console.warn(manifest.name + ": invalid grant regex skipped: " + grant.url);
+                continue;
             }
         }
-        if (processedGrants.length) {
-            newPrefs.grants = processedGrants;
-        }
-    } else {
-        delete newPrefs.grants;
+        processedGrants.push({ op: grant.op, url: grant.url });
     }
+    newPrefs.grants = processedGrants;
+    mdCompileGrants(processedGrants);
 
     cachedPrefs = newPrefs;
     await toggleIgnoreElementMenu(newPrefs?.hz?.grantUrlsEnabled);
@@ -544,7 +543,11 @@ function handleMessage(message, sender, sendResponse) {
                 });
             return true;
         case "savePrefs":
-            updatePrefs(msg.prefs, function () { context.postMessage({}); });
+            updatePrefs(msg.prefs, function (err) {
+                context.postMessage(err ? { error: err.message || String(err) } : {});
+            }).catch(function (e) {
+                context.postMessage({ error: (e && e.message) || "Save failed" });
+            });
             return true;
         case "update_sieve":
             updateSieve(msg.local, 0, false, true).then(context.postMessage);
@@ -1270,14 +1273,49 @@ function openUrl(msg, sender) {
     }
 }
 
+// Stored grants are plain {op,url}; compile once per preference load so the
+// per-navigation check never builds a RegExp from stored text.
+let mdGrantCache = [];
+let mdGrantCacheReady = false;
+
+function mdCompileGrants(grants) {
+    mdGrantCache = [];
+    mdGrantCacheReady = true;
+    if (!Array.isArray(grants)) return;
+    for (const grant of grants) {
+        if (!grant || typeof grant.op !== "string" || typeof grant.url !== "string") continue;
+        if (grant.op === ";" || grant.op.length < 1 || grant.op.length > 2 || !grant.url) continue;
+        let re = null;
+        if (grant.op.length === 2) {
+            try {
+                re = new RegExp(grant.url, "i");
+            } catch (e) {
+                continue;
+            }
+        }
+        mdGrantCache.push({ op: grant.op, url: grant.url, re });
+    }
+}
+
+function mdGrantMatches(grant, url) {
+    if (!grant || typeof grant.url !== "string" || typeof grant.op !== "string" || !grant.op) return false;
+    if (grant.url === "*") return true;
+    if (grant.re) return grant.re.test(url);
+    if (grant.op.length === 2) {
+        try { return new RegExp(grant.url, "i").test(url); } catch (e) { return false; }
+    }
+    return url.indexOf(grant.url) > -1;
+}
+
 // check if Imagus is disabled on the given URL
 function grantsIsBlocked(url) {
-    if (!url || !cachedPrefs.grants) return false;
+    if (!url) return false;
+    if (!mdGrantCacheReady) mdCompileGrants(cachedPrefs.grants);
 
     let blocked = false;
-    for (let i = 0, len = cachedPrefs.grants.length; i < len; ++i) {
-        let grant = cachedPrefs.grants[i];
-        if (grant.url === "*" || (grant.op[1] && grant.url.test(url)) || url.indexOf(grant.url) > -1) {
+    for (let i = 0, len = mdGrantCache.length; i < len; ++i) {
+        const grant = mdGrantCache[i];
+        if (mdGrantMatches(grant, url)) {
             blocked = grant.op[0] === "!";
         }
     }
@@ -1319,6 +1357,7 @@ async function grantsRemove(url) {
     grants ||= [];
 
     grants = grants.filter(grant =>
+        !grant || typeof grant.op !== "string" || typeof grant.url !== "string" ||
         grant.url !== host + "/" ||
         grant.op.length > 1 ||
         grant.op[0] !== "!"
