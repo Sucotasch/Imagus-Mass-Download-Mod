@@ -2574,6 +2574,7 @@ async function mdTryOffscreenDownload(task) {
         if (task._blob || task._objectUrl) return false; // already materialized
         if (!scanInProgress || userCanceled) return false;
         if (task._session !== sessionId) return false;
+        if (downloadProgress[task.url]?.status === 'canceled') return true;
         // Fail fast unless the host is registry-covered AND its rule is live:
         // without the Referer substitution the fetch would 403 like everything
         // else (the 2026-09-11 FF log proves the gate is absolute otherwise).
@@ -2757,7 +2758,7 @@ async function mdSaveViaOffscreen(msg) {
 // auto cookies/Referer and returns a blob, which we download from an object
 // URL (Chrome: objectUrl created in content; Firefox: Blob materialized here).
 function triggerRefererDownload(task) {
-    if (!task || task._session !== sessionId || !scanInProgress) return Promise.resolve();
+    if (!task || task._session !== sessionId || !scanInProgress || userCanceled) return Promise.resolve();
     if (!downloadInitiatorTabId) {
         updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable (no initiator tab)', null, task);
         return Promise.resolve();
@@ -4127,6 +4128,30 @@ function mdRetryInterruptedDownload(task, reason) {
 chrome.downloads.onChanged.addListener(function (delta) {
     const existingTask = downloadIdToTask.get(delta.id);
     if (!existingTask) return;
+    if (existingTask._session !== sessionId) {
+        if (delta.state?.current === "complete"
+            || delta.state?.current === "interrupted"
+            || delta.error?.current) {
+            releaseDownloadSlot(existingTask);
+        }
+        return;
+    }
+
+    // A user cancel can arrive as an `error`-only delta after `interrupted`
+    // already passed through the generic branch. Handle it before the stall
+    // watchdog and before `if (delta.state)`, idempotently.
+    const userErr = delta.error?.current || "";
+    if (userErr.startsWith("USER_")) {
+        const alreadyCanceled = downloadProgress[existingTask.url]
+            && downloadProgress[existingTask.url].status === "canceled";
+        existingTask._interruptHandled = true;
+        if (!alreadyCanceled) {
+            updateDownloadProgress(existingTask.url, "canceled", 0,
+                mapDownloadInterruptReason(userErr), delta.id, existingTask);
+        }
+        releaseDownloadSlot(existingTask);
+        return;
+    }
 
     // Gradient watchdog: any delta for this download proves it is alive —
     // re-arm its stall timer (releaseDownloadSlot cleared it once terminal).
@@ -4249,6 +4274,12 @@ chrome.downloads.onChanged.addListener(function (delta) {
                     // mdTryOffscreenDownload never rejects — the slot, released
                     // in the continuation below, is what would leak if it did.
                     mdTryOffscreenDownload(existingTask).then(function (handled) {
+                        if (!scanInProgress || userCanceled
+                            || existingTask._session !== sessionId
+                            || downloadProgress[url]?.status === 'canceled') {
+                            releaseDownloadSlot(existingTask);
+                            return;
+                        }
                         // MAIN-06: a TRANSIENT failure is not a dead candidate —
                         // retry the SAME url (bounded) before the chain walks on,
                         // so one 5xx/rate event cannot silently swap a reachable

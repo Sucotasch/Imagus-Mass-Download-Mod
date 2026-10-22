@@ -2403,7 +2403,7 @@ function updateDownloadProgress(url, status, progress, error, downloadId, task) 
 // auto cookies/Referer and returns a blob, which we download from an object
 // URL (Chrome: objectUrl created in content; Firefox: Blob materialized here).
 function triggerRefererDownload(task) {
-    if (!task || task._session !== sessionId || !scanInProgress) return Promise.resolve();
+    if (!task || task._session !== sessionId || !scanInProgress || userCanceled) return Promise.resolve();
     if (!downloadInitiatorTabId) {
         updateDownloadProgress(task.url, 'failed', 0, 'Referer retry unavailable (no initiator tab)', null, task);
         return Promise.resolve();
@@ -3762,6 +3762,30 @@ function mdRetryInterruptedDownload(task, reason) {
 chrome.downloads.onChanged.addListener(function (delta) {
     const existingTask = downloadIdToTask.get(delta.id);
     if (!existingTask) return;
+    if (existingTask._session !== sessionId) {
+        if (delta.state?.current === "complete"
+            || delta.state?.current === "interrupted"
+            || delta.error?.current) {
+            releaseDownloadSlot(existingTask);
+        }
+        return;
+    }
+
+    // A user cancel can arrive as an `error`-only delta after `interrupted`
+    // already passed through the generic branch. Handle it before the stall
+    // watchdog and before `if (delta.state)`, idempotently.
+    const userErr = delta.error?.current || "";
+    if (userErr.startsWith("USER_")) {
+        const alreadyCanceled = downloadProgress[existingTask.url]
+            && downloadProgress[existingTask.url].status === "canceled";
+        existingTask._interruptHandled = true;
+        if (!alreadyCanceled) {
+            updateDownloadProgress(existingTask.url, "canceled", 0,
+                mapDownloadInterruptReason(userErr), delta.id, existingTask);
+        }
+        releaseDownloadSlot(existingTask);
+        return;
+    }
 
     // Gradient watchdog: any delta for this download proves it is alive —
     // re-arm its stall timer (releaseDownloadSlot cleared it once terminal).

@@ -1081,6 +1081,12 @@ chrome.downloads.onChanged.addListener(function (delta) {
         return;
     }
 
+    if (delta.error?.current?.startsWith("USER_")) {
+        cleanup();
+        if (typeof msg.sendResponse === "function") msg.sendResponse({ error: delta.error.current });
+        return;
+    }
+
     // USER_* errors are user-initiated (cancel via the downloads UI) — do not
     // fall back to the page-context retry for them (upstream 8.20 behavior).
     if ((delta.error && !delta.error.current?.startsWith("USER_")) || /\.html?$/.exec(delta.filename?.current)) {
