@@ -352,6 +352,12 @@ function cacheSieve(newSieve) {
                 console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (img)`);
                 continue;
             }
+            // F-16: the runtime guard fails fast; this static warning names the
+            // rule so a rewrite to async is actionable (regex may false-positive).
+            if ((typeof rule.res === 'string' && /\.open\s*\([^)]*,\s*false\s*\)/.test(rule.res))
+                || (typeof rule.to === 'string' && /\.open\s*\([^)]*,\s*false\s*\)/.test(rule.to))) {
+                console.warn(manifest.name + ': sieve rule uses synchronous XHR: ' + ruleName);
+            }
 
             if (rule.res)
                 if (/^:\n/.test(rule.res)) {
