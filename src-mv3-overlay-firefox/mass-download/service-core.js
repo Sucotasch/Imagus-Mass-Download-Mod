@@ -1478,6 +1478,41 @@ function mdFlushSession() {
 // Rebuild the session inside a worker that never opened one. Only an
 // interrupted, still-running session is restored; a finished/stopped one has
 // nothing to resume.
+// F-10c (2026-10-22, live pixiv log 14-28-40 rows [022]/[035]) — a restored
+// in-flight row whose Chrome record is GONE is not a lost file. Our own
+// interrupt branch ERASES the stub of a server-refused download (Fix A) and
+// retries the item through the offscreen tier; a worker that dies inside that
+// retry leaves a row pointing at an id that no longer exists. Nothing was
+// written (a completed download would still be in history), nothing is running,
+// and the URL is still the item's address — so the honest state is "back at the
+// start of the pipeline", not "failed". In that run 2 of 50 files were thrown
+// away this way while both originals were reachable.
+//
+// A NEW object is built (snapshot round-trip), for the reason every other
+// re-queue documents: releaseDownloadSlot marks the old one _slotReleased, and
+// sharing it would leak the retry's slot forever. The dedup keys are released
+// exactly like the requeue loop above — they were added when the item was first
+// picked up, so processFilterQueue would drop it as a duplicate — and the task
+// is marked restored so the history guard can answer it from a file Chrome
+// already holds, including an in-progress twin the snapshot was too stale to
+// record. That is what keeps a re-queue from ever writing a '(1)' copy.
+function mdRequeueRestoredTask(task) {
+    if (!task || !scanInProgress || userCanceled) return false;
+    const again = mdTaskFromSnapshot(mdSnapshotTask(task));
+    if (!again) return false;
+    again._restored = true;
+    mdMarkTaskRestored(again);
+    const key = fileKey(again.url);
+    if (key) globalProcessedUrls.delete(key);
+    const hash = mediaHashKey(again.url);
+    if (hash) globalProcessedMediaHashes.delete(hash);
+    filterQueue.push(again);
+    if (mdRecoveredInfo) mdRecoveredInfo.requeuedLost = (mdRecoveredInfo.requeuedLost || 0) + 1;
+    console.warn(mdWorkerLabel() + ': restored row whose Chrome download record is gone is re-queued: ' + again.url);
+    processFilterQueue();
+    return true;
+}
+
 function mdApplySnapshot(snap) {
     const rows = Array.isArray(snap.rows) ? snap.rows : [];
     const requeue = [];
@@ -1630,9 +1665,15 @@ function mdApplySnapshot(snap) {
         chrome.downloads.search({ id: item.downloadId }, function (results) {
             const found = results && results[0];
             if (chrome.runtime.lastError || !found) {
-                updateDownloadProgress(item.task.url, 'failed', 0,
-                    'Download lost when the background restarted', item.downloadId, item.task);
+                // F-10c: the id is gone, the item is not (see mdRequeueRestoredTask).
+                // A row the user canceled stays canceled; nothing else may rewrite it.
+                const row = downloadProgress[item.task.url];
+                const recovered = (!row || row.status !== 'canceled') && mdRequeueRestoredTask(item.task);
                 releaseDownloadSlot(item.task);
+                if (!recovered && row && row.status !== 'canceled') {
+                    updateDownloadProgress(item.task.url, 'failed', 0,
+                        'Download lost when the background restarted', item.downloadId, item.task);
+                }
                 return;
             }
             if (found.state === 'complete') {
@@ -1680,6 +1721,9 @@ function mdApplySnapshot(snap) {
         rows: restoredRows,
         requeued: requeue.length,
         adopted: 0,
+        // F-10c: restored in-flight rows whose Chrome record was our own erased
+        // stub — re-queued instead of being reported as lost files.
+        requeuedLost: 0,
         droppedVolatile: droppedVolatile
     };
 
@@ -1700,7 +1744,8 @@ function mdApplySnapshot(snap) {
     });
     console.info(mdWorkerLabel() + ': mass-download session RECOVERED after a background restart — '
         + restoredRows + ' rows, ' + requeue.length + ' re-queued, ' + adopt.length + ' in-flight download(s) checked, '
-        + droppedVolatile + ' row(s) needing a manual Retry; previous session start '
+        + droppedVolatile + ' row(s) needing a manual Retry, '
+        + ((mdRecoveredInfo && mdRecoveredInfo.requeuedLost) || 0) + ' lost-record row(s) re-queued; previous session start '
         + (snap.sessionStart ? new Date(snap.sessionStart).toISOString() : '-'));
     // The queues are ours again; the page's half of the conversation is not —
     // ask it to re-send the groups it is still waiting on (see the function).

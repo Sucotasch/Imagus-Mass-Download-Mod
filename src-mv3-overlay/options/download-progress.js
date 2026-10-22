@@ -922,6 +922,11 @@
                 + (rc.rows || 0) + ' row(s), ' + (rc.requeued || 0) + ' re-queued, '
                 + (rc.adopted || 0) + ' in-flight download(s) adopted, '
                 + (rc.droppedVolatile || 0) + ' needing a manual Retry (page-fetch/temporary URL lost)'
+                // F-10c (2026-10-22): rows whose Chrome record was the stub our own
+                // interrupt branch erased and whose retry died with the worker. They
+                // are re-queued, not failed — the count makes a silent re-download
+                // visible in the saved log.
+                + ', ' + (rc.requeuedLost || 0) + ' re-queued after a lost history record'
                 // 2026-09-21: how many items the history check recognised as already
                 // on disk (DUP-1). 0 with a non-zero re-queued count is itself a
                 // finding: the resume path re-downloaded everything it restored.
