@@ -48,7 +48,7 @@
         if (inHead) {
             document.head.appendChild(style);
         } else {
-            PVI.ROOT?.shadowRoot?.appendChild(style);
+            PVI.ROOT_SHADOW?.appendChild(style);
         }
     }
 
@@ -316,7 +316,7 @@
         };
 
         var ensureCss = function () {
-            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
+            var sr = PVI.ROOT_SHADOW;
             if (!sr || sr.getElementById('md-gallery-style')) return;
             var st = doc.createElement('style');
             st.id = 'md-gallery-style';
@@ -630,7 +630,7 @@
         };
 
         var decorate = function () {
-            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
+            var sr = PVI.ROOT_SHADOW;
             if (!sr || !PVI.GLR) return;
             ensureCss();
             // Re-open of an already-built grid (gallery() skips the rebuild):
@@ -1580,7 +1580,7 @@
             if (PVI.DIV) return;
 
             PVI.ROOT = doc.createElement("div");
-            PVI.ROOT.attachShadow({ mode: "open" });
+            PVI.ROOT_SHADOW = PVI.ROOT.attachShadow({ mode: "closed" });
             doc.documentElement.appendChild(PVI.ROOT);
 
             var x, y, z, p;
@@ -1665,7 +1665,7 @@
                 true
             );
 
-            let docEl = PVI.ROOT.shadowRoot;
+            let docEl = PVI.ROOT_SHADOW;
             docEl.appendChild(PVI.DIV);
             docEl.appendChild(PVI.LDR);
             PVI.DBOX = {};
@@ -3380,6 +3380,7 @@
         },
 
         tbarClick: function (e) {
+            if (!e.isTrusted) return;
             const action = e.target.closest("[data-action]")?.dataset?.action;
             if (e.type === "mousedown") {
                 if (e.button === 1 && action === "open") {
@@ -3970,7 +3971,7 @@
         onWheel: function (e) {
             if (e.clientX >= winW || e.clientY >= winH) return;
             const target =
-                PVI.ROOT.shadowRoot.elementsFromPoint?.(e.clientX, e.clientY)?.[0] ||
+                PVI.ROOT_SHADOW?.elementsFromPoint?.(e.clientX, e.clientY)?.[0] ||
                 doc.elementsFromPoint(e.clientX, e.clientY)?.[0];
             // const target = getElementsFromPoint(e.clientX, e.clientY)?.[0];
             if (!target) return;
@@ -4369,7 +4370,7 @@
             }
 
             if (PVI.fullZm) {
-                const target = e?.clientX >= 0 && PVI.ROOT.shadowRoot.elementsFromPoint(e.clientX, e.clientY)?.[0] || trg;
+                const target = e?.clientX >= 0 && PVI.ROOT_SHADOW?.elementsFromPoint(e.clientX, e.clientY)?.[0] || trg;
                 if (PVI.shouldScroll(e, target) && (PVI.TRG.IMGS_album || PVI.isVideo() && (!cfg.hz.scrollVideoWithCtrl || e?.ctrlKey))) {
                     PVI.setCursor();
                 } else if (trg) {
@@ -4593,6 +4594,9 @@
                     if (!PVI.iFrame) win.addEventListener("resize", PVI.onWinResize);
                 } else PVI[cmd](d);
             } else if (cmd === "from_frame") {
+                if (e.source === win) return;
+                const iframe = findIframe(e.source);
+                if (!iframe) return;
                 if (PVI.iFrame) {
                     win.parent.postMessage(d, "*");
                     return;
@@ -4611,8 +4615,7 @@
                     return;
                 }
 
-                const iframe = findIframe(e.source);
-                const rect = iframe?.getBoundingClientRect() || { x: 0, y: 0 };
+                const rect = iframe.getBoundingClientRect() || { x: 0, y: 0 };
                 PVI.x = (d.x + rect.x) || 0;
                 PVI.y = (d.y + rect.y) || 0;
                 if (d.tbox) {

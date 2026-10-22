@@ -282,7 +282,7 @@
         };
 
         var ensureCss = function () {
-            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
+            var sr = PVI.ROOT_SHADOW;
             if (!sr || sr.getElementById('md-gallery-style')) return;
             var st = doc.createElement('style');
             st.id = 'md-gallery-style';
@@ -596,7 +596,7 @@
         };
 
         var decorate = function () {
-            var sr = PVI.ROOT && PVI.ROOT.shadowRoot;
+            var sr = PVI.ROOT_SHADOW;
             if (!sr || !PVI.GLR) return;
             ensureCss();
             // Re-open of an already-built grid (gallery() skips the rebuild):

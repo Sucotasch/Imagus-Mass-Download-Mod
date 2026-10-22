@@ -70,6 +70,7 @@ window.addEventListener(
 window.addEventListener(
     "keydown",
     function (event) {
+        if (!event.isTrusted) return;
         catchEvent?.onkeydown?.(event);
     },
     true
