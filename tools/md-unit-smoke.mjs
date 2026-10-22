@@ -3536,3 +3536,281 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
         `${tree}: STOP-1 — a stop with no snapshot to compare against still ends the session`);
 }
 console.log('md-unit-smoke: the user stop survives a restart locks hold (STOP-1)');
+
+// --- F-14 (2026-10-20): regression locks for the remediation contracts -------
+// Small, source-cut or pure-function checks in the existing no-framework style.
+const fsMod = await import('node:fs');
+const readNorm = (tree, rel) =>
+    fsMod.readFileSync(join(repoRoot, `${tree}/${rel}`), 'utf8').replace(/\r\n/g, '\n');
+const cManifest = JSON.parse(fsMod.readFileSync(join(repoRoot, 'src-mv3-overlay/manifest.json'), 'utf8'));
+const fManifest = JSON.parse(fsMod.readFileSync(join(repoRoot, 'src-mv3-overlay-firefox/manifest.json'), 'utf8'));
+assert.ok(cManifest.permissions.includes('contextMenus'), 'F-05: Chrome must request contextMenus');
+assert.ok(fManifest.permissions.includes('contextMenus'), 'F-05: Firefox must keep contextMenus');
+assert.ok(!fManifest.content_scripts, 'F-01: Firefox must not register a page-visible relay content script');
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    assert.ok(!fsMod.existsSync(join(repoRoot, `${tree}/content/relay.js`)),
+        `F-01: ${tree} — the forgeable relay must stay deleted`);
+}
+
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const core = readNorm(tree, 'mass-download/service-core.js');
+    const sw = readNorm(tree, 'background/service.js');
+    const content = readNorm(tree, 'content/content.js');
+
+    // F-04: grants survive storage as plain strings; invalid regexes are dropped.
+    const grant = new Function(`
+var mdGrantCache = [];
+var mdGrantCacheReady = false;
+${cutFnFrom(sw, 'mdCompileGrants')}
+${cutFnFrom(sw, 'mdGrantMatches')}
+return { compile: mdCompileGrants, matches: mdGrantMatches, cache: () => mdGrantCache };`)();
+    grant.compile([{ op: '!!', url: 'example\\.com' }, { op: '!!', url: '[' }, { op: ';', url: 'x' }]);
+    assert.strictEqual(grant.cache().length, 1, `F-04: ${tree} — invalid/semicolon grants must be dropped`);
+    assert.strictEqual(grant.matches(grant.cache()[0], 'https://example.com/a'), true,
+        `F-04: ${tree} — a compiled regex grant must match without .test on a string`);
+    assert.ok(/processedGrants\.push\(\{ op: grant\.op, url: grant\.url \}\)/.test(sw),
+        `F-04: ${tree} — storage must receive plain {op,url}, never a RegExp`);
+
+    // F-06: the single-save handoff passes the tab object, not a boolean.
+    assert.ok(/download\(msg, sender\.tab, sendResponse\)/.test(sw),
+        `F-06: ${tree} — download() must receive sender.tab`);
+    assert.ok(/typeof tab === "object" \? tab\.id : null/.test(cutFnFrom(sw, 'download')),
+        `F-06: ${tree} — download() must tolerate a missing tab`);
+
+    // F-08: both referer handlers check session ownership before touching the counter.
+    for (const fnName of ['handleRefererDownloadReady', 'handleRefererDownloadFailed']) {
+        const fn = cutFnFrom(core, fnName);
+        const guard = fn.indexOf('msg.session !== sessionId');
+        const dec = fn.indexOf('activeRefererRetries = Math.max');
+        assert.ok(guard >= 0 && dec > guard, `F-08: ${tree} — ${fnName} must guard before decrementing`);
+    }
+
+    // F-09/F-10: stale deltas and user cancels cannot write rows or leak slots.
+    const onChanged = core.slice(core.indexOf('chrome.downloads.onChanged.addListener'));
+    assert.ok(/existingTask\._session !== sessionId/.test(onChanged),
+        `F-09: ${tree} — onChanged must reject an old-session task before any row write`);
+    assert.ok(/userErr\.startsWith\("USER_"\)/.test(onChanged),
+        `F-10: ${tree} — mass user-cancel must be terminal`);
+    assert.ok(/delta\.error\?\.current\?\.startsWith\("USER_"\)/.test(sw),
+        `F-10: ${tree} — single-save user-cancel must be terminal`);
+    if (tree === 'src-mv3-overlay') {
+        assert.ok(/task\._session !== sessionId/.test(cutFnFrom(core, 'mdTryOffscreenDownload')),
+            `F-09: ${tree} — the offscreen fetch must re-check ownership after its await`);
+    }
+
+    // F-11: 404/410 never fall through to a doomed browser download.
+    const failed = cutFnFrom(core, 'handleRefererDownloadFailed');
+    assert.ok(/httpStatus === 404 \|\| httpStatus === 410/.test(failed),
+        `F-11: ${tree} — 404/410 must fail after candidate exhaustion`);
+
+    // F-07: Clear All delegates to the session owner and keeps map entries for
+    // late terminal deltas. Execute the real function with stubbed owners.
+    const clearWorld = new Function(`
+let sessionId = 1, filterQueue = [1], downloadQueue = [2];
+let downloadProgress = { old: {} };
+let downloadStats = { found: 9, prefiltered: 8, skipped: 7, downloaded: 6 };
+let downloadInitiatorTabId = 4;
+const downloadIdToTask = new Map([[7, { url: 'x' }]]);
+const calls = [];
+function handleStopScanning() { calls.push('stop'); }
+function resetMassDownloadSession() {
+    sessionId++; filterQueue = []; downloadQueue = [];
+    calls.push('reset');
+}
+function mdDropSessionSnapshot() { calls.push('drop'); }
+function sendToProgressTab(m) { calls.push(m); }
+${cutFnFrom(core, 'handleClearAll')}
+return {
+    run: handleClearAll,
+    state: () => ({ sessionId, filterQueue, downloadQueue, downloadProgress, downloadStats,
+        downloadInitiatorTabId, mapSize: downloadIdToTask.size, calls })
+};`)();
+    clearWorld.run();
+    const cleared = clearWorld.state();
+    assert.strictEqual(cleared.sessionId, 2, `F-07: ${tree} — Clear All must increment the session`);
+    assert.deepStrictEqual(cleared.filterQueue, [], `F-07: ${tree} — filter queue must empty`);
+    assert.deepStrictEqual(cleared.downloadQueue, [], `F-07: ${tree} — download queue must empty`);
+    assert.strictEqual(cleared.downloadStats.downloaded, 0, `F-07: ${tree} — stats must reset`);
+    assert.strictEqual(cleared.downloadInitiatorTabId, null, `F-07: ${tree} — initiator must clear`);
+    assert.strictEqual(cleared.mapSize, 1, `F-07: ${tree} — downloadIdToTask must retain ids for late deltas`);
+    assert.ok(cleared.calls.includes('reset'), `F-07: ${tree} — Clear All must call resetMassDownloadSession`);
+
+    // F-15: sorted insertion is stable for equal orders. Start empty so the
+    // queue is sorted after every call (the production invariant).
+    const queue = [];
+    const insert = new Function('downloadQueue', `${cutFnFrom(core, 'mdInsertDownload')}\nreturn mdInsertDownload;`)(queue);
+    [3, 1, 2, 4, 0, 2].forEach(n => insert({ _order: n }));
+    assert.deepStrictEqual(queue.map(t => t._order), [0, 1, 2, 2, 3, 4],
+        `F-15: ${tree} — mdInsertDownload must sort stably`);
+    assert.ok(!/downloadQueue\.push\(/.test(core), `F-15: ${tree} — no direct downloadQueue.push may remain`);
+    for (const fnName of ['advanceToNextCandidate', 'requeueNextCandidateForFilter', 'mdRetryInterruptedDownload']) {
+        assert.ok(/_order: task\._order/.test(cutFnFrom(core, fnName)),
+            `F-15: ${tree} — ${fnName} clone must preserve page order`);
+    }
+    assert.ok(/order: t\._order \|\| 0/.test(core) && /_order: Number\(s\.order\) \|\| 0/.test(core),
+        `F-15: ${tree} — snapshot/restore must carry page order`);
+
+    // F-12: the snapshot fitter obeys a byte budget and strips the heavy fields
+    // that count caps miss. Session identity must survive.
+    const fitWorld = new Function(`
+const MD_SNAPSHOT_MAX_BYTES = 7 * 1024 * 1024;
+${cutFnFrom(core, 'mdSnapshotBytes')}
+${cutFnFrom(core, 'mdStripSnapshotHeavy')}
+${cutFnFrom(core, 'mdFitSnapshot')}
+return { fit: mdFitSnapshot, bytes: mdSnapshotBytes };`)();
+    const huge = {
+        sessionId: 42, runOrigin: 1, initiatorTab: 9,
+        rows: Array.from({ length: 1000 }, (_, i) => ({ url: 'u' + i, task: { url: 'u' + i } })),
+        filterQueue: [], downloadQueue: [], processedUrls: [], processedHashes: []
+    };
+    const fitted = fitWorld.fit(huge, 256 * 1024);
+    assert.ok(fitWorld.bytes(fitted) <= 256 * 1024, `F-12: ${tree} — fitted snapshot must fit the budget`);
+    assert.strictEqual(fitted.sessionId, 42, `F-12: ${tree} — session identity must not be trimmed`);
+    assert.strictEqual(fitted.rows[fitted.rows.length - 1].url, 'u999',
+        `F-12: ${tree} — trimming must keep the newest row`);
+    const heavy = {
+        sessionId: 1, rows: [{ url: 'big', task: { url: 'big', elementInfo: 'x'.repeat(1024 * 1024) } }],
+        filterQueue: [], downloadQueue: [], processedUrls: [], processedHashes: []
+    };
+    const shrunk = fitWorld.fit(heavy, 64 * 1024);
+    assert.strictEqual(shrunk.rows[0].task.elementInfo, null,
+        `F-12: ${tree} — a huge elementInfo must be stripped before dropping the snapshot`);
+    assert.ok(/const write = function \(payload\) \{\s*return chrome\.storage\.session\.set\(\{ \[MD_SNAPSHOT_KEY\]: payload \}\)/.test(core)
+        && /mdFitSnapshot\(mdBuildSnapshot\(\), 2 \* 1024 \* 1024\)/.test(core),
+        `F-12: ${tree} — a quota failure must retry with a smaller payload`);
+
+    // F-13: path case is identity; scheme/host/fragment normalize through URL.
+    const key = new Function(`${cutFnFrom(core, 'mdWrittenUrlKey')}\nreturn mdWrittenUrlKey;`)();
+    assert.notStrictEqual(key('https://Host/A.JPG#x'), key('https://host/a.jpg'),
+        `F-13: ${tree} — A.JPG and a.jpg are distinct files`);
+    assert.strictEqual(key('HTTPS://Host/A.JPG#x'), key('https://host/A.JPG'),
+        `F-13: ${tree} — scheme/host case and fragment must normalize`);
+    assert.strictEqual(key('//host/a.jpg'), 'https://host/a.jpg',
+        `F-13: ${tree} — protocol-relative URLs must resolve`);
+
+    // F-16: synchronous XHR is rejected only during the rule call, and the native
+    // open is restored after both the throw and an async call.
+    const method = cutMethodFn(content, 'callRuleRes').replace(/^\s*callRuleRes:\s*/, '');
+    const callRuleRes = new Function(`var PVI = {};
+var callRuleRes = ${method}
+};
+return callRuleRes;`)();
+    const NativeXHR = globalThis.XMLHttpRequest;
+    let opened = 0;
+    class FakeXHR {
+        open(method, url, async) { opened++; this.async = async; }
+    }
+    const nativeOpen = FakeXHR.prototype.open;
+    globalThis.XMLHttpRequest = FakeXHR;
+    try {
+        assert.throws(() => callRuleRes({ res: function () { new FakeXHR().open('GET', 'x', false); } }, {}),
+            /Synchronous XMLHttpRequest is disabled/,
+            `F-16: ${tree} — a synchronous open must throw inside a sieve rule`);
+        assert.strictEqual(FakeXHR.prototype.open, nativeOpen,
+            `F-16: ${tree} — open must be restored after the throw`);
+        callRuleRes({ res: function () { new FakeXHR().open('GET', 'x', true); } }, {});
+        assert.strictEqual(opened, 1, `F-16: ${tree} — async open must proceed (the sync one is rejected before FakeXHR.open)`);
+        assert.strictEqual(FakeXHR.prototype.open, nativeOpen,
+            `F-16: ${tree} — open must be restored after success`);
+    } finally {
+        if (NativeXHR === undefined) delete globalThis.XMLHttpRequest;
+        else globalThis.XMLHttpRequest = NativeXHR;
+    }
+}
+// F-01/F-02/F-03: source-level locks for the transport, trust, and DOM boundaries.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const content = readNorm(tree, 'content/content.js');
+    const app = readNorm(tree, 'common/app.js');
+    const sw = readNorm(tree, 'background/service.js');
+    assert.ok(!/cmd === ["']relay["']/.test(content), `F-01: ${tree} — no page postMessage relay branch`);
+    assert.ok(!/attachShadow\(\{ mode: "open" \}\)/.test(content), `F-03: ${tree} — the toolbar shadow root must be closed`);
+    assert.ok(!/ROOT\.shadowRoot/.test(content), `F-03: ${tree} — no code may read host.shadowRoot`);
+    assert.ok(/if \(!e\.isTrusted\) return;/.test(content), `F-03: ${tree} — toolbar clicks must be trusted`);
+    assert.ok(/if \(!event\.isTrusted\) return;/.test(app), `F-03: ${tree} — keyboard input must be trusted`);
+    assert.ok(/if \(e\.source === win\) return;/.test(content), `F-03: ${tree} — the top page cannot spoof from_frame`);
+    assert.ok(!/response\.json\(\)/.test(cutFnFrom(sw, 'updateSieve')), `F-02: ${tree} — updateSieve must hash bytes, not parse a stream`);
+    const defaults = JSON.parse(readNorm(tree, 'data/defaults.json'));
+    assert.strictEqual(defaults.tls.autoUpdateSieve, false, `F-02: ${tree} — automatic remote execution is off by default`);
+    assert.strictEqual(typeof defaults.sieveTrustRepo, 'string', `F-02: ${tree} — trust repo default exists`);
+    assert.strictEqual(typeof defaults.sieveTrustHash, 'string', `F-02: ${tree} — trust hash default exists`);
+}
+
+const ffService = readNorm('src-mv3-overlay-firefox', 'background/service.js');
+const transportWorld = new Function(`
+const mdContentPorts = new Map();
+${cutFnFrom(ffService, 'mdRegisterContentPort')}
+${cutFnFrom(ffService, 'mdSendToContent')}
+return { register: mdRegisterContentPort, send: mdSendToContent, ports: mdContentPorts };`)();
+const sent = [];
+const fakePort = {
+    sender: { tab: { id: 5 }, frameId: 0 },
+    onDisconnect: { addListener: function (fn) { this.fn = fn; } },
+    postMessage: function (m) { sent.push(m); }
+};
+transportWorld.register(fakePort);
+await transportWorld.send(5, { cmd: 'frame0' }, { frameId: 0 });
+assert.strictEqual(sent.length, 1, 'F-01: mdSendToContent delivers to the matching frame');
+await assert.rejects(transportWorld.send(5, { cmd: 'frame1' }, { frameId: 1 }), /No user-script port/,
+    'F-01: mdSendToContent must reject when no matching frame has a port');
+fakePort.onDisconnect.fn();
+assert.strictEqual(transportWorld.ports.size, 0, 'F-01: a disconnected port must be forgotten');
+assert.ok(/^chrome\.runtime\.onUserScriptConnect\?\.addListener\(mdRegisterContentPort\);$/m.test(ffService),
+    'F-01: onUserScriptConnect is registered at top level');
+
+// F-04: invalid stored regexes never throw in the matcher.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const sw = readNorm(tree, 'background/service.js');
+    const matcher = new Function(`
+${cutFnFrom(sw, 'mdGrantMatches')}
+return mdGrantMatches;`)();
+    assert.strictEqual(matcher({ op: '!~', url: '(' }, 'https://example.com/(x)'), false,
+        `F-04: ${tree} — a malformed direct grant returns false without throwing`);
+}
+
+// F-12: a quota rejection retries with a smaller payload, and a second failure
+// is reported instead of being swallowed.
+const makeFlushWorld = (failures) => new Function(`
+let mdPersistBusy = false, mdSnapshotError = null;
+let scanInProgress = true;
+const manifest = { name: 'test' };
+const MD_SNAPSHOT_KEY = 'k';
+const MD_SNAPSHOT_MAX_BYTES = 7 * 1024 * 1024;
+const sets = [];
+const chrome = { storage: { session: { set: function (payload) {
+    sets.push(payload);
+    return sets.length <= ${failures} ? Promise.reject(new Error('quota')) : Promise.resolve();
+} } } };
+function mdSchedulePersist() {}
+function mdDropSessionSnapshot() {}
+function mdBuildSnapshot() {
+    return {
+        sessionId: 1, rows: Array.from({ length: 1200 }, function (_, i) {
+            return { url: 'u' + i, task: { url: 'u' + i, blob: 'x'.repeat(2000) } };
+        }), filterQueue: [], downloadQueue: [], processedUrls: [], processedHashes: []
+    };
+}
+${cutFnFrom(readNorm('src-mv3-overlay', 'mass-download/service-core.js'), 'mdSnapshotBytes')}
+${cutFnFrom(readNorm('src-mv3-overlay', 'mass-download/service-core.js'), 'mdStripSnapshotHeavy')}
+${cutFnFrom(readNorm('src-mv3-overlay', 'mass-download/service-core.js'), 'mdFitSnapshot')}
+${cutFnFrom(readNorm('src-mv3-overlay', 'mass-download/service-core.js'), 'mdFlushSession')}
+return {
+    run: mdFlushSession,
+    state: function () { return { busy: mdPersistBusy, error: mdSnapshotError, sets: sets }; }
+};`)();
+const retryWorld = makeFlushWorld(1);
+retryWorld.run();
+await new Promise(resolve => setTimeout(resolve, 20));
+let retryState = retryWorld.state();
+assert.strictEqual(retryState.sets.length, 2, 'F-12: one quota rejection must trigger exactly one retry');
+assert.ok(JSON.stringify(retryState.sets[1]).length < JSON.stringify(retryState.sets[0]).length,
+    'F-12: the retry must use a genuinely smaller snapshot');
+assert.strictEqual(retryState.error, null, 'F-12: a successful retry clears snapshotError');
+assert.strictEqual(retryState.busy, false, 'F-12: mdPersistBusy must be released after the retry');
+const failWorld = makeFlushWorld(2);
+failWorld.run();
+await new Promise(resolve => setTimeout(resolve, 20));
+assert.ok(failWorld.state().error, 'F-12: two failures must surface snapshotError');
+assert.strictEqual(failWorld.state().busy, false, 'F-12: mdPersistBusy must be released after failure');
+
+console.log('md-unit-smoke: remediation contracts (F-04..F-16) hold in both trees');
+
