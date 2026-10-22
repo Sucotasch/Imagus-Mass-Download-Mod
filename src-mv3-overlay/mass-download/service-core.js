@@ -2615,6 +2615,11 @@ async function mdTryOffscreenDownload(task) {
                 : 'Offscreen fetch failed: ' + ((res && res.error) || 'no object URL');
             return miss(text, res && res.status);
         }
+        if (!scanInProgress || userCanceled || task._session !== sessionId
+            || downloadProgress[task.url]?.status === 'canceled') {
+            mdOffscreenRevokeObjectUrl(res.objectUrl);
+            return true;
+        }
 
         // Same size/type policy as the page-fetch path (handleRefererDownloadReady)
         // — the offscreen tier must not be a way around the user's settings.
@@ -2892,6 +2897,7 @@ async function processFilterQueue() {
 
     while (activeFilters < maxConcurrentFilters && filterQueue.length > 0) {
         const task = filterQueue.shift();
+        if (!task || task._session !== sessionId) continue;
         // Stage 5c: a bare '//host/...' URL breaks fetch() and
         // chrome.downloads.download with "Invalid URL" — normalize first so
         // every progress key / dedup / fetch below sees the absolute form.
@@ -3007,6 +3013,7 @@ async function processFilterQueue() {
             clearTimeout(timeoutId);
             activeControllers.delete(task._id);
             mdInflightEnd(inflightId);
+            if (task._session !== sessionId) continue;
 
             const contentType = response.headers.get('Content-Type') || '';
             const contentLength = parseContentLength(response.headers);
@@ -3119,6 +3126,7 @@ async function processFilterQueue() {
                     }
                 } else {
                     const capped = await readBodyCapped(response, MAX_FALLBACK_SIZE);
+                    if (task._session !== sessionId) continue;
                     if (capped.error) {
                         task.filterTimeMs = Date.now() - filterStart;
                         task.httpStatus = response.status;
@@ -3585,6 +3593,7 @@ function processDownloadQueue() {
 
     while (activeDownloads < maxConcurrentDownloads && downloadQueue.length > 0) {
         const task = downloadQueue.shift();
+        if (!task || task._session !== sessionId) continue;
         // A restored task waits for one answer before it is allowed to create a file.
         // It is put back exactly once, and the loop stops rather than spinning: the
         // callback resumes this function the moment Chrome answers.
@@ -3852,6 +3861,7 @@ function mdItemFailedText(task, base) {
 // 404 link), advance to the next candidate instead of failing the item. Returns
 // true if advanced (task re-queued as a BROWSER download), false otherwise.
 function advanceToNextCandidate(task, reason) {
+    if (!task || task._session !== sessionId || !scanInProgress || userCanceled) return false;
     const next = pickNextCandidate(task);
     if (!next) {
         // 2026-09-12: the item's verdict is decided HERE, so the last
@@ -3916,6 +3926,7 @@ function advanceToNextCandidate(task, reason) {
 // failing the item, re-queue the next candidate through the filter so it gets
 // its own HEAD/GET validation round. Returns true if a candidate was re-queued.
 function requeueNextCandidateForFilter(task) {
+    if (!task || task._session !== sessionId) return false;
     const next = pickNextCandidate(task);
     if (!next) return false;
     const newTask = {
@@ -3926,6 +3937,8 @@ function requeueNextCandidateForFilter(task) {
         isHd: next.isHd,
         elementInfo: task.elementInfo || null,
         _candidates: task._candidates,
+        _session: task._session,
+        _order: task._order,
         // FIX-2/FIX-3: the attempt chain and the selection telemetry follow
         // the item across filter re-queues too.
         _attempts: recordCandidateAttempt(task, 'filter-reject'),
@@ -4104,8 +4117,8 @@ function mdRetryInterruptedDownload(task, reason) {
         // The session may have ended, or the user may have canceled, during the
         // backoff — then the retry must not resurrect the item.
         if (!scanInProgress || userCanceled) return;
-        newTask._session = sessionId;
-        downloadQueue.push(newTask);
+        if (newTask._session !== sessionId) return;
+        mdInsertDownload(newTask);
         processDownloadQueue();
     }, MD_RETRY_BACKOFF_MS);
     return true;
@@ -4125,6 +4138,14 @@ chrome.downloads.onChanged.addListener(function (delta) {
         // search yields no results, so the existing no-results path stays.
         if (chrome.runtime.lastError) { /* handled by the no-results path */ }
         if (!results || !results[0]) return;
+        if (existingTask._session !== sessionId) {
+            if (delta.state?.current === "complete"
+                || delta.state?.current === "interrupted"
+                || delta.error?.current) {
+                releaseDownloadSlot(existingTask);
+            }
+            return;
+        }
         const url = existingTask.url;
 
         if (delta.state) {

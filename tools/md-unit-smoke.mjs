@@ -3467,7 +3467,9 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     assert.ok(advanceCall > retryCall, `${tree}: MAIN-06 — the retry must be offered BEFORE the chain advances`);
     assert.ok(s.indexOf('alreadyCanceled || !firstVerdict') < retryCall, `${tree}: MAIN-06 — a canceled or already-judged download must not retry`);
     assert.ok(/if \(!scanInProgress \|\| userCanceled\) return;/.test(fn), `${tree}: MAIN-06 — the backoff must re-check the session before re-queuing`);
-    assert.ok(/newTask\._session = sessionId;/.test(fn), `${tree}: MAIN-06 — the retried task must join the CURRENT session, or its continuations are dropped as stale`);
+    assert.ok(/_session: task\._session/.test(fn), `${tree}: MAIN-06 — the retry must inherit the owner session`);
+    assert.ok(/newTask\._session !== sessionId/.test(fn), `${tree}: MAIN-06 — a late retry from an old session must be dropped as stale`);
+    assert.ok(!/newTask\._session = sessionId;/.test(fn), `${tree}: MAIN-06 — a retry must not adopt itself into a new session`);
 }
 console.log('md-unit-smoke: interrupt-retry locks hold (MAIN-06)');
 
