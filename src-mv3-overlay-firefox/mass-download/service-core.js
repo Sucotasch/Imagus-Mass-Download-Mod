@@ -2993,8 +2993,8 @@ function mdIsRestoredTask(task) {
 }
 
 // Lookup key for a media URL: HD '#' prefix stripped, protocol-relative resolved,
-// fragment dropped, case folded. Chrome stores the URL it fetched; this is what a
-// task's own URLs must be normalized to for the comparison to mean anything.
+// fragment dropped. Scheme/host are normalized by URL; path case is preserved
+// (Photo.JPG and photo.jpg are distinct files on most servers).
 function mdWrittenUrlKey(url) {
     if (typeof url !== 'string' || !url) return '';
     let u = url.trim().replace(/^#/, '');
@@ -3002,7 +3002,7 @@ function mdWrittenUrlKey(url) {
     try {
         const parsed = new URL(u);
         parsed.hash = '';
-        return parsed.href.toLowerCase();
+        return parsed.href;
     } catch (e) { return ''; }
 }
 

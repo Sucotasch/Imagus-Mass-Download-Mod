@@ -2954,8 +2954,8 @@ return { iterations: iterations, isRestored: mdIsRestoredTask, keys: mdRestoredK
             `DUP-2: ${tree} — an exact URL match must be adopted`);
         assert.strictEqual(matcher.find({ url: '#' + A }, idx([entry({ url: A })])).id, 7,
             `DUP-2: ${tree} — the HD '#' prefix must not hide the file that was written`);
-        assert.strictEqual(matcher.find({ url: A.toUpperCase() }, idx([entry({ url: A })])).id, 7,
-            `DUP-2: ${tree} — URL case must not create a second copy`);
+        assert.strictEqual(matcher.find({ url: A.toUpperCase() }, idx([entry({ url: A })])), null,
+            `DUP-2: ${tree} — path case is file identity (F-13): A.PNG must not adopt a.png`);
         // (b) the SAME ITEM through another candidate: the older generation wrote the
         // original, the restored chain now wants the sample. This is the 29-pair shape.
         const cand = { _candidates: [{ url: SAMPLE, isHd: false }], url: A };
