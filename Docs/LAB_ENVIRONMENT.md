@@ -49,6 +49,7 @@ different extension id and a fresh, ungranted profile.
 | 9801–9817 | `rule34-*.mjs` (`PROBE_PORT`, one per probe) |
 | 9821 | `scan-ab.mjs` (`AB_PORT`), also `sw-death-watch.mjs` |
 | 9823 | `net-probe.mjs` (`NET_PORT`) |
+| 9824 | `f19-restore.mjs` (F-19 restore dedup; reloads the extension, verifies the worker's compiled source against the file, applies a crafted snapshot) |
 | 9825 | `lab-login.mjs` (`LAB_PORT`) |
 | 9829 | `menu-race.mjs` (`MENU_PORT`) — contextMenus duplicate-id race |
 | 9831 | `swd-ab.mjs` (`SWD_PORT`) |
@@ -72,6 +73,11 @@ node .unlazy/net-probe.mjs
 
 # human login into the lab profile (opens the window, watches, closes cleanly)
 node .unlazy/lab-login.mjs
+
+# F-19: a restore must not queue a row's work twice (worker-only, no page scan)
+node .unlazy/f19-restore.mjs        # PASS = 45 restored, 40 deduped, 45 re-queued
+node .unlazy/f19-mutate.mjs off     # positive control: the harness MUST then fail (85/0)
+node .unlazy/f19-mutate.mjs on      # restore the file byte-identically
 
 # contextMenus duplicate-id race: naive control MUST fail, shipped toggle MUST be clean
 node .unlazy/menu-race.mjs

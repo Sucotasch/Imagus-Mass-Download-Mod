@@ -1227,6 +1227,40 @@ function mdTaskFromSnapshot(s) {
     };
 }
 
+// F-19 (2026-10-23) — identity of one restore-snapshot task.
+//
+// mdBuildSnapshot serializes the row table and both queues from the SAME live
+// objects in one call, so two copies of one unit of work carry the same url,
+// source and page order. Page order is part of the key on purpose: two DIFFERENT
+// tasks may resolve to the same URL (mirror collisions), and only a copy of the
+// same task may be dropped.
+function mdRequeueKey(url, source, order) {
+    if (typeof url !== 'string' || !url) return '';
+    return url + '\n' + (source || 'recovered') + '\n' + (Number(order) || 0);
+}
+
+// Every unit of work the two queue snapshots will put back.
+function mdQueuedSnapshotKeys(filterSnapshot, downloadSnapshot) {
+    const keys = new Set();
+    [filterSnapshot, downloadSnapshot].forEach(function (list) {
+        (Array.isArray(list) ? list : []).forEach(function (s) {
+            if (!s || typeof s.url !== 'string' || !s.url) return;
+            const key = mdRequeueKey(s.url, s.source || 'recovered', s.order);
+            if (key) keys.add(key);
+        });
+    });
+    return keys;
+}
+
+// True when the row's task is ALREADY one of those units: putting the row back as
+// well would queue the same work twice. The row itself stays on screen — only its
+// extra queue entry is dropped.
+function mdRowAlreadyQueued(task, queuedKeys) {
+    if (!task || typeof task.url !== 'string' || !task.url || !queuedKeys) return false;
+    const key = mdRequeueKey(task.url, task.source || 'recovered', task._order);
+    return !!key && queuedKeys.has(key);
+}
+
 // --- Page liveness (D-9, 2026-09-12) --------------------------------------
 // A session can also end up silent WITHOUT dying: the page is closed, navigated
 // away or frozen, so contentScanDone never arrives while the queues and the
@@ -1524,6 +1558,17 @@ function mdApplySnapshot(snap) {
     const seenIds = new Set();
     let restoredRows = 0;
     let droppedVolatile = 0;
+    let dedupedRows = 0;
+    // F-19 (2026-10-23): the row table and the two queue snapshots describe the
+    // SAME work. A task waiting in downloadQueue still has its non-terminal row
+    // (status 'scanning' is set at filter pickup and mdInsertDownload does not
+    // change it), and a candidate advanced into downloadQueue has a 'pending' row
+    // — so restoring both lists verbatim queues every such task twice. The queue
+    // copy below is the live one; a row whose identical task is already there adds
+    // nothing but a second queue entry (the banner's `queued` is the raw sum of
+    // both queue lengths, and the duplicate would be filtered again — with the
+    // own-candidate exemption it can even pass the filter dedup).
+    const queuedSnapshotKeys = mdQueuedSnapshotKeys(snap.filterQueue, snap.downloadQueue);
 
     sessionId = Number(snap.sessionId) || sessionId;
     mdPageOrder = Number(snap.pageOrder) || 0;
@@ -1610,7 +1655,11 @@ function mdApplySnapshot(snap) {
                 error = 'Interrupted by a background restart — Retry';
                 droppedVolatile++;
             } else if (task) {
-                requeue.push(task);
+                if (mdRowAlreadyQueued(task, queuedSnapshotKeys)) {
+                    dedupedRows++;
+                } else {
+                    requeue.push(task);
+                }
             }
         }
         downloadProgress[row.url] = {
@@ -1724,6 +1773,9 @@ function mdApplySnapshot(snap) {
         inflight: mdInflightDeathInfo(snap, workerStartMs),
         rows: restoredRows,
         requeued: requeue.length,
+        // F-19: rows that were already carried by one of the snapshot queues and
+        // must not be put back a second time.
+        dedupedRows: dedupedRows,
         adopted: 0,
         // F-10c: restored in-flight rows whose Chrome record was our own erased
         // stub — re-queued instead of being reported as lost files.
@@ -1747,7 +1799,8 @@ function mdApplySnapshot(snap) {
         sessionStart: sessionStartTime
     });
     console.info(mdWorkerLabel() + ': mass-download session RECOVERED after a background restart — '
-        + restoredRows + ' rows, ' + requeue.length + ' re-queued, ' + adopt.length + ' in-flight download(s) checked, '
+        + restoredRows + ' rows, ' + requeue.length + ' re-queued, ' + dedupedRows + ' duplicate row(s) already queued, '
+        + adopt.length + ' in-flight download(s) checked, '
         + droppedVolatile + ' row(s) needing a manual Retry, '
         + ((mdRecoveredInfo && mdRecoveredInfo.requeuedLost) || 0) + ' lost-record row(s) re-queued; previous session start '
         + (snap.sessionStart ? new Date(snap.sessionStart).toISOString() : '-'));

@@ -927,6 +927,10 @@
                 // are re-queued, not failed — the count makes a silent re-download
                 // visible in the saved log.
                 + ', ' + (rc.requeuedLost || 0) + ' re-queued after a lost history record'
+                // F-19 (2026-10-23): rows whose task the snapshot queues already
+                // carried. They are no longer put back a second time; the number
+                // makes the queued delta after a restart explainable in the log.
+                + ', ' + (rc.dedupedRows || 0) + ' duplicate row(s) already in the queues'
                 // 2026-09-21: how many items the history check recognised as already
                 // on disk (DUP-1). 0 with a non-zero re-queued count is itself a
                 // finding: the resume path re-downloaded everything it restored.

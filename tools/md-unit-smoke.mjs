@@ -2859,6 +2859,50 @@ console.log('md-unit-smoke: dedup contract (fileKey == _normalizeUrlKey) holds i
         assert.ok(/t\._restored = true;/.test(cutFnSource(core, 'mdApplySnapshot')),
             `DUP: ${tree} — mdApplySnapshot must mark the work it resurrects (the only place the flag can come from)`);
 
+        // --- F-19: a row the snapshot queues already carry is not queued twice -----
+        // Live 2026-10-22 19:07: a 100-row table whose whole downloadQueue was also in
+        // the snapshot came back as 192 requeued tasks, and the banner's `queued`
+        // jumped by the whole queue — every waiting task has a non-terminal row AND an
+        // entry in snap.downloadQueue, and both were applied. The rule is keyed by
+        // (url, source, page order): the three fields a row copy and its queue copy
+        // share because both are serialized from the same live object. Two DIFFERENT
+        // tasks that merely share a URL (a retry, a second page hit) stay untouched.
+        const applySrc = cutFnSource(core, 'mdApplySnapshot');
+        const keysAt = applySrc.indexOf('mdQueuedSnapshotKeys(snap.filterQueue, snap.downloadQueue)');
+        const rowsAt = applySrc.indexOf('const nonTerminal');
+        assert.ok(keysAt > 0 && rowsAt > keysAt,
+            `F-19: ${tree} — the queue keys must be collected before the rows are triaged`);
+        assert.ok(/if \(mdRowAlreadyQueued\(task, queuedSnapshotKeys\)\) \{\s*\n\s*dedupedRows\+\+;\s*\n\s*\} else \{\s*\n\s*requeue\.push\(task\);/.test(applySrc),
+            `F-19: ${tree} — a row already carried by a snapshot queue must not be re-queued`);
+        assert.ok(/requeue\.forEach\(function \(t\) \{ filterQueue\.push\(t\); \}\);/.test(applySrc),
+            `F-19: ${tree} — both snapshot queues must still be put back unchanged`);
+        assert.ok(/dedupedRows: dedupedRows,/.test(applySrc),
+            `F-19: ${tree} — the saved log must carry the number that explains the queued delta`);
+
+        // EXECUTION: the matcher itself, on the shapes the live run produced.
+        const dedup = new Function(`${cutFnSource(core, 'mdRequeueKey')}\n`
+            + `${cutFnSource(core, 'mdQueuedSnapshotKeys')}\n`
+            + `${cutFnSource(core, 'mdRowAlreadyQueued')}\n`
+            + 'return { key: mdRequeueKey, keys: mdQueuedSnapshotKeys, queued: mdRowAlreadyQueued };')();
+        const snapKeys = dedup.keys(
+            [{ url: 'https://a.test/x.png', source: 'group', order: 12 }],
+            [{ url: 'https://a.test/y.jpg', source: 'element', order: 13 }]);
+        assert.strictEqual(snapKeys.size, 2, `F-19: ${tree} — both snapshot queues contribute keys`);
+        assert.strictEqual(dedup.queued({ url: 'https://a.test/x.png', source: 'group', _order: 12 }, snapKeys), true,
+            `F-19: ${tree} — the row copy of a queued task IS that task`);
+        assert.strictEqual(dedup.queued({ url: 'https://a.test/x.png', source: 'group', _order: 14 }, snapKeys), false,
+            `F-19: ${tree} — another page order is another task and must never be merged`);
+        assert.strictEqual(dedup.queued({ url: 'https://a.test/x.png', source: 'element', _order: 12 }, snapKeys), false,
+            `F-19: ${tree} — another source is other work (an explicit retry must survive)`);
+        assert.strictEqual(dedup.queued({ url: 'https://a.test/z.png', source: 'group', _order: 12 }, snapKeys), false,
+            `F-19: ${tree} — another URL is not a duplicate`);
+        assert.strictEqual(dedup.queued({ url: 'https://a.test/x.png', _order: 12 }, new Set([dedup.key('https://a.test/x.png', '', 12)])), true,
+            `F-19: ${tree} — an absent source defaults to 'recovered', exactly as mdTaskFromSnapshot does`);
+        assert.strictEqual(dedup.queued(null, snapKeys), false, `F-19: ${tree} — a row without a task is never a duplicate`);
+        assert.strictEqual(dedup.queued({ url: 'https://a.test/x.png', source: 'group' }, null), false,
+            `F-19: ${tree} — no key set means no filtering`);
+        assert.strictEqual(dedup.keys(undefined, null).size, 0, `F-19: ${tree} — an absent snapshot contributes nothing`);
+
         // --- EXECUTION: one restored task, one answer, no second question ----------
         // The guard branch is lifted VERBATIM out of processDownloadQueue and driven
         // as the real loop would drive it. Observables: did it ask (stub called,
