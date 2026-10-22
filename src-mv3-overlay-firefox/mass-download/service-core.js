@@ -517,6 +517,10 @@ function resetMassDownloadSession() {
     // session into this one. D-7: the state is per host now, so the reset is
     // one call over the whole map.
     mdBreakerReset();
+    // F-17: the failure streak and its spent pause budget belong to ONE session —
+    // a fresh scan starts with the tempo untouched, and the pending wake-up (if
+    // any) is dropped so it cannot reach into the new queue.
+    mdDlReset();
     filterQueue = [];
     downloadQueue = [];
     mdPageOrder = 0;
@@ -3254,11 +3258,98 @@ function mdHistoryGuard(task) {
     return task._historyPending === true ? 'park' : 'proceed';
 }
 
+// --- F-17 (2026-10-22): the download-stage breather ---------------------------
+// MAIN-07's fingerprint, measured over 6 dying sessions: three downloads in flight
+// AND a cascade of instantly failing chrome.downloads calls. The mechanism is a
+// feedback loop of our own — releaseDownloadSlot() decrements the counter and calls
+// processDownloadQueue() in the same tick, so a host that refuses everything turns
+// into 5-10 starts per second (start 3 -> 3 instant refusals -> start 3 ...). The
+// same shape at maxConcurrentDownloads = 1 produced 0 deaths in 6 runs.
+//
+// The breather changes TEMPO ONLY. While a failure streak lasts:
+//   * one download in flight instead of the user's number, and
+//   * a short pause before the next start.
+// What it deliberately does NOT do:
+//   * never exceeds the user's own limit (cap = min(user, 1) — with the options
+//     value at 1, the "save in page order" setting (DA_MAX_DOWNLOADS_HINT, the
+//     answer to the album/comic request), the cap stays 1: page order is untouched);
+//   * never re-orders anything: the queue is ordered by _order and only shift()ed
+//     here, and a delay postpones the next start, it does not swap two items;
+//   * never retries, never re-validates, never adds a request;
+//   * never delays a STOP: the timer re-checks scanInProgress and the session.
+// The pause budget is bounded per session (MD_DL_FAIL_BUDGET_MS), so the worst
+// case is a bounded number of seconds, after which the loop behaves exactly as
+// it does today. The policy itself is a pure function so the contract is
+// executable — scripts/verify-f17.mjs.
+var MD_DL_FAIL_STREAK = 3;
+var MD_DL_FAIL_PAUSE_MS = 300;
+var MD_DL_FAIL_BUDGET_MS = 15000;
+var mdDlStreak = 0;
+var mdDlSpentMs = 0;
+var mdDlNotBefore = 0;
+var mdDlRetryTimer = null;
+
+function mdDlPlanStart(streak, userMax, spentMs, queueLen) {
+    const inStreak = streak >= MD_DL_FAIL_STREAK;
+    const left = MD_DL_FAIL_BUDGET_MS - spentMs;
+    return {
+        cap: inStreak ? Math.min(userMax, 1) : userMax,
+        wait: (inStreak && left > 0 && queueLen > 0) ? Math.min(MD_DL_FAIL_PAUSE_MS, left) : 0
+    };
+}
+
+function mdDlNoteSuccess() {
+    mdDlStreak = 0;
+}
+
+function mdDlNoteFailure() {
+    mdDlStreak++;
+    if (mdDlStreak < MD_DL_FAIL_STREAK) return;
+    const left = MD_DL_FAIL_BUDGET_MS - mdDlSpentMs;
+    if (left <= 0) return;
+    const wait = Math.min(MD_DL_FAIL_PAUSE_MS, left);
+    mdDlSpentMs += wait;
+    mdDlNotBefore = Date.now() + wait;
+}
+
+function mdDlReset() {
+    mdDlStreak = 0;
+    mdDlSpentMs = 0;
+    mdDlNotBefore = 0;
+    if (mdDlRetryTimer) { clearTimeout(mdDlRetryTimer); mdDlRetryTimer = null; }
+}
+
 function processDownloadQueue() {
     let maxConcurrentDownloads = Number(cachedPrefs.da?.maxConcurrentDownloads) || 3;
     if (!Number.isFinite(maxConcurrentDownloads) || maxConcurrentDownloads < 1) maxConcurrentDownloads = 3;
 
-    while (activeDownloads < maxConcurrentDownloads && downloadQueue.length > 0) {
+    const plan = mdDlPlanStart(mdDlStreak, maxConcurrentDownloads, mdDlSpentMs, downloadQueue.length);
+    // A written file can end the streak while a wake-up is still pending: drop it
+    // here, or it would fire into an already-draining queue long after the pause
+    // stopped being needed.
+    if (plan.wait === 0 && mdDlRetryTimer) { clearTimeout(mdDlRetryTimer); mdDlRetryTimer = null; }
+    if (plan.wait > 0) {
+        const remaining = mdDlNotBefore - Date.now();
+        if (remaining > 0) {
+            // One pending wake-up at most: every release during the pause would
+            // otherwise schedule its own timer and multiply the starts.
+            if (!mdDlRetryTimer) {
+                const gen = sessionId;
+                mdDlRetryTimer = setTimeout(() => {
+                    mdDlRetryTimer = null;
+                    // A stop and a new session both end this pause: the session owns
+                    // the queue, and a stopped scan must never be revived by a timer.
+                    if (gen !== sessionId || !scanInProgress || userCanceled) return;
+                    processDownloadQueue();
+                }, remaining);
+            }
+            return;
+        }
+        if (mdDlRetryTimer) { clearTimeout(mdDlRetryTimer); mdDlRetryTimer = null; }
+    }
+    const effortCap = plan.cap;
+
+    while (activeDownloads < effortCap && downloadQueue.length > 0) {
         const task = downloadQueue.shift();
         // A restored task waits for one answer before it is allowed to create a file.
         // It is put back exactly once, and the loop stops rather than spinning: the
@@ -3381,6 +3472,8 @@ function processDownloadQueue() {
             ...(mdDnrReq ? { headers: [{ name: "Referer", value: mdDnrReq.referer }] } : {})
         }, function (downloadId) {
             if (chrome.runtime.lastError) {
+                // F-17: the browser refused to start it (the instant-refusal shape).
+                mdDlNoteFailure();
                 updateDownloadProgress(task.url, 'failed', 0, chrome.runtime.lastError.message, null, task);
                 releaseDownloadSlot(task);
             } else {
@@ -3913,6 +4006,8 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 // FIX-DUP-2: this file is now part of what the RUN has written, so a
                 // later restored task can be answered from the index without a query.
                 mdWrittenIndexNote(url, delta.id, results[0].filename, results[0].fileSize, mime);
+                // F-17: a real file landed — the host is not refusing, so the streak ends.
+                mdDlNoteSuccess();
                 updateDownloadProgress(url, 'completed', 100, null, delta.id, existingTask);
                 downloadStats.downloaded++;
                 sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
@@ -3954,6 +4049,9 @@ chrome.downloads.onChanged.addListener(function (delta) {
                 // the same item. Same guard as the Chrome tree.
                 const firstVerdict = !existingTask._interruptHandled;
                 existingTask._interruptHandled = true;
+                // F-17: one transport refusal per attempt — counted once, even when
+                // `state` and `error` arrive in separate deltas.
+                if (firstVerdict) mdDlNoteFailure();
                 const interruptReason = 'interrupted: ' + (results[0].error || 'unknown');
                 if (alreadyCanceled || !firstVerdict) {
                     releaseDownloadSlot(existingTask);
