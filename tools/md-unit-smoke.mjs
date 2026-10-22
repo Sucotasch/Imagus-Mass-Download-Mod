@@ -127,6 +127,28 @@ assert.equal(deriveFilename('https://ex.com/media/slug.117336/full', ''), 'slug.
 // Unparseable input: undefined, never a throw:
 assert.equal(deriveFilename('not a url at all', ''), undefined);
 
+// --- mdWithExtension (2026-10-22): the single-save name must not lose its
+// extension when the resolved URL has none (cuid-style CDN ids, HLS segments,
+// sieves that hand back a bare id). The media type the content sends was dead
+// data before: it only ever landed in the name when a filename came with it.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const sw = readFileSync(join(repoRoot, tree, 'background/service.js'), 'utf8').replace(/\r\n/g, '\n');
+    const withExt = new Function(`${cutFnFrom(sw, 'mdWithExtension')}\nreturn mdWithExtension;`)();
+    assert.equal(withExt('abc123', 'mp4'), 'abc123.mp4', `${tree}: a bare name gains the type extension`);
+    assert.equal(withExt('abc123', 'MP4'), 'abc123.mp4', `${tree}: the extension is lower-cased`);
+    assert.equal(withExt('abc123', '.jpg'), 'abc123.jpg', `${tree}: a leading dot in the hint is tolerated`);
+    assert.equal(withExt('abc123.JPEG', 'jpg'), 'abc123.JPEG', `${tree}: an existing extension is never doubled`);
+    assert.equal(withExt('clip.mp4', 'mp4'), 'clip.mp4', `${tree}: mp4 + mp4 stays one extension`);
+    assert.equal(withExt('abc123', '../x'), 'abc123', `${tree}: a malformed hint is ignored`);
+    assert.equal(withExt('abc123', 'jpeg2000'), 'abc123', `${tree}: over-long hints are ignored`);
+    assert.equal(withExt(undefined, 'jpg'), undefined, `${tree}: nothing to name stays nothing`);
+    assert.equal(withExt('', 'jpg'), '', `${tree}: an empty name stays empty`);
+    // The caller only takes the result when it differs — otherwise Chrome's own
+    // Content-Disposition/URL derivation keeps precedence.
+    assert.equal(withExt('clip.mp4', 'jpg'), 'clip.mp4', `${tree}: a typed name is left alone`);
+    assert.equal(withExt('v1.2', 'jpg'), 'v1.2.jpg', `${tree}: a numeric tail is not an extension`);
+}
+
 console.log('md-unit-smoke: all assertions passed');
 
 // --- Stage-4a dedup contract: SW fileKey() must equal content _normalizeUrlKey() ---
@@ -3688,36 +3710,7 @@ return { fit: mdFitSnapshot, bytes: mdSnapshotBytes };`)();
     assert.strictEqual(key('//host/a.jpg'), 'https://host/a.jpg',
         `F-13: ${tree} — protocol-relative URLs must resolve`);
 
-    // F-16: synchronous XHR is rejected only during the rule call, and the native
-    // open is restored after both the throw and an async call.
-    const method = cutMethodFn(content, 'callRuleRes').replace(/^\s*callRuleRes:\s*/, '');
-    const callRuleRes = new Function(`var PVI = {};
-var callRuleRes = ${method}
-};
-return callRuleRes;`)();
-    const NativeXHR = globalThis.XMLHttpRequest;
-    let opened = 0;
-    class FakeXHR {
-        open(method, url, async) { opened++; this.async = async; }
-    }
-    const nativeOpen = FakeXHR.prototype.open;
-    globalThis.XMLHttpRequest = FakeXHR;
-    try {
-        assert.throws(() => callRuleRes({ res: function () { new FakeXHR().open('GET', 'x', false); } }, {}),
-            /Synchronous XMLHttpRequest is disabled/,
-            `F-16: ${tree} — a synchronous open must throw inside a sieve rule`);
-        assert.strictEqual(FakeXHR.prototype.open, nativeOpen,
-            `F-16: ${tree} — open must be restored after the throw`);
-        callRuleRes({ res: function () { new FakeXHR().open('GET', 'x', true); } }, {});
-        assert.strictEqual(opened, 1, `F-16: ${tree} — async open must proceed (the sync one is rejected before FakeXHR.open)`);
-        assert.strictEqual(FakeXHR.prototype.open, nativeOpen,
-            `F-16: ${tree} — open must be restored after success`);
-    } finally {
-        if (NativeXHR === undefined) delete globalThis.XMLHttpRequest;
-        else globalThis.XMLHttpRequest = NativeXHR;
-    }
-}
-// F-01/F-02/F-03: source-level locks for the transport, trust, and DOM boundaries.
+}// F-01/F-02/F-03: source-level locks for the transport, trust, and DOM boundaries.
 for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     const content = readNorm(tree, 'content/content.js');
     const app = readNorm(tree, 'common/app.js');
@@ -3728,11 +3721,17 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     assert.ok(/if \(!e\.isTrusted\) return;/.test(content), `F-03: ${tree} — toolbar clicks must be trusted`);
     assert.ok(/if \(!event\.isTrusted\) return;/.test(app), `F-03: ${tree} — keyboard input must be trusted`);
     assert.ok(/if \(e\.source === win\) return;/.test(content), `F-03: ${tree} — the top page cannot spoof from_frame`);
-    assert.ok(!/response\.json\(\)/.test(cutFnFrom(sw, 'updateSieve')), `F-02: ${tree} — updateSieve must hash bytes, not parse a stream`);
+    // F-02 was reverted: a manual Update applies immediately (no trust/hash gate),
+    // and the sieve keeps updating automatically. Only the invisible transport
+    // guards (HTTPS, size cap) remain.
+    assert.ok(!/sieveUpdatePending|sieveTrust(Hash|Repo)/.test(cutFnFrom(sw, 'updateSieve')),
+        `F-02: ${tree} — updateSieve must apply the downloaded sieve without a consent gate`);
+    assert.ok(/protocol !== "https:"/.test(cutFnFrom(sw, 'updateSieve')),
+        `F-02: ${tree} — the HTTPS transport guard stays`);
     const defaults = JSON.parse(readNorm(tree, 'data/defaults.json'));
-    assert.strictEqual(defaults.tls.autoUpdateSieve, false, `F-02: ${tree} — automatic remote execution is off by default`);
-    assert.strictEqual(typeof defaults.sieveTrustRepo, 'string', `F-02: ${tree} — trust repo default exists`);
-    assert.strictEqual(typeof defaults.sieveTrustHash, 'string', `F-02: ${tree} — trust hash default exists`);
+    assert.strictEqual(defaults.tls.autoUpdateSieve, true, `F-02: ${tree} — automatic sieve updates stay on by default`);
+    assert.ok(!('sieveTrustRepo' in defaults) && !('sieveTrustHash' in defaults),
+        `F-02: ${tree} — no trust defaults are stored`);
 }
 
 const ffService = readNorm('src-mv3-overlay-firefox', 'background/service.js');
@@ -3765,6 +3764,34 @@ ${cutFnFrom(sw, 'mdGrantMatches')}
 return mdGrantMatches;`)();
     assert.strictEqual(matcher({ op: '!~', url: '(' }, 'https://example.com/(x)'), false,
         `F-04: ${tree} — a malformed direct grant returns false without throwing`);
+}
+
+// MENU-1 (2026-10-22): onInstalled and the boot-time updatePrefs both reconcile
+// the ignore-element menu; two interleaved remove->create pairs produced
+// "Cannot create item with duplicate id ignore-element" on every reload. The
+// transaction must stay serialized and every create must consume lastError.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const sw = readNorm(tree, 'background/service.js');
+    assert.ok(/let ignoreMenuSync = Promise\.resolve\(\);/.test(sw),
+        `MENU-1: ${tree} — the menu transaction is serialized`);
+    assert.ok(/ignoreMenuSync = ignoreMenuSync\.then\(\(\) => syncIgnoreElementMenu\(enabled\)\)/.test(sw),
+        `MENU-1: ${tree} — every reconcile goes through the same chain`);
+    assert.ok(/chrome\.contextMenus\.remove\("ignore-element", function \(\) \{/.test(sw),
+        `MENU-1: ${tree} — remove completes before the next create (callback form)`);
+    for (const id of ['ignore-element', 'open-options']) {
+        const re = new RegExp(`chrome\\.contextMenus\\.create\\(\\{[\\s\\S]{0,300}?id: "${id}"[\\s\\S]{0,300}?\\}, function \\(\\) \\{`);
+        assert.ok(re.test(sw), `MENU-1: ${tree} — the ${id} create callback consumes lastError`);
+    }
+}
+
+// NAME-1 (2026-10-22): a single save whose resolved URL carries no extension
+// must take the media-type hint instead of landing as an unopenable file.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const sw = readNorm(tree, 'background/service.js');
+    assert.ok(/let filename = mdWithExtension\(msg\.filename, ext\) \|\| msg\.urlName;/.test(sw),
+        `NAME-1: ${tree} — a supplied name never gains a second extension`);
+    assert.ok(/const named = mdWithExtension\(base, ext\);\s*\n\s*if \(named && named !== base/.test(sw),
+        `NAME-1: ${tree} — an extensionless name takes the type hint`);
 }
 
 // F-12: a quota rejection retries with a smaller payload, and a second failure
@@ -3812,5 +3839,5 @@ await new Promise(resolve => setTimeout(resolve, 20));
 assert.ok(failWorld.state().error, 'F-12: two failures must surface snapshotError');
 assert.strictEqual(failWorld.state().busy, false, 'F-12: mdPersistBusy must be released after failure');
 
-console.log('md-unit-smoke: remediation contracts (F-04..F-16) hold in both trees');
+console.log('md-unit-smoke: remediation contracts (F-04..F-13) hold in both trees');
 

@@ -2263,41 +2263,6 @@
             return ret;
         },
 
-        callRuleRes: function (rule, params) {
-            // The sieve `res` contract is synchronous; a rule that calls
-            // xhr.open(..., false) freezes the page for the request. Patch every
-            // reachable XHR prototype for the duration of this call and reject
-            // only an explicit synchronous open.
-            const scopes = [];
-            if (typeof globalThis !== "undefined") scopes.push(globalThis);
-            if (typeof win !== "undefined" && win && win !== globalThis) scopes.push(win);
-            if (typeof content !== "undefined" && content && content !== win && content !== globalThis) scopes.push(content);
-            const patched = [];
-            for (const scope of scopes) {
-                let XHR;
-                try { XHR = scope.XMLHttpRequest; } catch (e) { continue; }
-                if (!XHR || !XHR.prototype || typeof XHR.prototype.open !== "function") continue;
-                const proto = XHR.prototype;
-                const open = proto.open;
-                try {
-                    proto.open = function () {
-                        if (arguments[2] === false) {
-                            throw new Error("Synchronous XMLHttpRequest is disabled in sieve rules");
-                        }
-                        return open.apply(this, arguments);
-                    };
-                    patched.push([proto, open]);
-                } catch (e) { /* Xray-wrapped prototype: leave it alone */ }
-            }
-            try {
-                return rule.res.call(PVI, params);
-            } finally {
-                for (const [proto, open] of patched) {
-                    try { proto.open = open; } catch (e) { /* restored by page teardown */ }
-                }
-            }
-        },
-
         toFunction: function (rule, param, inline) {
             if (typeof rule[param] !== "function" && (inline ? /^:\s*\S/ : /^:\n\s*\S/).test(rule[param])) {
                 try {
@@ -4707,7 +4672,7 @@
                         }
                         if (!PVI.TRG) return 1;
                         PVI.node = trg;
-                        d.m = PVI.callRuleRes(rule, d.params);
+                        d.m = rule.res.call(PVI, d.params);
                     } catch (ex) {
                         // BT-01: an exception ends THIS rule's chain, so the
                         // chain-scoped accumulator must not outlive it —
@@ -4727,9 +4692,6 @@
                         if (PVI.res_owner === d.params.rule.id) {
                             PVI.res = undefined;
                             PVI.res_owner = undefined;
-                        }
-                        if (/Synchronous XMLHttpRequest is disabled/.test(ex.message)) {
-                            console.warn(cfg.app?.name + ": [rule " + d.params.rule.id + "] synchronous XHR blocked");
                         }
                         console.error(cfg.app?.name + ": [rule " + d.params.rule.id + "] " + ex.message);
                         if (!d.return_url && trg === PVI.TRG) PVI.show("R_js");

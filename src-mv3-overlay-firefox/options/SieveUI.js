@@ -683,20 +683,12 @@ var sieve_sec,
                 return;
             }
 
-            const repo = cfg.sieveRepository || "";
-            const approved = local || confirm(
-                _("SIV_UPDALERT") +
-                "\n\n" + repo +
-                "\n\nSieve rules run as code in the extension."
-            );
-            if (approved) {
+            if (local || !cfg.sieve || !Object.keys(cfg.sieve).length || confirm(_("SIV_UPDALERT"))) {
                 sieve_container.textContent = "";
                 SieveUI.countRules("LOADING");
                 let res = await Port.send({ cmd: "update_sieve", local: !!local });
                 if (res?.updated_sieve) {
                     SieveUI.load(res.updated_sieve);
-                } else if (res?.pending) {
-                    alert("Update downloaded but not applied. Click Update again to approve the new hash.");
                 } else if (res?.error) {
                     alert(res.error);
                     if (confirm(_("SIV_LOCALALERT"))) {

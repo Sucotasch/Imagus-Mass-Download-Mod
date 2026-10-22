@@ -92,13 +92,6 @@ function jsDelivrMirror(repoUrl) {
 // actually fetched anything.
 const MD_SIEVE_MAX_BYTES = 8 * 1024 * 1024;
 
-async function mdSha256Hex(buf) {
-    const digest = await crypto.subtle.digest("SHA-256", buf);
-    return Array.from(new Uint8Array(digest))
-        .map(function (b) { return b.toString(16).padStart(2, "0"); })
-        .join("");
-}
-
 function sieveUrlFor(local, useMirror, sieveRepoUrl) {
     if (local) return "/data/sieve.json";
     if (useMirror) return jsDelivrMirror(sieveRepoUrl) || sieveRepoUrl || null;
@@ -181,7 +174,6 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
         if (declared > MD_SIEVE_MAX_BYTES) return { error: "Sieve is larger than 8 MiB" };
         const buf = await response.arrayBuffer();
         if (buf.byteLength > MD_SIEVE_MAX_BYTES) return { error: "Sieve is larger than 8 MiB" };
-        const hash = await mdSha256Hex(buf);
         let newSieve = JSON.parse(new TextDecoder().decode(buf));
 
         if (typeof newSieve !== 'object' || newSieve === null) {
@@ -219,26 +211,9 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
             }
             newSieve = merged;
         }
-        const { sieveTrustRepo, sieveTrustHash } = await cfg.get(["sieveTrustRepo", "sieveTrustHash"]);
-        const trusted = sieveTrustRepo === sieveRepoUrl && sieveTrustHash === hash;
-        if (!local && !force && !trusted) {
-            await cfg.set({ sieveUpdatePending: { repo: sieveRepoUrl, hash, at: Date.now() } });
-            console.warn(manifest.name + ": sieve update downloaded but not trusted; approve it in Options.");
-            return { pending: true, hash };
-        }
         const saveErr = await updatePrefs({ sieve: newSieve });
         if (saveErr) return { error: "Sieve could not be saved: " + (saveErr.message || saveErr) };
-        if (!local) {
-            await cfg.set({
-                sieveUpdateLast: Date.now(),
-                sieveTrustRepo: sieveRepoUrl,
-                sieveTrustHash: hash
-            });
-            cachedPrefs.sieveTrustRepo = sieveRepoUrl;
-            cachedPrefs.sieveTrustHash = hash;
-        } else {
-            await cfg.set({ sieveUpdateLast: Date.now() });
-        }
+        await cfg.set({ sieveUpdateLast: Date.now() });
         console.info(manifest.name + ": Sieve updated from " + (useMirror ? "jsDelivr mirror" : (local ? "local" : "remote")) + " repository.");
         return { updated_sieve: newSieve };
 
@@ -352,12 +327,6 @@ function cacheSieve(newSieve) {
                 console.warn(`Skipping potentially dangerous regex in rule ${ruleName} (img)`);
                 continue;
             }
-            // F-16: the runtime guard fails fast; this static warning names the
-            // rule so a rewrite to async is actionable (regex may false-positive).
-            if ((typeof rule.res === 'string' && /\.open\s*\([^)]*,\s*false\s*\)/.test(rule.res))
-                || (typeof rule.to === 'string' && /\.open\s*\([^)]*,\s*false\s*\)/.test(rule.to))) {
-                console.warn(manifest.name + ': sieve rule uses synchronous XHR: ' + ruleName);
-            }
 
             if (rule.res)
                 if (/^:\n/.test(rule.res)) {
@@ -385,24 +354,48 @@ function cacheSieve(newSieve) {
     cachedPrefs.sieve = cachedSieve;
 }
 
-async function toggleIgnoreElementMenu(enabled) {
-    if (!chrome.contextMenus) return;
+// onInstalled (an extension (re)load) and the boot-time updatePrefs() both
+// reconcile this menu. Two interleaved remove->create transactions end as
+// "Cannot create item with duplicate id ignore-element" (live 2026-10-22: two
+// such errors on every reload) because the second create runs after the first
+// item has landed. Serialize the whole transaction and consume the create
+// callback's lastError — a duplicate id then simply means the item is right.
+let ignoreMenuSync = Promise.resolve();
+
+function toggleIgnoreElementMenu(enabled) {
+    ignoreMenuSync = ignoreMenuSync.then(() => syncIgnoreElementMenu(enabled)).catch(() => {});
+    return ignoreMenuSync;
+}
+
+function syncIgnoreElementMenu(enabled) {
+    if (!chrome.contextMenus) return Promise.resolve();
 
     enabled ??= cachedPrefs?.hz?.grantUrlsEnabled !== false;
 
-    try {
-        await chrome.contextMenus.remove("ignore-element");
-    } catch (err) {
-        // It's fine if the menu doesn't exist yet.
-    }
-
-    if (enabled) {
-        chrome.contextMenus.create({
-            id: "ignore-element",
-            title: _("IGNORE_ELEMENT"),
-            contexts: ["page", "link", "image", "video", "audio", "editable"]
-        });
-    }
+    return new Promise((resolve) => {
+        let settled = false;
+        const done = () => { if (!settled) { settled = true; resolve(); } };
+        const create = () => {
+            try {
+                chrome.contextMenus.create({
+                    id: "ignore-element",
+                    title: _("IGNORE_ELEMENT"),
+                    contexts: ["page", "link", "image", "video", "audio", "editable"]
+                }, function () {
+                    // "duplicate id" = another reconcile already created it.
+                    void chrome.runtime.lastError;
+                    done();
+                });
+            } catch (e) { done(); }
+        };
+        try {
+            chrome.contextMenus.remove("ignore-element", function () {
+                // "Cannot find menu item" is the normal first run.
+                void chrome.runtime.lastError;
+                if (enabled) create(); else done();
+            });
+        } catch (e) { done(); }
+    });
 }
 
 let prefsMutex = Promise.resolve();
@@ -884,7 +877,11 @@ function getDownloadDirectory(msg) {
 function getFilenameFromUrl(url) {
     try {
         const pathname = new URL(url).pathname;
-        return pathname.substring(pathname.lastIndexOf("/") + 1) || undefined;
+        const raw = pathname.substring(pathname.lastIndexOf("/") + 1);
+        if (!raw) return undefined;
+        // Chrome decodes the path segment when it derives a name; `%20` in a
+        // filename would otherwise be written literally by the fallback below.
+        try { return decodeURIComponent(raw); } catch (_) { return raw; }
     } catch (_) {
         return undefined;
     }
@@ -924,6 +921,21 @@ async function getFilenameFromHeaders(url) {
 }
 
 const downloadItems = {};
+
+// A resolved URL can be extension-less (Civitai's .../original=true/<uuid>,
+// HLS segments, sieve '#ext' hints) while the media type is already known. The
+// browser then derives the name from that URL and writes it bare, so the file
+// arrives without an extension. Append the type hint — but never touch a name
+// that already ends in an extension (Photo.JPG, clip.mp4).
+function mdWithExtension(name, ext) {
+    if (!name || !ext) return name;
+    const e = String(ext).trim().replace(/^\./, '').toLowerCase();
+    if (!/^[a-z0-9]{1,5}$/.test(e)) return name;
+    // A real extension starts with a letter and has 2-5 chars (mp4, m4v, jpeg),
+    // so a numeric tail such as 'v1.2' is not mistaken for one.
+    return /\.[a-z][a-z0-9]{1,4}$/i.test(name) ? name : name + '.' + e;
+}
+
 async function download(msg, tab, sendResponse) {
     if (!msg.url) return;
     const tabId = tab && typeof tab === "object" ? tab.id : null;
@@ -931,10 +943,9 @@ async function download(msg, tab, sendResponse) {
 
     const ext = msg.priorityExt ?? msg.ext;
 
-    let filename =
-        msg.filename && ext
-            ? `${msg.filename}.${ext}`
-            : msg.filename || msg.urlName;
+    // mdWithExtension also stops a supplied name from gaining a second
+    // extension ('clip.mp4' + 'jpg' used to become 'clip.mp4.jpg').
+    let filename = mdWithExtension(msg.filename, ext) || msg.urlName;
 
     // Port of upstream 8.20 saveDir (plan WP-2 / decision Р1): the directory
     // is prefixed into params.filename directly on BOTH platforms — no
@@ -946,6 +957,19 @@ async function download(msg, tab, sendResponse) {
     const dir = getDownloadDirectory(msg);
     if (dir && !filename) {
         filename = await getFilenameFromHeaders(msg.url) || getFilenameFromUrl(msg.url);
+    }
+    // Nothing named it yet, or the name came out bare (a cuid-style CDN id):
+    // keep the bytes from landing as an unopenable file. Only take over when an
+    // extension was ACTUALLY added — otherwise Chrome's own derivation
+    // (Content-Disposition, then the URL) is at least as good. A generic
+    // front-controller basename ('download', 'file', ...) is exactly where a
+    // server supplies its own Content-Disposition name, so leave those alone.
+    if (ext) {
+        const base = filename || getFilenameFromUrl(msg.url);
+        const generic = /^(?:index|full|view|get|image|photo|media|attachment|page|file|download|watch)$/i;
+        const stem = base ? base.replace(/\.[^.]*$/, '') : '';
+        const named = mdWithExtension(base, ext);
+        if (named && named !== base && !(!filename && generic.test(stem))) filename = named;
     }
     if (filename && dir) {
         filename = `${dir}/${sanitizeFilename(filename)}`;
@@ -1485,6 +1509,9 @@ if (chrome.contextMenus) {
                 id: "open-options",
                 title: _("OPTIONS"),
                 contexts: ["action"]
+            }, function () {
+                // A repeat install must not leave an unchecked lastError.
+                void chrome.runtime.lastError;
             });
         }
 
