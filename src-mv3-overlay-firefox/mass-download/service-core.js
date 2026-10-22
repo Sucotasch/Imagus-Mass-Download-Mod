@@ -2622,6 +2622,20 @@ async function processFilterQueue() {
             globalProcessedUrls.add(dupKey);
             if (hashKey) globalProcessedMediaHashes.add(hashKey);
         }
+        // F-18 (2026-10-22) — ask the written index BEFORE the filter. A restored
+        // item whose file this run already wrote would be answered by
+        // mdHistoryGuard at the DOWNLOAD stage: the same verdict, but only after a
+        // HEAD/GET round-trip that cannot change it. Live run 2026-10-22T19-07-46:
+        // 192 tasks re-queued after the third restart, 152 of them answered from
+        // Chrome's history — every one re-validated first.
+        if (mdIsRestoredTask(task) && await mdAdoptRestoredBeforeFilter(task)) {
+            setTimeout(checkAllQueuesEmpty, 100);
+            continue;
+        }
+        // A session reset can land while the index is being asked (the only await
+        // before the session tag): the task belongs to the old run — drop it like
+        // any other stale continuation instead of retagging it into the new one.
+        if (task._session !== sessionId) continue;
         task._session = sessionId;
         activeFilters++;
         updateDownloadProgress(task.url, 'scanning', 0, null, null, task);
@@ -3241,6 +3255,67 @@ function mdAdoptIfAlreadyDownloaded(task) {
             if (!retry) finish();
         }
     });
+}
+
+// F-18 (2026-10-22) — the pre-filter half of the "already written" question.
+//
+// The download-stage guard (mdHistoryGuard -> mdAdoptIfAlreadyDownloaded) answers
+// it correctly, but that answer is read AFTER the filter phase: a restored item
+// spends a HEAD/GET round-trip on a file that is already on disk. The live run
+// 2026-10-22T19-07-46 is the measurement: 192 tasks re-queued after the third
+// restart, 152 answered from Chrome's history, each one validated first.
+//
+// This is the SAME decision (mdFindAlreadyWritten against the SAME run-scoped
+// index), applied one stage earlier, and only the DEFINITIVE answer short-circuits:
+//   * state 'complete' AND exists — the bytes are here; the filter cannot change
+//     that, and the file passed the same size/type policy when this run wrote it;
+//   * 'in_progress' — left to the download-stage guard, which owns the bounded
+//     wait (parking a FILTER task would need a second timer and a second resume
+//     path, and the existing park/resume sequence is documented as terminating);
+//   * exists === false (deleted) or no match — fall through unchanged.
+// A URL that has died since the write is the one shape where the old order would
+// have advanced to another candidate before asking: the item's file is already
+// here, so completion — not a second representation of the same item — is the
+// honest outcome (and the download-stage guard reaches the same verdict once a
+// candidate does pass).
+// _historyChecked/_historyPending are deliberately NOT touched: every task this
+// function does not answer must still reach the download-stage guard with the
+// flags exactly as before, so its park/resume contract is unchanged.
+//
+// Reusing mdFindAlreadyWritten is what keeps the two paths from disagreeing: it
+// matches the task's own URL, every candidate of the group, and the written name;
+// the early check can only adopt a file the download-stage check would adopt too.
+// It can answer LESS (no content type yet, so deriveFilename may not produce a
+// name), never something different.
+async function mdAdoptRestoredBeforeFilter(task) {
+    // An explicit retry is the user asking this URL to be tried again: it keeps the
+    // old order (filter first), even though its URL still carries the item's restore
+    // mark and the download-stage guard may adopt it afterwards on the passing path.
+    if (!task || task.source === 'retry' || !mdIsRestoredTask(task)) return false;
+    let index = null;
+    try {
+        index = await mdWrittenIndexRefresh(false);
+    } catch (e) {
+        return false;
+    }
+    // The await can outlive the run it belongs to (stop, or a new scan): never
+    // write a row of a session this task is no longer part of.
+    if (!index || task._session !== sessionId || !scanInProgress || userCanceled) return false;
+    const found = mdFindAlreadyWritten(task, index);
+    if (!found || found.state !== 'complete' || !found.exists) return false;
+    if (found.mime) task.contentType = found.mime;
+    if (found.fileSize) task.fileSize = found.fileSize;
+    // Same telemetry as the download-stage adoption (they are the same answer; a
+    // Save Log must not distinguish them by accident).
+    task._historyAdopted = true;
+    task._recordedName = found.name || mdBasename(found.filename);
+    // updateDownloadProgress is the single funnel: the row AND the outcome ledger.
+    updateDownloadProgress(task.url, 'completed', 100, null, found.id != null ? found.id : null, task);
+    downloadStats.downloaded++;
+    sendToProgressTab({ cmd: 'updateStats', stats: downloadStats });
+    if (mdRecoveredInfo) mdRecoveredInfo.rescued = (mdRecoveredInfo.rescued || 0) + 1;
+    console.info(mdWorkerLabel() + ': restored item already on disk — filter skipped (no second copy): ' + task.url);
+    return true;
 }
 
 // The whole restore-dedup decision as DATA, so the drain loop cannot mis-order it
