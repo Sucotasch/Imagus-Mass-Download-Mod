@@ -1841,12 +1841,12 @@ function handleRefererDownloadReady(msg, sender) {
     // decrement ate a PARALLEL retry's slot and made the session look drained.
     // A stale session's answer must not touch the new session's counter or
     // rows — reset already cleared both.
+    if (!msg || !url) return;
+    if (msg.session !== sessionId) return;
     if (url && refererRetryUrls.has(url)) {
         refererRetryUrls.delete(url);
         activeRefererRetries = Math.max(0, activeRefererRetries - 1);
     }
-    if (!msg || !url) return;
-    if (msg.session !== sessionId) return;
     if (!scanInProgress || userCanceled) {
         updateDownloadProgress(url, 'canceled', 0, 'Canceled by user', null, null);
         return;
@@ -1922,12 +1922,12 @@ async function handleRefererDownloadFailed(msg) {
     const url = ensureAbsoluteUrl(msg && msg.url ? msg.url : '');
     // See handleRefererDownloadReady: return the slot exactly once, and a
     // stale session's answer must not reach the new session's rows.
+    if (!msg || !url) return;
+    if (msg.session !== sessionId) return;
     if (url && refererRetryUrls.has(url)) {
         refererRetryUrls.delete(url);
         activeRefererRetries = Math.max(0, activeRefererRetries - 1);
     }
-    if (!msg || !url) return;
-    if (msg.session !== sessionId) return;
     if (!scanInProgress || userCanceled) {
         const existing = downloadProgress[url];
         updateDownloadProgress(url, 'canceled', 0, 'Canceled by user', null, existing ? existing.task : null);
