@@ -110,6 +110,42 @@ const Port = {
     // 21:09 log could not answer at all.
     stats: { sent: 0, failed: 0, lastError: '' },
 
+    listener: null,
+    _port: null,
+    _inbox: [],
+    _reconnectTimer: null,
+
+    _ensurePort: function () {
+        if (platform !== "firefox" || this._port) return;
+        if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.connect) return;
+        let port;
+        try {
+            port = chrome.runtime.connect({ name: "imagus-content" });
+        } catch (e) {
+            this._port = null;
+            return;
+        }
+        this._port = port;
+        port.onMessage.addListener((message) => {
+            if (typeof this.listener === "function") this.listener(message);
+            else if (this._inbox.length < 50) this._inbox.push(message);
+        });
+        port.onDisconnect.addListener(() => {
+            if (this._port === port) this._port = null;
+            if (typeof this.listener !== "function" || this._reconnectTimer) return;
+            this._reconnectTimer = setTimeout(() => {
+                this._reconnectTimer = null;
+                this._ensurePort();
+            }, 1000);
+        });
+    },
+
+    _drainInbox: function () {
+        const inbox = this._inbox;
+        this._inbox = [];
+        for (const message of inbox) this.listener(message);
+    },
+
     // Copy for a message payload: these counters keep moving, and a message is
     // serialized whenever the browser gets to it, not when it was created.
     snapshot: function () {
@@ -117,6 +153,15 @@ const Port = {
     },
 
     listen: function (callback) {
+        if (platform === "firefox") {
+            this.listener = typeof callback === "function" ? callback : null;
+            if (this.listener) {
+                this._ensurePort();
+                this._drainInbox();
+            }
+            return;
+        }
+
         if (this.listener) {
             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
                 chrome.runtime.onMessage.removeListener(this.listener);
@@ -124,15 +169,7 @@ const Port = {
         }
 
         if (typeof callback === "function") {
-            if (platform === "firefox") {
-                this.listener = function (message, sender) {
-                    if (!sender) {
-                        callback(message);
-                    }
-                };
-            } else {
-                this.listener = callback;
-            }
+            this.listener = callback;
             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
                 chrome.runtime.onMessage.addListener(this.listener);
             }
@@ -145,6 +182,7 @@ const Port = {
         if (typeof chrome === 'undefined' || !chrome.runtime) {
             return Promise.reject(new Error('Extension context invalidated'));
         }
+        if (platform === "firefox") Port._ensurePort();
         const handler = callback || Port.listener;
         Port.stats.sent++;
         if (!handler) {
@@ -271,3 +309,7 @@ const shortcut = {
         return this.keys1[e.which] || (!simple && this.keys2[e.which]) || String.fromCharCode(e.which).toUpperCase();
     },
 };
+
+if (platform === "firefox" && !/^(chrome|moz)-extension:$/.test(location.protocol)) {
+    Port._ensurePort();
+}

@@ -15,6 +15,51 @@ var cachedSieveRes = [],
 
 const platform = navigator.userAgent.includes('Firefox') ? "firefox" : "chrome";
 
+// Background -> USER_SCRIPT transport. Firefox content scripts are an event
+// page/manifest world and `tabs.sendMessage` cannot reach the USER_SCRIPT
+// world; the injected relay that used to bridge it was page-forgeable. A
+// runtime port is extension-private and survives the page.
+const mdContentPorts = new Map();
+
+function mdRegisterContentPort(port) {
+    const tabId = port && port.sender && port.sender.tab && port.sender.tab.id;
+    if (tabId == null) return;
+    const entry = { port: port, frameId: port.sender.frameId || 0 };
+    let entries = mdContentPorts.get(tabId);
+    if (!entries) {
+        entries = new Set();
+        mdContentPorts.set(tabId, entries);
+    }
+    entries.add(entry);
+    port.onDisconnect.addListener(function () {
+        entries.delete(entry);
+        if (!entries.size && mdContentPorts.get(tabId) === entries) mdContentPorts.delete(tabId);
+    });
+}
+
+function mdSendToContent(tabId, message, opts) {
+    const entries = mdContentPorts.get(tabId);
+    if (!entries || !entries.size) {
+        return Promise.reject(new Error("No user-script port for tab " + tabId));
+    }
+    const frameId = opts && opts.frameId;
+    let sent = 0;
+    for (const entry of Array.from(entries)) {
+        if (frameId != null && entry.frameId !== frameId) continue;
+        try {
+            entry.port.postMessage(message);
+            sent++;
+        } catch (e) {
+            entries.delete(entry);
+        }
+    }
+    if (!sent) {
+        return Promise.reject(new Error("No user-script port for tab " + tabId + " frame " + frameId));
+    }
+    return Promise.resolve();
+}
+
+
 const _ = function (msg) {
     try {
         return chrome.i18n.getMessage(msg) || msg;
@@ -785,7 +830,7 @@ function handleMessage(message, sender, sendResponse) {
 async function deinitTabs() {
     const tabs = await chrome.tabs.query({ url: "<all_urls>" });
     for (const tab of tabs) {
-        chrome.tabs.sendMessage(tab.id, { cmd: "reinit" }).catch(() => {});
+        mdSendToContent(tab.id, { cmd: "reinit" }).catch(() => {});
     }
 }
 
@@ -1158,7 +1203,7 @@ function initTab(sender, sendResponse) {
     if (typeof sendResponse === "function") {
         sendResponse(resp);
     } else {
-        chrome.tabs.sendMessage(sender.tab.id, resp).catch(() => {});
+        mdSendToContent(sender.tab.id, resp, { frameId: sender.frameId || 0 }).catch(() => {});
     }
 }
 
@@ -1371,6 +1416,7 @@ chrome.runtime.onMessage?.addListener(onMessage);
 // and everything the page sent during that window was dropped silently (the
 // sender cannot tell, see Port.send in common/app.js).
 chrome.runtime.onUserScriptMessage?.addListener(onMessage);
+chrome.runtime.onUserScriptConnect?.addListener(mdRegisterContentPort);
 
 keepAlive();
 
@@ -1393,7 +1439,7 @@ if (chrome.contextMenus) {
         if (info.menuItemId === "open-options") {
             chrome.runtime.openOptionsPage();
         } else if (info.menuItemId === "ignore-element" && tab?.id) {
-            chrome.tabs.sendMessage(tab.id, { cmd: "ignore_element" }).catch(() => {});
+            mdSendToContent(tab.id, { cmd: "ignore_element" }).catch(() => {});
         }
     });
 }

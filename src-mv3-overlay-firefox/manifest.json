@@ -19,13 +19,6 @@
 		"128": "common/img/icon.png"
 	},
 
-	"content_scripts": [
-		{
-			"matches": ["<all_urls>"],
-			"js": ["content/relay.js"]
-		}
-	],
-
 	"action": {
 		"default_popup": "options/popup.html"
 	},

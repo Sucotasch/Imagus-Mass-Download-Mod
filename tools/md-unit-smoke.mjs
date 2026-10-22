@@ -973,7 +973,9 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         const SNAP_START = '// --- Session snapshot and recovery (FIX-7, 2026-09-12)';
         const snapBlock = (t) => t
             .slice(t.indexOf(SNAP_START), t.indexOf('function handleGetDownloadStatus', t.indexOf(SNAP_START)))
-            .replace(/\r\n/g, '\n');
+            .replace(/\r\n/g, '\n')
+            // F-01: the only permitted transport delta is the Firefox private port.
+            .replace(/\bmdSendToContent\(/g, 'chrome.tabs.sendMessage(');
         assert.ok(src.indexOf(SNAP_START) > 0, 'FIX-7: snapshot block present in the Chrome core');
         assert.equal(snapBlock(ffCoreSrc), snapBlock(src),
             'FIX-7: the snapshot/recovery block must be a copy, not a fork (both trees)');
@@ -1539,10 +1541,11 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         assert.ok(branch === block.slice(block.indexOf("d.cmd === 'resumeGroupAnalysis'"), block.indexOf("d.cmd === 'downloadWithReferer'")),
             `RESUME: ${tree} — content.js and content-block.js must carry the identical branch`);
     }
+    const normTransport = (t) => t.replace(/\bmdSendToContent\(/g, 'chrome.tabs.sendMessage(');
     for (const fn of ['mdAskInitiatorToResume', 'mdResumeAck', 'mdProbeInitiatorTab', 'handleResolveGroups']) {
-        assert.strictEqual(cutFnFrom(readNorm(batchTrees[0], 'mass-download/service-core.js'), fn),
-            cutFnFrom(readNorm(batchTrees[1], 'mass-download/service-core.js'), fn),
-            `RESUME: ${fn} must be byte-identical in both trees`);
+        assert.strictEqual(normTransport(cutFnFrom(readNorm(batchTrees[0], 'mass-download/service-core.js'), fn)),
+            normTransport(cutFnFrom(readNorm(batchTrees[1], 'mass-download/service-core.js'), fn)),
+            `RESUME: ${fn} must be byte-identical in both trees (F-01 transport delta allowed)`);
     }
 
     console.log('md-unit-smoke: 2026-09-12 batch locks (D-1, D-5, D-6, D-7, D-8 + D-10 revert + progress-window rule + supersede rule + resume-after-restart) hold in both trees');

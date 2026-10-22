@@ -453,7 +453,7 @@ function handleDownloadAll(msg, sender, sendResponse) {
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
         if (tabs[0]) {
             downloadInitiatorTabId = tabs[0].id;
-            chrome.tabs.sendMessage(tabs[0].id, { cmd: 'downloadAll' }, { frameId: 0 }).catch(() => {
+            mdSendToContent(tabs[0].id, { cmd: 'downloadAll' }, { frameId: 0 }).catch(() => {
                 console.warn(manifest.name + ': Failed to send downloadAll to content script');
             });
             sendResponse({ status: 'initiated' });
@@ -731,7 +731,7 @@ function handleStopScanning() {
     clearSessionKeepalive();
 
     if (downloadInitiatorTabId) {
-        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
+        mdSendToContent(downloadInitiatorTabId, { cmd: 'stopScanning' }).catch(() => { downloadInitiatorTabId = null; });
     }
 
     setTimeout(checkAllQueuesEmpty, 500);
@@ -1230,7 +1230,7 @@ function mdAskInitiatorToResume() {
     if (downloadInitiatorTabId == null || contentScanDone) return;
     mdResumeAskedAt = Date.now();
     try {
-        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'resumeGroupAnalysis' })
+        mdSendToContent(downloadInitiatorTabId, { cmd: 'resumeGroupAnalysis' })
             .catch(function () { mdCheckInitiatorGone(); });
     } catch (e) {
         mdCheckInitiatorGone();
@@ -1773,7 +1773,7 @@ function releaseDownloadSlot(task) {
         // the content script to revoke it (fire-and-forget; if the initiator
         // tab is gone the blob dies with the page anyway).
         if (downloadInitiatorTabId) {
-            chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'revokeObjectUrl', url: task._objectUrl }).catch(() => {});
+            mdSendToContent(downloadInitiatorTabId, { cmd: 'revokeObjectUrl', url: task._objectUrl }).catch(() => {});
         }
         task._objectUrl = null;
     }
@@ -2382,7 +2382,7 @@ function triggerRefererDownload(task) {
             updateDownloadProgress(retryUrl, 'failed', 0, 'Referer retry timed out', null, entry.task);
         }
     }, 30000);
-    chrome.tabs.sendMessage(downloadInitiatorTabId, {
+    mdSendToContent(downloadInitiatorTabId, {
         cmd: 'downloadWithReferer',
         url: task.url,
         referer: task.referer || '',
@@ -4216,7 +4216,7 @@ async function processUrlGroupsWithValidation(groups, referer, sender) {
     }
     if (mdScanPhases.groupsEnd == null) mdScanPhases.groupsEnd = Date.now();
     if (downloadInitiatorTabId) {
-        chrome.tabs.sendMessage(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls })
+        mdSendToContent(downloadInitiatorTabId, { cmd: 'groupAnalysisComplete', processedCount: foundUrls })
             .catch(() => { mdCheckInitiatorGone(); });
     }
     setTimeout(checkAllQueuesEmpty, 1000);
