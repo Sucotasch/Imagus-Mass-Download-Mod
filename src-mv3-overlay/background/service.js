@@ -90,6 +90,15 @@ function jsDelivrMirror(repoUrl) {
 // catch that was supposed to save the update. The throw sits before the try, so it
 // escaped as an unhandled rejection, and the jsDelivr mirror had therefore never
 // actually fetched anything.
+const MD_SIEVE_MAX_BYTES = 8 * 1024 * 1024;
+
+async function mdSha256Hex(buf) {
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(digest))
+        .map(function (b) { return b.toString(16).padStart(2, "0"); })
+        .join("");
+}
+
 function sieveUrlFor(local, useMirror, sieveRepoUrl) {
     if (local) return "/data/sieve.json";
     if (useMirror) return jsDelivrMirror(sieveRepoUrl) || sieveRepoUrl || null;
@@ -100,6 +109,21 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
     const MAX_RETRIES = 3;
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
+
+    // A remote repository is executable code. Refuse a plaintext transport
+    // before the fetch: a policy rejection must not fall through to the mirror
+    // or the bundled local sieve.
+    if (!local) {
+        let parsedRepo;
+        try {
+            parsedRepo = new URL(sieveRepoUrl);
+        } catch (e) {
+            return { error: "Invalid sieve repository URL" };
+        }
+        if (parsedRepo.protocol !== "https:") {
+            return { error: "Sieve repository must use HTTPS" };
+        }
+    }
 
     // A local sieve with zero usable rules must never be treated as "up to
     // date": if the user deleted all rules and wants to re-download them,
@@ -146,7 +170,19 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
             throw new Error("HTTP " + response.status);
         }
 
-        let newSieve = await response.json();
+        if (!local) {
+            let finalRepo;
+            try { finalRepo = new URL(response.url); } catch (e) { finalRepo = null; }
+            if (!finalRepo || finalRepo.protocol !== "https:") {
+                return { error: "Sieve repository must use HTTPS" };
+            }
+        }
+        const declared = Number(response.headers.get("Content-Length")) || 0;
+        if (declared > MD_SIEVE_MAX_BYTES) return { error: "Sieve is larger than 8 MiB" };
+        const buf = await response.arrayBuffer();
+        if (buf.byteLength > MD_SIEVE_MAX_BYTES) return { error: "Sieve is larger than 8 MiB" };
+        const hash = await mdSha256Hex(buf);
+        let newSieve = JSON.parse(new TextDecoder().decode(buf));
 
         if (typeof newSieve !== 'object' || newSieve === null) {
             throw new Error('Invalid sieve format: must be an object');
@@ -183,8 +219,26 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
             }
             newSieve = merged;
         }
-        await updatePrefs({ sieve: newSieve });
-        await cfg.set({ sieveUpdateLast: Date.now() });
+        const { sieveTrustRepo, sieveTrustHash } = await cfg.get(["sieveTrustRepo", "sieveTrustHash"]);
+        const trusted = sieveTrustRepo === sieveRepoUrl && sieveTrustHash === hash;
+        if (!local && !force && !trusted) {
+            await cfg.set({ sieveUpdatePending: { repo: sieveRepoUrl, hash, at: Date.now() } });
+            console.warn(manifest.name + ": sieve update downloaded but not trusted; approve it in Options.");
+            return { pending: true, hash };
+        }
+        const saveErr = await updatePrefs({ sieve: newSieve });
+        if (saveErr) return { error: "Sieve could not be saved: " + (saveErr.message || saveErr) };
+        if (!local) {
+            await cfg.set({
+                sieveUpdateLast: Date.now(),
+                sieveTrustRepo: sieveRepoUrl,
+                sieveTrustHash: hash
+            });
+            cachedPrefs.sieveTrustRepo = sieveRepoUrl;
+            cachedPrefs.sieveTrustHash = hash;
+        } else {
+            await cfg.set({ sieveUpdateLast: Date.now() });
+        }
         console.info(manifest.name + ": Sieve updated from " + (useMirror ? "jsDelivr mirror" : (local ? "local" : "remote")) + " repository.");
         return { updated_sieve: newSieve };
 
@@ -346,9 +400,11 @@ async function toggleIgnoreElementMenu(enabled) {
 }
 
 let prefsMutex = Promise.resolve();
+let saveError = null;
 
 async function updatePrefs(prefs, callback) {
     prefs = prefs || {};
+    saveError = null;
 
     let defaults = await (await fetch("/data/defaults.json")).json();
     let storedPrefs = await cfg.get(Object.keys(defaults));
@@ -417,6 +473,7 @@ async function updatePrefs(prefs, callback) {
     await (prefsMutex = prefsMutex.then(async () => {
         await cfg.set(changes);
     }).catch(err => {
+        saveError = err;
         console.error('updatePrefs storage error:', err);
     }));
 
@@ -429,8 +486,9 @@ async function updatePrefs(prefs, callback) {
         }
     }
     if (typeof callback === "function") {
-        callback();
+        callback(saveError);
     }
+    return saveError;
 }
 
 function onMessage(message, sender, sendResponse) {

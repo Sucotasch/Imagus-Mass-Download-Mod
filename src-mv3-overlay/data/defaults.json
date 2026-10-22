@@ -60,7 +60,7 @@
 	},
 	"tls": {
 		"advanced": false,
-		"autoUpdateSieve": true,
+		"autoUpdateSieve": false,
 		"opzoom": true,
 		"sendToHosts": [
 			["+Google Lens", "https://lens.google.com/uploadbyurl?url=%url"],
@@ -112,5 +112,7 @@
 	},
 	"grants": [],
 	"grantUrls": [],
-	"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt"
+	"sieveRepository": "https://raw.githubusercontent.com/kuzn123/Imagus-Sieve-RuBoard/master/update.txt",
+	"sieveTrustRepo": "",
+	"sieveTrustHash": ""
 }
