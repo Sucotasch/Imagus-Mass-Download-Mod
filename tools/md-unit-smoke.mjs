@@ -1020,7 +1020,12 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
             'FIX-7: an orphaned in-flight download must get a fresh stall watchdog');
         assert.ok(/advanceToNextCandidate\(item\.task, 'interrupted: '/.test(apply),
             'FIX-7: a download interrupted while the worker was dead must continue its candidate chain');
-        assert.ok(/if \(!scanInProgress\) \{ mdDropSessionSnapshot\(\); return; \}/.test(cutFnFrom(src, 'mdFlushSession')),
+        // RESTORE-WINDOW (2026-10-23): the drop is unchanged for a settled worker, but it
+        // now sits behind the restore-pending gate (a flush can run before the 400 ms
+        // restore has read the snapshot). The gate-before-drop ordering is locked in the
+        // restore-window block below.
+        const flushLocked = cutFnFrom(src, 'mdFlushSession');
+        assert.ok(/if \(!scanInProgress\) \{/.test(flushLocked) && /mdDropSessionSnapshot\(\);/.test(flushLocked),
             'FIX-7: a finished session must leave no recoverable snapshot');
         for (const [label, coreText, svcText] of [['Chrome', src, chromeServiceSrc2], ['FF', ffCoreSrc, ffServiceSrc]]) {
             assert.ok(/setTimeout\(mdRestoreSession, 400\);/.test(coreText),
@@ -3506,6 +3511,53 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
         `${tree}: F-10b — the guard must run before the row is marked canceled`);
 }
 console.log('md-unit-smoke: F-10b lock holds (trailing USER_CANCELED is not a user cancel)');
+
+// --- RESTORE-WINDOW (2026-10-23): the first second of a restarted worker must not
+// lose the items the page is still sending, and the snapshot must survive until the
+// delayed restore has READ it ---
+// Measured live with `.unlazy/restore-window-live.mjs` against the real worker:
+//   A) a downloadMass task was in the filter when mdApplySnapshot applied a snapshot
+//      with a foreign sessionId. The old code adopted that id, so the task failed
+//      `task._session !== sessionId` right after its HEAD and its row stayed 'scanning'
+//      forever (observed: sessionId 0 -> 42, activeFilters 0, task in no queue). The
+//      snapshot id belongs to a DEAD worker and is never compared across workers, so
+//      adopting it bought nothing and cost every early task of the new worker.
+//   B) a snapshot was written, scanInProgress set false and mdFlushSession called before
+//      the 400 ms restore: the old flush DELETED the recoverable snapshot. The flush must
+//      stay out of the way until mdRestoreSession settles — and must clear the pending
+//      flag on EVERY path, or a finished session could never be dropped again.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const s = readFileSync(join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8');
+
+    // A. no adoption of the dead worker's session id (source and the function itself).
+    assert.ok(!/sessionId\s*=\s*Number\(snap\.sessionId\)/.test(s),
+        `${tree}: RESTORE-WINDOW — mdApplySnapshot must not adopt the snapshot's sessionId`);
+    assert.ok(!cutFnFrom(s, 'mdApplySnapshot').includes('snap.sessionId'),
+        `${tree}: RESTORE-WINDOW — mdApplySnapshot still reads the dead worker's sessionId`);
+    // The snapshot field may still be WRITTEN (diagnostics); it must never be READ.
+    assert.ok(!/Number\(snap\.sessionId\)/.test(s),
+        `${tree}: RESTORE-WINDOW — a snapshot sessionId read came back`);
+
+    // B. the drop is gated by the pending flag, and only after the gate.
+    const flush = cutFnFrom(s, 'mdFlushSession');
+    const guard = flush.indexOf('if (mdRestorePending) return;');
+    const drop = flush.indexOf('mdDropSessionSnapshot()');
+    assert.ok(guard > 0, `${tree}: RESTORE-WINDOW — mdFlushSession is missing the restore-pending gate`);
+    assert.ok(drop > guard, `${tree}: RESTORE-WINDOW — the gate must run before the snapshot is dropped`);
+
+    // The flag starts true (a fresh worker has not read anything yet) and is cleared by
+    // the restore's own finalizer, on both settlement paths.
+    assert.ok(s.includes('var mdRestorePending = true;'),
+        `${tree}: RESTORE-WINDOW — mdRestorePending must start true for a fresh worker`);
+    const restore = cutFnFrom(s, 'mdRestoreSession');
+    assert.ok(restore.includes('mdRestorePending = false'),
+        `${tree}: RESTORE-WINDOW — the sync storage failure must clear mdRestorePending`);
+    assert.ok(restore.includes('mdRestoreSettled, mdRestoreSettled'),
+        `${tree}: RESTORE-WINDOW — the restore must clear mdRestorePending on success AND failure`);
+    assert.ok(s.includes('function mdRestoreSettled() { mdRestorePending = false; }'),
+        `${tree}: RESTORE-WINDOW — mdRestoreSettled must clear the flag`);
+}
+console.log('md-unit-smoke: restore-window locks hold (early tasks and the snapshot survive a restart)');
 
 // --- MAIN-06: a TRANSIENT interrupt must retry the SAME url, not advance ---
 // Measured 2026-10-08: SERVER_FAILED did not reproduce with the url alone or at

@@ -1067,6 +1067,14 @@ const MD_SNAPSHOT_DEBOUNCE_MS = 1000;
 var mdPersistTimer = null;
 var mdPersistBusy = false;
 var mdRestoreStarted = false;
+// RESTORE-WINDOW (2026-10-23): true from worker boot until mdRestoreSession has
+// settled (applied, found nothing, or failed). While it is true this worker has not
+// yet read the snapshot, so a flush must NOT delete it: the task-picking path below
+// schedules a persist within the first second, and deleting the session the worker
+// is about to resume loses the whole run. Measured live: a flush with
+// scanInProgress=false removed the snapshot before the 400 ms restore ran
+// (.unlazy/restore-window-live.mjs, check B1).
+var mdRestorePending = true;
 // 2026-09-12 19:58, live: the worker restarted 36 s into a session whose page was
 // waiting for `groupAnalysisComplete` — the request that would have produced that
 // message died with the previous worker, so the page sat on "Analyzing 82 complex
@@ -1485,7 +1493,13 @@ function mdDropSessionSnapshot() {
 // run's rows on screen either way.
 function mdFlushSession() {
     if (mdPersistBusy) { mdSchedulePersist(); return; }
-    if (!scanInProgress) { mdDropSessionSnapshot(); return; }
+    if (!scanInProgress) {
+        // RESTORE-WINDOW: only the worker that has already READ the snapshot may drop
+        // it. Before that, "no live session" is just the pre-restore state.
+        if (mdRestorePending) return;
+        mdDropSessionSnapshot();
+        return;
+    }
     let snap;
     try { snap = mdFitSnapshot(mdBuildSnapshot(), MD_SNAPSHOT_MAX_BYTES); } catch (e) { return; }
     mdPersistBusy = true;
@@ -1570,7 +1584,15 @@ function mdApplySnapshot(snap) {
     // own-candidate exemption it can even pass the filter dedup).
     const queuedSnapshotKeys = mdQueuedSnapshotKeys(snap.filterQueue, snap.downloadQueue);
 
-    sessionId = Number(snap.sessionId) || sessionId;
+    // RESTORE-WINDOW (2026-10-23): the snapshot's sessionId is NOT adopted. sessionId
+    // is in-memory state of the worker that wrote it and is only ever compared inside
+    // ONE worker, so the dead worker's value means nothing here. Adopting it invalidated
+    // every task the page sent in the 400 ms before this restore (they carry the fresh
+    // worker's initial 0): processFilterQueue drops them after their HEAD
+    // (`task._session !== sessionId`) and their rows freeze at 'scanning' forever —
+    // measured live with .unlazy/restore-window-live.mjs (row frozen, activeFilters 0,
+    // task in no queue). Restored tasks are re-created with the CURRENT id by
+    // mdTaskFromSnapshot, so keeping it is what makes both halves agree.
     mdPageOrder = Number(snap.pageOrder) || 0;
     mdScanDiagnostics = snap.scanDiagnostics && typeof snap.scanDiagnostics === 'object'
         ? snap.scanDiagnostics : null;
@@ -1841,7 +1863,7 @@ function mdRestoreSession() {
     if (mdRestoreStarted) return;
     mdRestoreStarted = true;
     let p;
-    try { p = chrome.storage.session.get([MD_SNAPSHOT_KEY, MD_STOP_KEY]); } catch (e) { return; }
+    try { p = chrome.storage.session.get([MD_SNAPSHOT_KEY, MD_STOP_KEY]); } catch (e) { mdRestorePending = false; return; }
     p.then(function (r) {
         const snap = r && r[MD_SNAPSHOT_KEY];
         if (!snap || snap.v !== MD_SNAPSHOT_VERSION) return;
@@ -1883,8 +1905,13 @@ function mdRestoreSession() {
         } catch (e) {
             mdAbortRecovery(e);
         }
-    }).catch(function (e) { console.warn(mdWorkerLabel() + ': session restore lookup failed', e); });
+    }).catch(function (e) { console.warn(mdWorkerLabel() + ': session restore lookup failed', e); })
+        .then(mdRestoreSettled, mdRestoreSettled);
 }
+
+// The restore attempt is over (applied, nothing to resume, or failed): from now on the
+// snapshot has an owner and the normal drain path may drop it again.
+function mdRestoreSettled() { mdRestorePending = false; }
 
 // Delayed on purpose: runtime.onInstalled (extension reload/update) fires during
 // the first event dispatch after this script evaluates, and its handler drops the
