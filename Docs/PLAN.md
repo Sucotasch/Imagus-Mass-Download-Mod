@@ -53,11 +53,11 @@ file's own history.** Four things are true today:
    roughly ~15–20 s, i.e. ~5–10 % of a 3–5 minute scan — not enough to buy back a resolution loss, and the
    pause cannot be shown to be non-load-bearing on a heavy page. The other speed levers were already
    rejected (`hz.delay`) or held; no cheap one remains.
-3. **`MAIN-07` now has the repro the plan was hunting — and the last A/B was the wrong size.** The owner's
-   real workflow is Pagetual: it appends 4–5 listing pages (200+ images) before the scan, and at that volume
-   the worker dies on **every** rule34 launch. The F-17 A/B used the 42-post first page (6+6 runs, **0 deaths
-   in both arms**), i.e. it measured the absence of the trigger, not the effect of the mitigation. The next
-   A/B runs at 200+; `MAIN-08`'s two first scans ride the same sessions.
+3. **`MAIN-07`'s A/B at the real volume has now been run (2026-10-24) — and the lever holds.** Pagetual to
+   210 posts: at the default `maxConcurrentDownloads = 3` the worker died (gen 2, `abrupt`, ~58 s into the
+   download tail), recovering but leaving up to 4 posts beyond the known-2 baseline unmatched; at
+   `maxConcurrentDownloads = 1` the same volume finished in one generation, 0 deaths, baseline delivery, at
+   ~1.5× wall time (466 s vs 318 s). One run per arm — strong evidence, not proof. Decision (2026-10-24): keep default 3; scan duration is the primary metric and a 1.5× slowdown is unacceptable. Worker restarts are handled by recovery.
 4. **The recovery path those items were written against has changed.** F-10c re-queues a restored row whose
    download record was erased; F-18 asks the written index **before** the filter; F-19 stops a row from
    being restored twice (live case: 100 rows → 192 tasks). A restart and a repeat run are therefore not the
@@ -67,11 +67,7 @@ file's own history.** Four things are true today:
 **The ledger's own failure, stated once:** a 24-commit stack changed the product and this file moved by one
 item. Rule 5's question — *did this change the plan?* — went unasked for the batch's other 18 findings.
 
-**Next:** `MAIN-07` at the real volume (Pagetual, 4–5 pages, 200+ images) with `MAIN-08` folded into the same
-sessions → `RES-02` instrumentation (cheap; `MAIN-04` may be a session-destroying bug) → the batch's paper
-trail (`Audit/AUDIT_STATUS_CURRENT.md`). `MAIN-01` and the 50 ms pause are closed; `MAIN-03` is no longer a
-gate for a speed change — its only remaining justification is the Pagetual capability `MAIN-07` needs.
-`MAIN-05` stays dropped.
+**Next:** `RES-02` instrumentation (cheap; `MAIN-04` may be a session-destroying bug) → `MAIN-08` protocol. `MAIN-01` and the 50 ms pause are closed; `MAIN-07` closed by owner decision (keep default 3); `MAIN-03` is no longer a gate for a speed change — its only remaining justification is the Pagetual capability `MAIN-07` needs. `MAIN-05` stays dropped.
 
 ---
 
@@ -99,7 +95,7 @@ audit's **live** column is not recorded for most rows — that is this batch's l
 | F-14 | regression locks for every contract above | `edbdd71` | done | 278 lines in `md-unit-smoke` |
 | F-15 | downloads inserted by stable page order (`mdInsertDownload`) | `ae118b6` | fixed | executed stable-insert lock; `downloadQueue.push` forbidden |
 | F-16 | sync-XHR rejection inside sieve rules | `a5ca1c5` → reverted `1f7c97a` | **reverted** | 78 working rules were rejected; no lock remains |
-| F-17 | download-stage breather after 3 transport refusals (15 s/session cap) | `f63962f`, recorded `5f0f7b3` | **landed, unproven** | `scripts/verify-f17.mjs`; A/B 0 deaths **both** arms — at 42 posts, below the death volume (see `MAIN-07`) |
+| F-17 | download-stage breather after 3 transport refusals (15 s/session cap) | `f63962f`, recorded `5f0f7b3` | **landed, unproven** | `scripts/verify-f17.mjs`; 42-post A/B 0 deaths **both** arms (below the death volume) and the 210-post A/B with F-17 active **still died at concurrency 3** (2026-10-24, `MAIN-07`) |
 | F-18 | restored work asks the written index before the filter | `0b5b688` | fixed | `scripts/verify-restore-prefilter.mjs` + live worker |
 | F-19 | a queued row is restored once — key `(url, source, page order)` | `c6d6eb9` | fixed | real worker + compiled-source SHA-256 |
 | MENU-1 | duplicate `ignore-element` menu id on every reload | `1f7c97a` | fixed | serialized-transaction lock |
@@ -1324,6 +1320,20 @@ The arithmetic is why this was the biggest candidate — and the owner's 2026-10
   4–5 listing pages (200+ images) the worker dies on **every** launch; the F-17 A/B below used the 42-post
   first page (6+6 runs, 0 deaths both arms), so it measured the absence of the trigger, not the effect of
   the mitigation. The next A/B runs at 200+; until then "unproven" means *not exercised*, not *no effect*.
+- **MEASURED 2026-10-24 — the 210-post A/B, F-17 active in both arms.** Same listing, same profile, Pagetual
+  to 210 posts, `hz.delay` 300. At the default `da.maxConcurrentDownloads = 3`
+  (`.unlazy/pagetual3c.{log,json}`) the worker died: gen 2, `ends ["abrupt", null]`, ~225 s after the scan
+  trigger and ~58 s into the download tail, `activeGapMs` 1121 → **not** an idle kill. The restore worked —
+  371 rows, 80 re-queued (78 were already queued), 3 rescued, drained, `stalled: false`; outcomes
+  `completed 206 / failed 2 / skipped 279`, 204 files written, 0 `(1)` duplicates. Delivery, however, is no
+  longer clean: matching the page's own thumbnail md5s against filenames gives **142/148** judged posts,
+  against **144/146** and **151/153** on the same listing earlier (`.unlazy/scan-pagetual{,2}.json`), i.e. up
+  to 4 posts beyond the known-2 baseline, unattributed (a file saved under another name is invisible to this
+  check). At `da.maxConcurrentDownloads = 1` (`.unlazy/pagetual4c1.{log,json}`) the same volume ran in
+  **one** generation, `ends [null]`, **0 deaths**: `completed 207 / failed 2 / skipped 273 / canceled 0`,
+  207 files (166 rewritten in place, 41 new), **166/168** md5 match = the baseline, drained, no stall — 466 s
+  vs 318 s. The lever therefore holds at real volume, at ~1.5× wall time. One run per arm and the death is
+  stochastic (E4's first run at concurrency 1 also survived), so this is strong evidence, not proof.
 - **Measured 2026-10-08 (`.unlazy/sw-death.log`, `.unlazy/sw-death-instr.log`, `.unlazy/paired-*.log`).**
   The worker's own globals are replaced **in mid-run** — the probe's `self.__mfCalls` went `62 → 0`
   inside one 3 s poll — while Chrome reports **no** `Target.targetCreated` for a new worker, **no**

@@ -3663,6 +3663,10 @@ function mdAdoptIfAlreadyDownloaded(task) {
         processDownloadQueue();
     };
     mdWrittenIndexRefresh(false).then(function (index) {
+        // The await can outlive the run it belongs to (stop, or a new scan): never
+        // write a row of a session this task is no longer part of. The reset that
+        // changed the session already cleared the queue, so there is nothing to resume.
+        if (task._session !== sessionId || !scanInProgress || userCanceled) return;
         // Every exit from below resumes the queue. The explicit `retry` flag is
         // deliberate: the adopt path touches the row table, the ledger and the
         // progress tab, and a throw anywhere in it would otherwise leave the task
@@ -3841,9 +3845,14 @@ function mdDlNoteFailure() {
     if (mdDlStreak < MD_DL_FAIL_STREAK) return;
     const left = MD_DL_FAIL_BUDGET_MS - mdDlSpentMs;
     if (left <= 0) return;
-    const wait = Math.min(MD_DL_FAIL_PAUSE_MS, left);
-    mdDlSpentMs += wait;
-    mdDlNotBefore = Date.now() + wait;
+    // Charge only the wall-clock extension of the pause, not the requested 300 ms:
+    // concurrent failures share one window, and charging each would exhaust the
+    // budget ~3-5x faster than the queue is actually paused.
+    const now = Date.now();
+    const addedWait = Math.max(0, now + MD_DL_FAIL_PAUSE_MS - Math.max(now, mdDlNotBefore));
+    const actualWait = Math.min(addedWait, left);
+    mdDlSpentMs += actualWait;
+    mdDlNotBefore = Math.max(now, mdDlNotBefore) + actualWait;
 }
 
 function mdDlReset() {

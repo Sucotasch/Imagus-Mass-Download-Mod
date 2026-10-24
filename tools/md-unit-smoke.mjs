@@ -147,6 +147,10 @@ for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
     // Content-Disposition/URL derivation keeps precedence.
     assert.equal(withExt('clip.mp4', 'jpg'), 'clip.mp4', `${tree}: a typed name is left alone`);
     assert.equal(withExt('v1.2', 'jpg'), 'v1.2.jpg', `${tree}: a numeric tail is not an extension`);
+    assert.equal(withExt('clip.3gp', '3gp'), 'clip.3gp', `${tree}: 3gp is an extension`);
+    assert.equal(withExt('video.3g2', '3g2'), 'video.3g2', `${tree}: 3g2 is an extension`);
+    assert.equal(withExt('archive.7z', '7z'), 'archive.7z', `${tree}: 7z is an extension`);
+    assert.equal(withExt('file.a', 'jpg'), 'file.a.jpg', `${tree}: a one-letter tail is not an extension`);
 }
 
 console.log('md-unit-smoke: all assertions passed');
@@ -510,6 +514,24 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         // The popup-save path in FF service.js carries the same header:
         assert.ok(/params\.headers\s*=\s*\[\{\s*name:\s*"Referer"/.test(ffServiceSrc),
             'FF Fix 2: popup-save path also passes Referer');
+
+        // F-09 parity (2026-10-24): a download queue must never start work that
+        // belongs to a replaced session. Chrome has the guard; the FF copy lost it,
+        // and no test looked inside processDownloadQueue to notice.
+        for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+            const coreSrc = readFileSync(
+                join(repoRoot, `${tree}/mass-download/service-core.js`), 'utf8');
+            const dl = cutFnFrom(coreSrc, 'processDownloadQueue');
+            assert.ok(/if \(!task \|\| task\._session !== sessionId\) continue;/.test(dl),
+                `${tree}: processDownloadQueue must drop tasks of a replaced session`);
+            // mdAdoptIfAlreadyDownloaded awaits the history index: the callback must
+            // not write a row of a session the task no longer belongs to.
+            const adopt = cutFnFrom(coreSrc, 'mdAdoptIfAlreadyDownloaded');
+            const cb = adopt.slice(adopt.indexOf('.then(function (index) {'));
+            const guard = cb.search(/if \(task\._session !== sessionId \|\| !scanInProgress \|\| userCanceled\) return;/);
+            assert.ok(guard > 0 && cb.indexOf('try {') > guard,
+                `${tree}: the adopt callback must drop a stale session before it writes a row`);
+        }
 
         // BT-06 (2026-09-11): every mass-download case that answers nothing is
         // fire-and-forget out of the content/userScript world, and in Gecko an

@@ -97,24 +97,48 @@ for (const tree of TREES) {
 	assert.strictEqual(mk().plan(3, 3, 14850, 5).wait, 150, `${tree}: the last pause must respect what is left`);
 	assert.strictEqual(mk().plan(3, 3, 0, 5).wait, 300, `${tree}: the normal pause`);
 
-	// 3. The budget: 200 failures can never delay more than the 15 s cap, and the
-	//    streak resets on a written file.
+	// 3. The budget is WALL-CLOCK delay, not the sum of the requested pauses. 200
+	//    failures 50 ms apart charge 300 ms (the third failure opens the window) plus
+	//    50 ms for each of the remaining 197 — and a written file ends the streak.
 	{
 		const w = mk();
-		const waits = [];
 		for (let i = 0; i < 200; i++) {
-			if (i > 0 && waits.length < 200) w.advance(50); // the failures themselves take time
+			if (i > 0) w.advance(50); // the failures themselves take time
+			const before = w.state().spent;
 			w.fail();
-			const p = w.plan(w.state().streak, 3, w.state().spent, 10);
-			if (p.wait > 0) waits.push(p.wait);
+			const after = w.state().spent;
+			assert.ok(after >= before, `${tree}: spent must not decrease`);
+			assert.ok(after <= 15000, `${tree}: spent must never exceed the cap`);
 		}
 		const st = w.state();
-		assert.strictEqual(st.spent, 15000, `${tree}: the budget must stop exactly at 15 000 ms`);
-		assert.ok(waits.reduce((a, b) => a + b, 0) <= 15000, `${tree}: waits may not overspend the budget`);
-		assert.ok(waits.length >= 49 && waits.length <= 51, `${tree}: 15 s / 300 ms is ~50 pauses, got ${waits.length}`);
+		assert.strictEqual(st.spent, 10150,
+			`${tree}: wall-clock spent after 200 failures 50 ms apart`);
+		assert.ok(w.plan(st.streak, 3, st.spent, 10).wait > 0,
+			`${tree}: a live streak with budget left must still pause`);
 		w.ok();
 		assert.deepStrictEqual(w.state().streak, 0, `${tree}: a written file ends the streak`);
 		assert.strictEqual(w.plan(0, 3, w.state().spent, 10).cap, 3, `${tree}: full speed returns after a success`);
+	}
+
+	// 4. A concurrent burst shares one pause window: five failures at the same
+	//    instant must charge 300 ms once, not 300 ms each.
+	{
+		const b = mk();
+		b.fail(); b.fail(); b.fail();
+		assert.strictEqual(b.state().spent, 300, `${tree}: the third failure opens one 300 ms pause`);
+		b.fail(); b.fail();
+		assert.strictEqual(b.state().spent, 300, `${tree}: simultaneous failures share one window`);
+	}
+
+	// 5. The cap holds: after enough real pauses the budget is exactly 15 000 ms and
+	//    the policy offers no further wait.
+	{
+		const w = mk();
+		for (let i = 0; i < 200; i++) { w.advance(1000); w.fail(); }
+		const st = w.state();
+		assert.strictEqual(st.spent, 15000, `${tree}: the budget must stop exactly at 15 000 ms`);
+		assert.strictEqual(w.plan(st.streak, 3, st.spent, 10).wait, 0,
+			`${tree}: no pause once the budget is spent`);
 	}
 
 	// --- executed contract: page order (the album/comic promise) ---------------

@@ -931,9 +931,9 @@ function mdWithExtension(name, ext) {
     if (!name || !ext) return name;
     const e = String(ext).trim().replace(/^\./, '').toLowerCase();
     if (!/^[a-z0-9]{1,5}$/.test(e)) return name;
-    // A real extension starts with a letter and has 2-5 chars (mp4, m4v, jpeg),
-    // so a numeric tail such as 'v1.2' is not mistaken for one.
-    return /\.[a-z][a-z0-9]{1,4}$/i.test(name) ? name : name + '.' + e;
+    // A real extension has 2-5 alphanumeric chars and is not a pure number (mp4,
+    // m4v, jpeg, 3gp, 7z), so 'v1.2' and 'photo.2024' are not mistaken for one.
+    return /\.(?!\d+$)[a-z0-9]{2,5}$/i.test(name) ? name : name + '.' + e;
 }
 
 async function download(msg, tab, sendResponse) {

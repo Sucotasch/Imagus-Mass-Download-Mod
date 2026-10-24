@@ -1276,3 +1276,51 @@ reads them without any lab. What they say:
 **7. Product observation, seen once:** on artuntamed the scan schedules the site's own UI assets
 (`/styles/default/xenforo/au-cuffs-text-small.png`, `dofantasy-web-logo.png`, `empty.png`, `AU Welcome.jpg`)
 as downloads. If it reproduces it is a filter-quality item, not a harness note.
+
+---
+
+## 2026-10-24 — post-release audit: five fixes landed, F-02 open, `MAIN-07` measured
+
+The independent review of `450a434..2e728df` (71 commits) was checked against the code (edition 2,
+`Audit/AUDIT_INDEPENDENT_POST_RELEASE_REVIEW_2026-10-24.md`, local-only). What the check changed and what
+is now in the working tree:
+
+* **F-09 parity (FF `processDownloadQueue`)** — `a85cb51` added
+  `if (!task || task._session !== sessionId) continue;` to Chrome only. Clear All is **not** the leak (both
+  stop paths clear the queues); the guard closes the residual race where an old async branch re-inserts a task
+  after the reset. Restored in the FF tree. The audit's "critical" label was wrong; this is medium.
+* **F-17 budget accounting** — `mdDlNoteFailure` charged the requested 300 ms per failure, so a concurrent
+  burst (five failures at one instant) burned 1500 ms of the 15 s wall-clock budget while the queue paused
+  300 ms. It now charges only the extension of `mdDlNotBefore`. `verify-f17` was rewritten to the wall-clock
+  contract: 200 failures 50 ms apart = 10 150 ms, a five-failure burst = one 300 ms window, and the 15 000 ms
+  cap still holds. The old test asserted `spent === 15000`, `~50 waits` and `sum(wait) <= 15000`; the patch
+  breaks all three, so code and test had to change together.
+* **`mdWithExtension`** — `/\.[a-z].../` doubled `.3gp/.3g2/.7z`. Now
+  `/\\.(?!\\d+$)[a-z0-9]{2,5}$/i`: 2–5 alphanumerics, never pure digits. `{1,5}` would have changed
+  `file.a` (`file.a.jpg` → `file.a`), hence `{2,5}`.
+* **`mdAdoptIfAlreadyDownloaded`** — the history-index callback now drops a task whose `_session` changed
+  before it writes a row or a counter. Same guard pair as `mdAdoptRestoredBeforeFilter`; the reset that
+  changes the session already cleared the queue, so returning before `try/finally` resumes nothing.
+* **Restore window (`2e728df`)** — a new worker no longer adopts a dead snapshot's `sessionId`;
+  `mdTaskFromSnapshot` stamps restored tasks with the current session and `mdDropSessionSnapshot` is blocked
+  while `mdRestorePending`. This is why the stale-dequeue guard is a last resort, not the only defense.
+* **Tests** — `md-unit-smoke` gained the 3gp/3g2/7z/`file.a` cases and two cut-function locks (queue guard,
+  adopt guard); `verify-syntax` now checks `md-dnr.js`, `offscreen.js`, `SieveUI.js` and both FF delta JS.
+  `verify-sw-core` was **not** used for the guard: `includes('task._session !== sessionId')` passes on any
+  occurrence in the file.
+* **F-02 remains open by decision** — `res` is executed via `Function("$", req_res)` and `cacheSieve`
+  validates only `link`/`img`. HTTPS + 8 MiB bounds transport and size, not code integrity. The choice is
+  TOFU-with-approval (first hash accepted, a changed hash blocks the update until confirmed) or a signed
+  sieve — not "HTTPS is enough".
+* **`MAIN-07` measured at real volume (2026-10-24)** — 210 posts via Pagetual, F-17 active in both arms,
+  `hz.delay` 300, same listing/profile. `da.maxConcurrentDownloads = 3` (`.unlazy/pagetual3c`): gen 2,
+  `ends ["abrupt", null]`, death ~225 s after the trigger / ~58 s into the download tail, `activeGapMs`
+  1121 (not an idle kill). Restore worked: 371 rows, 80 requeued (78 already queued), 3 rescued, drained,
+  `stalled false`; outcomes completed 206 / failed 2 / skipped 279, 204 files, 0 `(1)` names. Delivery by
+  thumbnail md5 vs filename: **142/148** against baselines **144/146** and **151/153**, i.e. up to 4 beyond
+  the known 2, unattributed (a file saved under another name is invisible to this check — the 100-row table
+  and `postsWithFile 69/148` are the post-restart row-window artifact, not loss). At
+  `maxConcurrentDownloads = 1` (`.unlazy/pagetual4c1`): gen 1, `ends [null]`, completed 207 / failed 2 /
+  skipped 273, 207 files (166 rewritten in place, 41 new), **166/168** = baseline, 466 s vs 318 s. The
+  plan's lever holds at real volume; one run per arm and the death is stochastic, so strong evidence, not
+  proof. **Decision pending** (default 1 / latch to 1 after a failure streak / accept recovery).

@@ -12,6 +12,13 @@ const files = [
   'src-mv3-overlay/options/options.js',
   'src-mv3-overlay/options/download-progress.js',
   'src-mv3-overlay/options/popup.js',
+  // Chrome runtime files loaded outside the manifest entry points:
+  'src-mv3-overlay/mass-download/md-dnr.js',
+  'src-mv3-overlay/offscreen/offscreen.js',
+  'src-mv3-overlay/options/SieveUI.js',
+  // Firefox delta JS (the other FF runtime files are byte-copies of Chrome):
+  'src-mv3-overlay-firefox/background/service.js',
+  'src-mv3-overlay-firefox/mass-download/service-core.js',
 ];
 let ok = true;
 for (const f of files) {
