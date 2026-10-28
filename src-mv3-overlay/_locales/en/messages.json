@@ -354,7 +354,7 @@
 		"message": "Show toolbar"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Possible buttons:\n<b>X</b> - hide toolbar\n<b>S</b> - save(download)\n<b>O</b> - open in new tab/window\n<b>G</b> - gallery mode\n<b>I</b> - goto/search\n<b>R</b> - rotate\n<b>P</b> - open preferences\n\nDefault: XSOGIRP"
+		"message": "Possible buttons:\n<b>X</b> - hide toolbar\n<b>S</b> - save(download)\n<b>O</b> - open in new tab/window\n<b>C</b> - Copy URL (or album)\n<b>T</b> - Copy caption text\n<b>G</b> - gallery mode\n<b>I</b> - goto/search\n<b>R</b> - rotate\n<b>P</b> - open preferences\n\nDefault: XSOCGIRP"
 	},
 	"HZ_FZTOOLBAR_BTNS": {
 		"message": "Toolbar buttons"
@@ -463,6 +463,9 @@
 	},
 	"IMPR_HINT": {
 		"message": "Esc: close | Ctrl + Enter: import from text | Alt + R: replace data | Alt + C: clear data"
+	},
+	"CLEAR": {
+		"message": "Clear"
 	},
 	"LANGUAGE": {
 		"message": "Language"
@@ -712,5 +715,8 @@
 	},
 	"COPY_URL": {
 		"message": "Copy URL\nDouble click: copy whole album"
+	},
+	"COPY_CAPTION": {
+		"message": "Copy caption text"
 	}
 }

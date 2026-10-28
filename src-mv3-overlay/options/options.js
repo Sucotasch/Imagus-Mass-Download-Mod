@@ -118,6 +118,10 @@ var ImprtHandler = function (caption, data_handler, hide_opts) {
     var x,
         importer = $("importer"),
         textArea = importer.querySelector("textarea");
+    $("imprt_clear").onclick = function () {
+        textArea.value = "";
+        textArea.focus();
+    };
     processLNG([importer]);
     if (importer.data_handler !== data_handler) {
         importer.data_handler = data_handler;
@@ -659,7 +663,10 @@ window.addEventListener(
                     return false;
                 }
             }
-            if (e.code === 'Escape') key = "";
+            if (e.code === 'Escape') {
+                if (!e.target.value) e.target.blur();
+                key = "";
+            }
             e.target.value = key;
             document.forms[0].onchange(e);
         }

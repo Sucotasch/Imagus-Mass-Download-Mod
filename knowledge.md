@@ -1325,3 +1325,24 @@ is now in the working tree:
   skipped 273, 207 files (166 rewritten in place, 41 new), **166/168** = baseline, 466 s vs 318 s. The
   plan's lever holds at real volume; one run per arm and the death is stochastic, so strong evidence, not
   proof. **Decision pending** (default 1 / latch to 1 after a failure streak / accept recovery).
+
+## 2026-10-28 — upstream 10.22/10.25 ported into both trees, released as `v2026.10.28.1`
+
+* **What was taken** — U-01 caption hover (`#imagus-caption .side` + `:has(.side:hover)`), U-02 copy-caption
+  (toolbar `T`, `copyUrls(e, caption)`, `keys.hz-copy`, `PVI.timers.copy` now a timeout id), U-03 video
+  (`PVI.VIDEOJS.IMGS_src` + `openVideojs(src)` one-shot), U-04 keys (`Ctrl+Space`, pause key guard,
+  `hz.singleArrowTimeJumpInAlbum`, arrow-jump no longer requires `!e.shiftKey`), U-05 hover marker
+  (`updateHVR` on `scrollend` instead of `PVI.create()`), U-06 `.imagus` root class, U-07 importer Clear,
+  U-09 videojs `obj.merge`. P1 `textContent`, P2 SieveUI hotkeys, P3 importer Clear, P4 pause rebinding
+  were already in. §9.16 of the port plan records the issue triage (#156–#159).
+* **Not taken/declined** — P5 `disabled` + `PVI.setState(-1)` model (17 state assignments + 53 reads, and
+  our `key_action`/`onMessage`/`_mdGalleryInstall` have no `state < 0` guard: a disabled site would still
+  scan and open the gallery bar). P6 Turkish locale. Upstream `animate()` (#152).
+* **Bug found by the P2 stand** — `SieveUI` compared `e.key === "Space"`, but Chrome sends `" "` with
+  `code: "Space"`, so the advertised "Ctrl + Space disable/enable" had never worked. Fixed in both trees;
+  Ace still owns `Ctrl+Space`/`Ctrl+Delete` inside the rule editor (the guard skips `#sieve_search` only).
+* **Verification** — `md-unit-smoke`, `md-marker-check`, `verify-ui-config`, `verify-syntax`, `md-ff-delta`
+  all exit 0; live stands `sieveui-hotkeys` (824 rules, filter 9), `options-importer` (en/ru),
+  `up1025-content-lab` (caption, copy, video, marker, key guards) ALL PASS; the owner ran the fast
+  in-browser pass and reported no errors. Not exercised live: real video pause/rate-hold timing, and
+  grants-blocked sites (P5 declined, so `sieve: null` behaviour is unchanged).

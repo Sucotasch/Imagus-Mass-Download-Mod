@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc: cerrar | Ctrl + Enter: importar desde texto | Alt + R: reemplazar datos | Alt + C: borrar datos"
 	},
+	"CLEAR": {
+		"message": "Borrar"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Ver siempre en modo de zoom completo"
 	},
@@ -579,7 +582,7 @@
 		"message": "Nunca bucle"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Posibles botones:\n<b>X</b> - ocultar barra de herramientas\n<b>S</b> - guardar (descargar)\n<b>O</b> - abrir en nueva pestaña/ventana\n<b>G</b> - modo galería\n<b>I</b> - ir a/buscar\n<b>R</b> - rotar\n<b>P</b> - abrir preferencias\n\nPredeterminado: XSOGIRP"
+		"message": "Botones posibles:\n<b>X</b> - ocultar barra de herramientas\n<b>S</b> - guardar (descargar)\n<b>O</b> - abrir en nueva pestaña/ventana\n<b>C</b> - copiar URL (o álbum)\n<b>T</b> - copiar texto del pie de foto\n<b>G</b> - modo galería\n<b>I</b> - ir a / buscar\n<b>R</b> - rotar\n<b>P</b> - abrir preferencias\n\nPredeterminado: XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Ignorar elemento..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "Copiar URL\nDoble clic: copiar álbum completo"
+	},
+	"COPY_CAPTION": {
+		"message": "Copiar texto del pie de foto"
 	}
 }

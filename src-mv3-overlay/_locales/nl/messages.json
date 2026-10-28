@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc: sluiten | Ctrl + Enter: importeren uit tekst | Alt + R: gegevens vervangen | Alt + C: duidelijke gegevens"
 	},
+	"CLEAR": {
+		"message": "Wissen"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Bekijk altijd in volledige zoommodus"
 	},
@@ -579,7 +582,7 @@
 		"message": "Nooit een lus maken"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Mogelijke knoppen:\n<b>X</b> - werkbalk verbergen\n<b>S</b> - opslaan (downloaden)\n<b>O</b> - openen in nieuw tabblad/venster\n<b>G</b> - galerijmodus\n<b>Ik</b> - ga naar/zoeken\n<b>R</b> - roteren\n<b>P</b> - voorkeuren openen\n\nStandaard: XSOGIRP"
+		"message": "Mogelijke knoppen:\n<b>X</b> - werkbalk verbergen\n<b>S</b> - opslaan (downloaden)\n<b>O</b> - openen in nieuw tabblad/venster\n<b>C</b> - URL (of album) kopiëren\n<b>T</b> - bijschrifttekst kopiëren\n<b>G</b> - galerijmodus\n<b>I</b> - ga naar / zoeken\n<b>R</b> - roteren\n<b>P</b> - voorkeuren openen\n\nStandaard: XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Element negeren..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "URL kopiëren\nDubbelklik: heel album kopiëren"
+	},
+	"COPY_CAPTION": {
+		"message": "Bijschrifttekst kopiëren"
 	}
 }

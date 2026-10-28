@@ -121,9 +121,15 @@ audit's **live** column is not recorded for most rows — that is this batch's l
   single point of truth) still stops at 2026-09-13, so the 16 findings have no status of record there; the
   audit's live matrix rows are unrecorded; `GATES.md`, named by F-14's tree map, was never created; and
   `knowledge.md` has no 2026-10-20/22 entry although the review protocol asks for one per session.
-- **Port 9.27 (its own doc, `Docs/UPSTREAM_927_PORT_PLAN_2026-10-22.md`).** P4 implemented and verified; P1 /
-  P2 / P3 remain plan; P5 declined; P6 postponed. Only P2 touches the same surface as this ledger (SieveUI
-  hotkeys), and its §2.3 deviation exists because Ace owns `Ctrl+Space` / `Ctrl+Delete` in the rule editor.
+- **Port 9.27 / 10.25 (its own doc, `Docs/UPSTREAM_927_PORT_PLAN_2026-10-22.md`).** P1–P4 plus the
+  10.22/10.25 wave (U-01…U-09) are **implemented in both trees and verified live (2026-10-28)**; P5
+  declined; P6 postponed. Only P2 touches the same surface as this ledger (SieveUI hotkeys), and its §2.3
+  deviation exists because Ace owns `Ctrl+Space` / `Ctrl+Delete` in the rule editor. §9 holds the port
+  analysis, §9.12 the P2/P3 corrections (guard placement, importer selector), §9.13 the measured lab rules
+  (profile/user-scripts, service-worker cache, sieve rule order, pointer vs `:hover`) and §9.14 the live
+  results. The port also fixed one long-standing upstream bug the P2 stand exposed: `SieveUI` compared
+  `e.key === "Space"`, which Chrome never sends (it sends `" "`), so the advertised "Ctrl + Space
+  disable/enable" hotkey had never worked.
 
 ---
 

@@ -54,6 +54,7 @@
 		"hoverCss": "",
 		"scOffInInput": true,
 		"scrollVideoWithCtrl": false,
+		"singleArrowTimeJumpInAlbum": false,
 		"LDRdelay": 300,
 		"LDRbgOpacity": 100,
 		"LDRanimate": true

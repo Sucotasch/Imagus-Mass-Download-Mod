@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc: schließen | Ctrl + Enter: Aus Text importieren | Alt + R: Daten ersetzen | Alt + C: Daten löschen"
 	},
+	"CLEAR": {
+		"message": "Löschen"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Immer im Vollzoommodus anzeigen"
 	},
@@ -579,7 +582,7 @@
 		"message": "Niemals eine Schleife machen"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Mögliche Schaltflächen:\n<b>X</b> – Symbolleiste ausblenden\n<b>S</b> – speichern (herunterladen)\n<b>O</b> – in neuem Tab/Fenster öffnen\n<b>G</b> – Galeriemodus\n<b>Ich</b> – Gehe zu/Suche\n<b>R</b> – drehen\n<b>P</b> – Einstellungen öffnen\n\nStandard: XSOGIRP"
+		"message": "Mögliche Schaltflächen:\n<b>X</b> - Symbolleiste ausblenden\n<b>S</b> - Speichern (herunterladen)\n<b>O</b> - In neuem Tab/Fenster öffnen\n<b>C</b> - URL (oder Album) kopieren\n<b>T</b> - Beschriftungstext kopieren\n<b>G</b> - Galerie-Modus\n<b>I</b> - Gehe zu / Suchen\n<b>R</b> - Drehen\n<b>P</b> - Einstellungen öffnen\n\nStandard: XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Element ignorieren..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "URL kopieren\nDoppelklick: gesamtes Album kopieren"
+	},
+	"COPY_CAPTION": {
+		"message": "Beschriftungstext kopieren"
 	}
 }

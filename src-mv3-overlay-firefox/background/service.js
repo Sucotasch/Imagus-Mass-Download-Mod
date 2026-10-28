@@ -70,7 +70,7 @@ const _ = function (msg) {
 
 const scriptMessages = {
     "INVALID_URL": "", "DOWNLOAD_FAILED": "", "HIDE_TOOLBAR": "", "SAVE": "", "OPEN_IN_NEW_TAB": "", "GALLERY": "", "GOTO_SEARCH": "", "ROTATE_RIGHT": "",
-    "PREFERENCES": "", "CANNOT_FIND_URL": "", "ADD_TO_IGNORE_LIST": "", "COPY_URL": ""
+    "PREFERENCES": "", "CANNOT_FIND_URL": "", "ADD_TO_IGNORE_LIST": "", "COPY_URL": "", "COPY_CAPTION": ""
 };
 for (let key in scriptMessages) {
     scriptMessages[key] = _(key);

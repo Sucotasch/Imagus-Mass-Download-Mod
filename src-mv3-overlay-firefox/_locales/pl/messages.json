@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc: zamknij | Ctrl + Enter: import z tekstu | Alt + R: zamień dane | Alt + C: wyczyść dane"
 	},
+	"CLEAR": {
+		"message": "Wyczyść"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Zawsze oglądaj w trybie pełnego powiększenia"
 	},
@@ -579,7 +582,7 @@
 		"message": "Nigdy nie pętluj"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Możliwe przyciski:\n<b>X</b> – ukryj pasek narzędzi\n<b>S</b> - zapisz (pobierz)\n<b>O</b> – otwórz w nowej karcie/oknie\n<b>G</b> – tryb galerii\n<b>I</b> - przejdź/szukaj\n<b>R</b> – obróć\n<b>P</b> – otwórz preferencje\n\nWartość domyślna: XSOGIRP"
+		"message": "Możliwe przyciski:\n<b>X</b> - ukryj pasek narzędzi\n<b>S</b> - zapisz (pobierz)\n<b>O</b> - otwórz w nowej karcie/oknie\n<b>C</b> - kopiuj URL (lub album)\n<b>T</b> - kopiuj tekst podpisu\n<b>G</b> - tryb galerii\n<b>I</b> - przejdź do / szukaj\n<b>R</b> - obróć\n<b>P</b> - otwórz preferencje\n\nDomyślnie: XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Ignoruj ​​element..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "Kopiuj URL\nDwukrotne kliknięcie: skopiuj cały album"
+	},
+	"COPY_CAPTION": {
+		"message": "Kopiuj tekst podpisu"
 	}
 }

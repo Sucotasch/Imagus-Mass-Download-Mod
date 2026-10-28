@@ -116,6 +116,11 @@ a:hover {
     text-align: left;
     vertical-align: middle;
 }
+#importer > .op_buttons > :first-child,
+#importer > .op_buttons > :last-child {
+    margin-left: auto;
+}
+
 #importer > textarea {
     height: 185px;
     margin: 10px 0 7px;
@@ -491,6 +496,7 @@ h3 {
 .sub_shortcuts input {
     text-align: center;
     width: 50px;
+    box-shadow: 1px 1px 0 0 #8080804d;
 }
 .sub_shortcuts li {
     line-height: 200%;

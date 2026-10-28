@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc : fermer | Ctrl + Enter : importer à partir du texte | Alt + R : remplacer les données | Alt + C : effacer les données"
 	},
+	"CLEAR": {
+		"message": "Effacer"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Visualisez toujours en mode zoom complet"
 	},
@@ -579,7 +582,7 @@
 		"message": "Ne jamais boucler"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Boutons possibles :\n<b>X</b> - masquer la barre d'outils\n<b>S</b> - enregistrer (télécharger)\n<b>O</b> - ouvrir dans un nouvel onglet/une nouvelle fenêtre\n<b>G</b> - mode galerie\n<b>Je</b> - aller à/rechercher\n<b>R</b> - faire pivoter\n<b>P</b> - ouvrir les préférences\n\nPar défaut : XSOGIRP"
+		"message": "Boutons possibles :\n<b>X</b> - masquer la barre d'outils\n<b>S</b> - enregistrer (télécharger)\n<b>O</b> - ouvrir dans un nouvel onglet/fenêtre\n<b>C</b> - copier l'URL (ou l'album)\n<b>T</b> - copier le texte de la légende\n<b>G</b> - mode galerie\n<b>I</b> - aller à / rechercher\n<b>R</b> - faire pivoter\n<b>P</b> - ouvrir les préférences\n\nPar défaut : XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Ignorer l'élément..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "Copier l’URL\nDouble-clic : copier l’album entier"
+	},
+	"COPY_CAPTION": {
+		"message": "Copier le texte de la légende"
 	}
 }

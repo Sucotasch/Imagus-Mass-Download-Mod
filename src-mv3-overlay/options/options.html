@@ -689,7 +689,7 @@
 						<span data-lng="HZ_SC_FRAMESTEP"></span>
 					</label>
 				</li>
-				<li><b>Ctrl + C</b> <label data-lng="HZ_SC_COPY"></label></li>
+				<li><label for="keys_hz-copy"><input id="keys_hz-copy" name="keys_hz-copy" value="">, <b>Ctrl + C</b> <label data-lng="HZ_SC_COPY"></label></li>
 				<li><b>+</b> / <b>-</b> <span data-lng="SC_ZOOMINOUT"></span></li>
 
 				<li style="list-style-type: none" class="shortcuts">
@@ -717,9 +717,16 @@
 				<li style="list-style-type: none"><h4>On media (audio/video)</h4></li>
 				<li><b>Click the top 2/3</b> Close</li>
 				<li><b>Click the bottom 1/3</b> Play/Pause</li>
-				<li><label for="keys_pause"><input id="keys_pause" name="keys_pause" value="Space"> Play/Pause, <b>hold</b> to increase playback rate</label></li>
+				<li><label for="keys_pause"><input id="keys_pause" name="keys_pause" value="Space">, <b>Ctrl + Space</b> Play/Pause, <b>hold</b> to increase playback rate</label></li>
 				<li><b>Shift + Space</b> Show/Hide controls</li>
 				<li><b>Left / Right / Wheel</b> (<b>+ Ctrl</b> in album) Backward/forward 5s (<b>+ Shift</b>: 15s)</li>
+				<li style="list-style-type: none">
+					<span>
+						<input id="hz_singleArrowTimeJumpInAlbum" name="hz_singleArrowTimeJumpInAlbum" type="checkbox">
+						<label for="hz_singleArrowTimeJumpInAlbum" class="checkbox"></label>
+					</span>
+					<label for="hz_singleArrowTimeJumpInAlbum">Use single <b>Right/Left</b> in albums</label>
+				</li>
 				<li><b>Up/Down</b> Adjust volume</li>
 				<li><b>Shift + Up/Down</b> Speed up/down</li>
 				<li><b>, / .</b> Backward/forward one frame</li>
@@ -879,6 +886,7 @@
 					<input type="checkbox" id="impr_chk_overwrite"> <label for="impr_chk_overwrite" class="checkbox"></label> <label for="impr_chk_overwrite" data-lng="IMPR_OVERWRITE" title="[Alt + R]"></label>
 				</div>
 			</div>
+			<button class="button" id="imprt_clear" data-lng="CLEAR"></button>
 		</div>
 
 		<textarea placeholder="{&#10;  JSON Data&#10;}&#10;&#10;OR&#10;&#10;https://pastebin.com/QWERTY"></textarea>

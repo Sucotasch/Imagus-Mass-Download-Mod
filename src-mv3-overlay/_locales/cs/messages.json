@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc: zavřít | Ctrl + Enter: import z textu | Alt + R: nahradit data | Alt + C: vymazání dat"
 	},
+	"CLEAR": {
+		"message": "Vymazat"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Vždy zobrazit v režimu plného přiblížení"
 	},
@@ -579,7 +582,7 @@
 		"message": "Nikdy smyčka"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Možná tlačítka:\n<b>X</b> – skrýt panel nástrojů\n<b>S</b> – uložit (stáhnout)\n<b>O</b> – otevřít na nové kartě/okně\n<b>G</b> – režim galerie\n<b>I</b> – goto/search\n<b>R</b> – otočit\n<b>P</b> – otevřít předvolby\n\nVýchozí: XSOGIRP"
+		"message": "Možná tlačítka:\n<b>X</b> - skrýt panel nástrojů\n<b>S</b> - uložit (stáhnout)\n<b>O</b> - otevřít v novém panelu/okně\n<b>C</b> - zkopírovat URL (nebo album)\n<b>T</b> - zkopírovat text titulku\n<b>G</b> - režim galerie\n<b>I</b> - přejít na / hledat\n<b>R</b> - otočit\n<b>P</b> - otevřít nastavení\n\nVýchozí: XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Ignorovat prvek..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "Kopírovat URL\nDvojité kliknutí: zkopírovat celé album"
+	},
+	"COPY_CAPTION": {
+		"message": "Zkopírovat text titulku"
 	}
 }

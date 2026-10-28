@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc：关闭 | Ctrl + Enter：从文本导入 | Alt + R：替换数据 | Alt + C：清除数据"
 	},
+	"CLEAR": {
+		"message": "清除"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "始终以全缩放模式查看"
 	},
@@ -579,7 +582,7 @@
 		"message": "永不循环"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "可能的按钮：\n<b>X</b> - 隐藏工具栏\n<b>S</b> - 保存（下载）\n<b>O</b> - 在新选项卡/窗口中打开\n<b>G</b> - 画廊模式\n<b>I</b> - 转到/搜索\n<b>R</b> - 旋转\n<b>P</b> - 打开首选项\n\n默认值：XSOGIRP"
+		"message": "可用按钮：\n<b>X</b> - 隐藏工具栏\n<b>S</b> - 保存（下载）\n<b>O</b> - 在新标签页/窗口中打开\n<b>C</b> - 复制链接（或相册）\n<b>T</b> - 复制标题文字\n<b>G</b> - 图库模式\n<b>I</b> - 转到/搜索\n<b>R</b> - 旋转\n<b>P</b> - 打开设置\n\n默认：XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "忽略元素..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "复制 URL\n双击：复制整个相册"
+	},
+	"COPY_CAPTION": {
+		"message": "复制标题文字"
 	}
 }

@@ -137,6 +137,19 @@
     color: #306f35;
 }
 
+#imagus-caption .side {
+    position: absolute;
+    left: 0;
+    width: 50%;
+    height: 100%;
+}
+
+#imagus-caption:has(.side:hover) {
+    white-space: pre-line !important;
+    opacity: 1 !important;
+    z-index: 20 !important;
+}
+
 #imagus-preview {
     position: absolute;
     top: 0;

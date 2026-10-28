@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc: fechar | Ctrl + Enter: importar do texto | Alt + R: substituir dados | Alt + C: limpar dados"
 	},
+	"CLEAR": {
+		"message": "Limpar"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Visualize sempre no modo Zoom total"
 	},
@@ -579,7 +582,7 @@
 		"message": "Nunca faça loop"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Botões possíveis:\n<b>X</b> - ocultar barra de ferramentas\n<b>S</b> - salvar(baixar)\n<b>O</b> - abrir em nova aba/janela\n<b>G</b> - modo galeria\n<b>Eu</b> - ir para/pesquisar\n<b>R</b> - girar\n<b>P</b> - abrir preferências\n\nPadrão: XSOGIRP"
+		"message": "Botões possíveis:\n<b>X</b> - ocultar barra de ferramentas\n<b>S</b> - salvar (baixar)\n<b>O</b> - abrir em nova aba/janela\n<b>C</b> - copiar URL (ou álbum)\n<b>T</b> - copiar texto da legenda\n<b>G</b> - modo galeria\n<b>I</b> - ir para / pesquisar\n<b>R</b> - girar\n<b>P</b> - abrir preferências\n\nPadrão: XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Ignorar elemento..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "Copiar URL\nClique duas vezes: copiar o álbum inteiro"
+	},
+	"COPY_CAPTION": {
+		"message": "Copiar texto da legenda"
 	}
 }

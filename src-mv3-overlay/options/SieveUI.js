@@ -83,17 +83,21 @@ var sieve_sec,
                             }
                         }
                     }
-                } else if (t.isContentEditable || t.nodeName === "INPUT" || t.nodeName === "TEXTAREA") {
+                } else if ((t.isContentEditable || t.nodeName === "INPUT" || t.nodeName === "TEXTAREA")
+                           && t.id !== "sieve_search") {
                     return;
                 } else if (e.key === "Escape" && !(e.ctrlKey || e.metaKey)) {
                     sieve_container.querySelectorAll("div.selected").forEach(el => el.classList.remove("selected"));
                 } else if (e.code === "KeyE" && (e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
                     SieveUI.export();
+                } else if (e.key === "Delete" && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    SieveUI.remove();
                 } else if (e.key === "Delete" && !(e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
                     SieveUI.remove();
-                } else if (e.key === "Space" && (e.ctrlKey || e.metaKey)) {
+                } else if ((e.key === " " || e.code === "Space") && (e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
                     SieveUI.disable();
                 } else if (e.code === "KeyI" && (e.ctrlKey || e.metaKey) || e.key === "Insert" && !(e.ctrlKey || e.metaKey)) {

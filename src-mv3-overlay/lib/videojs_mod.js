@@ -69228,7 +69228,7 @@ ${segmentInfoString(segmentInfo)}`); // If there's an init segment associated wi
      */
     constructor(player, options) {
       super(player, options);
-      this.options = videojs__default["default"].mergeOptions(defaults$1, options);
+      this.options = videojs__default["default"].obj.merge(defaults$1, options);
       this.parent = this.options.parent;
       this.items = [];
       this.addClass('vjs-max-quality-selector-button');
@@ -69534,7 +69534,7 @@ ${segmentInfoString(segmentInfo)}`); // If there's an init segment associated wi
       // the parent class will add player under this.player
       super(player, options);
       this.defaults = defaults;
-      this.options = videojs__default["default"].mergeOptions(defaults, options);
+      this.options = videojs__default["default"].obj.merge(defaults, options);
       this.log = videojs__default["default"].log.createLogger('MaxQualitySelector');
       this.autoMode = true;
       this.qualityLevels = [];

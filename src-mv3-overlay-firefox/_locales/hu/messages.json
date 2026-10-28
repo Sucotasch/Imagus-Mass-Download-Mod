@@ -494,6 +494,9 @@
 	"IMPR_HINT": {
 		"message": "Esc: bezár | Ctrl + Enter: import szövegből | Alt + R: adatok cseréje | Alt + C: adatok törlése"
 	},
+	"CLEAR": {
+		"message": "Törlés"
+	},
 	"HZ_FZDEFAULT": {
 		"message": "Mindig teljes zoom módban nézze meg"
 	},
@@ -579,7 +582,7 @@
 		"message": "Soha ne hurkoljon"
 	},
 	"HZ_TOOLBAR_BTNS_TIP": {
-		"message": "Lehetséges gombok:\n<b>X</b> – eszköztár elrejtése\n<b>S</b> - mentés (letöltés)\n<b>O</b> – megnyitás új lapon/ablakban\n<b>G</b> – galéria mód\n<b>Én</b> - goto/search\n<b>R</b> – forgatás\n<b>P</b> – nyitott beállítások\n\nAlapértelmezés: XSOGIRP"
+		"message": "Lehetséges gombok:\n<b>X</b> - eszköztár elrejtése\n<b>S</b> - mentés (letöltés)\n<b>O</b> - megnyitás új lapon/ablakban\n<b>C</b> - URL (vagy album) másolása\n<b>T</b> - felirat szövegének másolása\n<b>G</b> - galéria mód\n<b>I</b> - ugrás / keresés\n<b>R</b> - forgatás\n<b>P</b> - beállítások megnyitása\n\nAlapértelmezett: XSOCGIRP"
 	},
 	"IGNORE_ELEMENT": {
 		"message": "Elem figyelmen kívül hagyása..."
@@ -709,5 +712,8 @@
 	},
 	"COPY_URL": {
 		"message": "URL másolása\nDupla kattintás: a teljes album másolása"
+	},
+	"COPY_CAPTION": {
+		"message": "Felirat szövegének másolása"
 	}
 }
