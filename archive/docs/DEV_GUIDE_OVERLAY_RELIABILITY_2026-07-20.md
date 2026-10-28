@@ -2,16 +2,24 @@
 
 | Field | Value |
 |-------|--------|
-| **Date** | 2026-07-20 · **актуализировано 2026-09-11** |
+| **Date** | 2026-07-20 · **актуализировано 2026-09-11** · **сверен по коду 2026-10-29 (HEAD `453ace7`, `v2026.10.28.1`)** |
 | **Track** | Надёжность mass-download в обоих overlay-деревьях (concurrency, cancel, filters, settings, Firefox) |
 | **Product concept** | Не менять: hover-to-enlarge Imagus + bulk download overlay |
 | **Code changes in this doc** | Нет — только guide |
 | **Source of truth for bugs** | [`Audit/AUDIT_STATUS_CURRENT.md`](../Audit/AUDIT_STATUS_CURRENT.md) (сводный статус всех аудитов) |
-| **Historical evidence** | [`Audit/FULL_AUDIT_2026-07-20.md`](../Audit/FULL_AUDIT_2026-07-20.md) |
+| **Historical evidence** | [`Audit/archive/FULL_AUDIT_2026-07-20.md`](../Audit/archive/FULL_AUDIT_2026-07-20.md) · `REPORT_GALLERY_BATCH_2026-09-06.md` (в этой папке) |
 | **Actualized** | 2026-09-11 — WP-1…WP-6 (R-01…R-06, R-08) закрыты в коде; добавлен §15 (Firefox); исправлен §14.5 (BG-4) |
 
 > ⚠ **Статус на 2026-09-11.** Разделы §2–§13 описывают workstream 2026-07-20 и **сохранены как история**: все WP выполнены, «Gaps» закрыт (кроме R-07 — осознанно открыт). **Не переделывать WP-1…WP-6.**
 > Актуальная открытая работа — §15 (Firefox, включая активное расследование из `REPORT_GALLERY_BATCH_2026-09-06.md` §27) и `Audit/AUDIT_STATUS_CURRENT.md` §6–§7.
+>
+> **Живая выжимка перенесена:** действующие секции (§0/§1/§3/§9/§11/§12/§14/§15) собраны и актуализированы в **`Docs/DEV_GUIDE.md`** (2026-10-29) — перед изменениями читать там; этот файл далее — история workstream 2026-07-20 и полный текст §14/§15.
+>
+> ⚠ **Сверка 2026-10-29 (по коду, см. AUDIT_STATUS_CURRENT §10.20).** Документ перенесён из `Docs/` в `archive/docs/`; WS-хвосты исполнены. Что изменилось после 09-11 и что осталось верным:
+> - **Верно и действует:** §14 (internals движка — имена функций и контракты сверены с `content.js`/`service.js`: `PVI.find/resolve/set`, `prepareCaption`, `IMGS_*`-состояние, `cachedSieveRes`, `case "resolve"`), §14.9–§14.11, §15.1–15.3/15.5 (история и процедура FF), §2–§13 как история WP.
+> - **Устарело:** очередь/строки **персистентны с 2026-09-13** (FIX-7/RESUME-1: `MD_SNAPSHOT_KEY`, `mdBuildSnapshot`/`mdApplySnapshot`; RESTORE-WINDOW `2e728df`) — неверны абзацы в §13 (пункт 3), §14.7 «Residual» и §14.8 «Queue state still not persisted». Остаток — окно ≤1 с (`DUP-1`), смягчён `mdAdoptIfAlreadyDownloaded`.
+> - **Устарело:** `content/relay.js` **удалён** (F-01, `7f65f82`, 2026-10-22: window.postMessage заменён приватным runtime-портом) — см. пометку в §14.1.
+> - **Пути:** `AGENTS.md` удалён 2026-10-24 (→ `knowledge.md`); `REPORT_GALLERY_BATCH_2026-09-06.md` восстановлен из истории в эту папку (`archive/docs/`); `Audit/archive/FULL_AUDIT_2026-07-20.md` — в `Audit/archive/`; живые справочники остались в `Docs/` (из этой папки — `../Docs/…`).
 
 ---
 
@@ -41,7 +49,7 @@ If a change would require rewriting PVI as a global module or merging mass-downl
 
 ### Read first (in order)
 
-1. `AGENTS.md`  
+1. ~~`AGENTS.md`~~ (удалён 2026-10-24; читать `knowledge.md` + `Docs/README.md`)  
 2. `Audit/AUDIT_STATUS_CURRENT.md` (сводная таблица статусов)  
 3. This guide — §15 (Firefox) и фактический статус в §2  
 4. Optional deep: `Docs/MASS_DOWNLOAD_STRATEGY.md`, `Docs/MASS_DOWNLOAD_ALGORITHM.md`, `Docs/FIREFOX_OVERLAY.md`
@@ -516,7 +524,7 @@ Track complete when:
 □ onChanged ignores unknown ids if WP-1
 □ Manual smoke for touched WP
 □ No drive-by reformat of upstream files
-□ AGENTS.md / STATUS only if user wants docs update
+□ knowledge.md / STATUS only if user wants docs update
 ```
 
 ---
@@ -535,7 +543,7 @@ Track complete when:
 | DNR Referer rules | `mass-download/md-dnr.js` |
 | Smoke locks | `tools/md-unit-smoke.mjs`, `tools/md-marker-check.mjs`, `tools/md-ff-delta.mjs` |
 | Bug status | `Audit/AUDIT_STATUS_CURRENT.md` |
-| Original audit | `Audit/FULL_AUDIT_2026-07-20.md` |
+| Original audit | `Audit/archive/FULL_AUDIT_2026-07-20.md` |
 | Re-base strategy | `Docs/MASS_DOWNLOAD_STRATEGY.md` |
 
 ---
@@ -548,7 +556,7 @@ Track complete when:
 
 1. **§15 / Firefox** — два FF-фикса вышли в v2026.8.20.9 (до него FF-расширение было **полностью неработоспособно** с самого порта overlay). Открыто: расследование FF e-hentai из `REPORT_GALLERY_BATCH_2026-09-06.md` §27 (окно галереи качает только proven 2–3 ячейки, Ctrl+Q работает), FF pixiv — нулевой лог.
 2. **Chrome pixiv** — платформенная стена: DNR-правило матчится fetch'ем, но не downloads API (Chromium 339385537). Варианты в отчёте §26.7; решает владелец.
-3. **Персистентность очередей при смерти SW** — крупнейший reliability-gap (`Audit/AUDIT_STATUS_CURRENT.md` §6.1); `chrome.storage.session` пока не используется (проверено).
+3. **Персистентность очередей при смерти SW** — крупнейший reliability-gap (`Audit/AUDIT_STATUS_CURRENT.md` §6.1); `chrome.storage.session` пока не используется (проверено). [актуализировано 2026-10-29: НЕВЕРНО с 2026-09-13 — снапшот сессии в `chrome.storage.session` реализован и развит (RESTORE-WINDOW); §6.1 в аудите помечен устаревшим ещё 2026-10-08]
 
 Концепцию overlay и preserve completed/skipped **не ломай**. Перед PR прогони smoke из §6.
 
@@ -572,7 +580,7 @@ This addendum replaces the earlier stage-by-stage patch notes. It reconstructs, 
 Imagus is a **client/server split over one message bus**:
 
 - **Content** (`content/content.js`) owns the DOM: hover detection, `PVI.find`, the zoom overlay, albums. Everything lives inside one big IIFE; `PVI` is **IIFE-local** — external files cannot see it (this is why the mod's content code is inlined into `content.js` with `>>>`/`<<<` markers, mirrored in `mass-download/content-block.js`).
-- **Message bus** (`common/app.js`): `Port.send()` = `chrome.runtime.sendMessage`. Content → SW messages: `resolve`, `resolve_cache`, plus the mod's `downloadMass`, `resolveAndDownloadGroups`, `openDownloadProgress`, `updateStatus`, `updateFilterStats`, `downloadWithReferer`. SW → content: `resolved`, `album`, plus the mod's `downloadAll`, `stopScanning`, `groupAnalysisComplete`. On Firefox the iframe path relays through `content/relay.js`.
+- **Message bus** (`common/app.js`): `Port.send()` = `chrome.runtime.sendMessage`. Content → SW messages: `resolve`, `resolve_cache`, plus the mod's `downloadMass`, `resolveAndDownloadGroups`, `openDownloadProgress`, `updateStatus`, `updateFilterStats`, `downloadWithReferer`. SW → content: `resolved`, `album`, plus the mod's `downloadAll`, `stopScanning`, `groupAnalysisComplete`. On Firefox the iframe path relays through `content/relay.js`. [актуализировано 2026-10-29: relay.js удалён — F-01 (`7f65f82`, 2026-10-22) заменил relay на приватный runtime-порт; предложения о relay устарели]
 
 The hover lifecycle:
 
@@ -652,12 +660,12 @@ A task carries `_candidates = [{ url, isHd }, ...]` (sieve ext-fallback chains; 
 - **Flicker:** the poll must never wipe the local map. `mergeSnapshot` is create-or-update; `updateDisplay` runs only when `itemChanged` reports a visible change; polling stops when data is rendered and every row is terminal.
 - **MV3 idle restart = stale rows:** Idle-kill wipes the SW's `downloadProgress`/`downloadIdToTask`; the page keeps rows stuck at `downloading`, and Refresh can't help (SW returns an empty snapshot). Fix: page tracks `lastSnapshotUrls`; rows missing from the snapshot are reconciled against the **browser download manager** (`chrome.downloads.search` by `downloadId`; URL search only for `downloading` rows).
 - **Tab duplication after SW restart:** the tracked id is lost, the old tab becomes an orphan. `getOrCreateProgressTab` must `chrome.tabs.query({ url: progressUrl })` and close **all** matches before creating the new tab.
-- **Residual:** `getDownloadLog` cannot recover items whose terminal update never reached the SW. Fixing that (and the queue) means persisting `downloadIdToTask`/`downloadProgress` to `chrome.storage.session` and reconciling on SW init — not yet implemented.
+- **Residual:** `getDownloadLog` cannot recover items whose terminal update never reached the SW. Fixing that (and the queue) means persisting `downloadIdToTask`/`downloadProgress` to `chrome.storage.session` and reconciling on SW init — not yet implemented. [актуализировано 2026-10-29: реализовано 2026-09-13 (FIX-7/RESUME-1) — `MD_SNAPSHOT_KEY`/`mdBuildSnapshot`/`mdApplySnapshot`, развито RESTORE-WINDOW `2e728df`; остаток — окно ≤1 с, `DUP-1`]
 
 ### 14.8 Still-open + test harnesses
 
 - **rule34 sample duplicates:** with `hz.hiRes`, originals download correctly, but `samples/…/sample_<hash>.jpg` of the same posts also download (separate elements/groups; `fileKey` treats them as distinct files — log `2026-08-20T10-49-27.txt`). Proposed rule “skip sample when the post has an original” was offered but not yet accepted.
-- Queue state still not persisted across SW death.
+- Queue state still not persisted across SW death. [актуализировано 2026-10-29: снапшот сессии реализован 2026-09-13, см. §14.7-пометку и AUDIT_STATUS_CURRENT §10.18]
 - **Temp harnesses — устарело (2026-09-11).** Упомянутые `…\Temp\opencode\test_*.js` в репозитории отсутствуют и больше не нужны: их роль занял `tools/md-unit-smoke.mjs` (вырезает реальные функции из `service-core.js`/`content.js` и ассертит dedup/scoring/fallback + FF-локи). Ограничение экстрактора сохраняется: он режет функции из текста, предполагая top-level декларации в колонке 0 — реформат исходников ломает извлечение.
 
 ### 14.9 Engine audit 2026-08-22 — result shapes, node caches, albums (A/B/D fixes)
