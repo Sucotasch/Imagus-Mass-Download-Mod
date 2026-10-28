@@ -12,10 +12,10 @@
 
 | Документ | Когда открывать |
 |----------|-----------------|
-| [`AGENTS.md`](../AGENTS.md) | Правила дня, карта репо |
+| [`../knowledge.md`](../knowledge.md) | Правила дня, карта репо (AGENTS.md удалён 2026-10-24, содержимое поглощено knowledge.md) |
 | [`MASS_DOWNLOAD_ALGORITHM.md`](MASS_DOWNLOAD_ALGORITHM.md) | Как работает двухфазный алгоритм |
 | [`Audit/AUDIT_STATUS_CURRENT.md`](../Audit/AUDIT_STATUS_CURRENT.md) | Сводный статус всех аудитов (что починено / открыто при re-base) |
-| [`DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md`](DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md) | WP по оставшимся багам **после** успешного re-base |
+| [`../archive/docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md`](../archive/docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md) | §14–§15 — internals движка и Firefox (действующий справочник); WP-остатки исполнены |
 | `src-mv3-overlay/mass-download/content-block.js` | **Канонический текст** content-патчей (копировать отсюда) |
 | `src-mv3-overlay/mass-download/service-*.js` | **Канонический** SW mass-download (копировать целиком) |
 

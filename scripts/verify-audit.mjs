@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-const p = 'Audit/Audit.md';
+const p = 'Audit/archive/Audit.md'; // moved to archive 2026-10-29
 if(!fs.existsSync(p)){ console.error(`missing ${p}`); process.exit(1); }
 const s = fs.readFileSync(p,'utf8');
 function assert(c,m){ if(!c){ console.error('FAIL: '+m); process.exit(1);} }

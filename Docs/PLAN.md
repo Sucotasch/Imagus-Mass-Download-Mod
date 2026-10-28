@@ -35,6 +35,33 @@ Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what 
 
 ---
 
+## Where the plan stands — 2026-10-29
+
+**Verified against HEAD `453ace7` (release `v2026.10.28.1` in both trees), not against this file's
+own history.** Full audit + bughunt of 2026-10-29 (reconciliation: `Audit/AUDIT_STATUS_CURRENT.md`
+§10.20):
+
+1. **No new product bugs.** All 17 gates green (`md-unit-smoke`, `md-marker-check`, `md-ff-delta`,
+   `_chk_defaults`, 13 × `scripts/verify-*.mjs`). The only code delta since the 2026-10-24 audit is
+   the upstream-port wave `bdbe310..453ace7`; read in full, matches the port plan, no defects.
+2. **Stale references swept.** `PIXIV-2` is fixed (F-06, 2026-10-22) — the §10.18 "open" row is
+   historical now; `MASS_DOWNLOAD_ALGORITHM.md` no longer claims "queues are not persistent";
+   `New.txt`'s 2026-07-25 crash is fixed by F-04.
+3. **The active work is the 2026-10-28 triage** (`Docs/TRIAGE_CIVITAI_PERF2_HOVER.md`, rev. 2):
+   Work A (local `_` Civitai rules), Work B (apply PERF-2 body cancel from root `files.zip`),
+   C1 (one-line double-`resolved` fix, ready), C2 (instrument with the display path covered —
+   needs the owner for the fix), C3 (defer the sieve swap during a scan, do with C1). Backlog
+   below is unchanged: `HOST-1` (G1–G10), `HANDOFF-3` (S2–S5), `BT-12` (live FF run), `E1`,
+   `R-07` (by decision), `RETRY-2` (subordinate), `MAIN-04` (blocked on `RES-02`).
+4. **Repository hygiene (2026-10-29).** Completed snapshots moved to `archive/docs/` (12 files;
+   the old dev-guide's §14–§15 engine internals remain the valid reference from there), 16
+   historical audits to `Audit/archive/`, root scratch to `archive/root-2026-10-29/` and
+   `.gitignore`d. `Docs/README.md` is the rewritten index. Old blocks below keep their original
+   document paths on purpose (history is not rewritten); the living pointers are in the new
+   `Docs/README.md` and in `knowledge.md`'s Docs section.
+
+---
+
 ## Where the plan stands — 2026-10-23
 
 **Verified against the working tree at HEAD `c6d6eb9` (both trees, manifest `2026.9.21.4`), not against this
@@ -121,7 +148,7 @@ audit's **live** column is not recorded for most rows — that is this batch's l
   single point of truth) still stops at 2026-09-13, so the 16 findings have no status of record there; the
   audit's live matrix rows are unrecorded; `GATES.md`, named by F-14's tree map, was never created; and
   `knowledge.md` has no 2026-10-20/22 entry although the review protocol asks for one per session.
-- **Port 9.27 / 10.25 (its own doc, `Docs/UPSTREAM_927_PORT_PLAN_2026-10-22.md`).** P1–P4 plus the
+- **Port 9.27 / 10.25 (its own doc, `archive/docs/UPSTREAM_927_PORT_PLAN_2026-10-22.md`).** P1–P4 plus the
   10.22/10.25 wave (U-01…U-09) are **implemented in both trees and verified live (2026-10-28)**; P5
   declined; P6 postponed. Only P2 touches the same surface as this ledger (SieveUI hotkeys), and its §2.3
   deviation exists because Ace owns `Ctrl+Space` / `Ctrl+Delete` in the rule editor. §9 holds the port
@@ -203,7 +230,7 @@ demoted. The date is when it was reversed.
 ## Where the plan stands — 2026-10-08 (historical; superseded by the 2026-10-23 block above)
 
 **Decided.** `HANDOFF` (`S2`–`S5`): do `S5`; `S2` + light `S3` + `S4` only on the trigger; `S3′` and
-`S3″` dropped (`Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` §15). Recorded as `MAIN-05` and the
+`S3″` dropped (`archive/docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` §15). Recorded as `MAIN-05` and the
 conditional block under it.
 
 **Execution is open (2026-10-08).** The owner has confirmed the plan is complete and asked to begin.
@@ -340,7 +367,7 @@ by what unblocks what.** Two things changed the ranking:
    and (b) a transient download interrupt downgrading the item — now `MAIN-06`. Live before/after on the
    same listing: posts with a file 31/42 → **42/42** (38/42 on the second run), `completed rows from
    /samples/` 20 → **0** (9), `.jpeg` originals 0 → 24 (12). See `MAIN-02` → *Fix applied and proven*.
-   The scan-cost questions (`unresolved`/`tWalkMs`, `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md`) stay
+   The scan-cost questions (`unresolved`/`tWalkMs`, `archive/docs/SCAN_DELAY_ANALYSIS_2026-09-21.md`) stay
    parked until `MAIN-06` is done, so their numbers describe a pipeline that no longer drops files.
 - **`MAIN-02` remainder — scan cost (`C-2`)** is the one **speed** item ("scanning takes so long it is
    not worth it"); it is now a live item below, because its numbers only became readable once the
@@ -370,7 +397,7 @@ included). So it is un-parked and rides the same sessions as items 1–2 instead
    complaint the owner can still feel on the site we can already run ("scanning takes so long it is not
    worth it"), the only **speed** item, and the only one that needs **no new capability**: the harness,
    the listing and the diagnostics all exist. Its lever is the largest measured one — `cfg.hz.delay` vs
-   `nowait`, bounds 37 s…222 s (`Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md`) — and its numbers only became
+   `nowait`, bounds 37 s…222 s (`archive/docs/SCAN_DELAY_ANALYSIS_2026-09-21.md`) — and its numbers only became
    trustworthy now that the pipeline stops dropping files. **First measurement taken 2026-10-09 and it
    killed the C-2 premise** (see the section: the delay setting is not the lever, the page's own element
    count is — 303…582 across 11 runs — so every number is now per element). The step that follows is
@@ -499,7 +526,7 @@ get a research item that does not change a `MAIN` decision (rule 1).
 - **Already known — merge, do not duplicate.** This is audit **`HOST-1`** (`Audit/AUDIT_STATUS_CURRENT.md`
   §11): the breaker is read in exactly one place (`findBestUrlWithValidation`) and the filter phase and
   the downloads know nothing about it, so an open breaker suppresses nothing. The fix was already
-  planned as **G1–G10** (host quarantine without waiting) in `Docs/PLAN_96_FOLLOWUP_2026-09-13.md`,
+  planned as **G1–G10** (host quarantine without waiting) in `archive/docs/PLAN_96_FOLLOWUP_2026-09-13.md`,
   status `⏳ не начато`. Today's run re-measured the same defect from a different angle — one item,
   two pieces of evidence.
 - **Symptom.** On `https://rule34.xxx/index.php?page=post&s=list&tags=all` a large share of the found
@@ -656,7 +683,7 @@ get a research item that does not change a `MAIN` decision (rule 1).
   `unresolved 219` (**70 %**), `groups 84`, `tWalkMs 30442`, `totalMs 31866`, `timeouts 0`;
   sw `groupsMs 1096`, `downloadMs 11073`, `scanTailMs 10421`, `totalMs 42287`.
   The walk, not the download phase, is the cost.
-- **Base doc.** `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` — estimates A–E; **C-2** (`cfg.hz.delay` vs
+- **Base doc.** `archive/docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` — estimates A–E; **C-2** (`cfg.hz.delay` vs
   `nowait`, bounds 37 s…222 s) was the biggest lever and had no measurement. This run supplies the
   missing baseline.
 - **Step 1a done 2026-10-08 (page recon, extension not used; `.unlazy/rule34-page-recon.mjs`, `recon.log`)
@@ -892,7 +919,7 @@ get a research item that does not change a `MAIN` decision (rule 1).
     pipeline defect.
 - **Next.** C-2 (`hz.delay`/`nowait`) as originally planned, then the scan-cost questions
   (`unresolved`/`tWalkMs`) — now read off a pipeline that no longer drops the file. See §PERF-1 of
-  `Docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one step at a time; a live run after each).
+  `archive/docs/FIX_PLAN_REVIEW_2026-09-12.md` for the re-entry rules (one step at a time; a live run after each).
 - **Cost so far.** 1 recon run + 4 paired/chain runs + 2 candidate-capture runs + 2 deterministic
   in-worker experiments + 1 page load test.
 
@@ -1007,7 +1034,7 @@ get a research item that does not change a `MAIN` decision (rule 1).
      → `downloaded=249`, ledger `completed=131 / failed=23 / skipped=8`. A run that delivers 191–249 files is not a
      scan written off. The `96 / 99 / 100 of 100 visible rows` figure came from the capped tail — the exact bias
      the note below warns about, applied to a conclusion anyway.
-  2. **The behaviour is documented as intentional, a week before I re-opened it.** `Docs/PLAN_96_FOLLOWUP_2026-09-13.md`
+  2. **The behaviour is documented as intentional, a week before I re-opened it.** `archive/docs/PLAN_96_FOLLOWUP_2026-09-13.md`
      **Ф17**: the `'browser'` pin is set only on transport deaths (`isTransport`), never on 403/404, so
      `referer skipped: host pinned to browser download` is a decision, not a defect. **Ф14** of the same file: the
      pinned-host browser download of the *real* URL came back `SERVER_FAILED` (429/5xx) while guessed `.jpg`
@@ -1155,7 +1182,7 @@ The arithmetic is why this was the biggest candidate — and the owner's 2026-10
 >
 > The historical analysis below is kept for the trail only.
 - **Already known — merge, do not duplicate.** This is `HANDOFF-3` / `S5`
-  (`Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md`). The doc's §7 carries the questions; §15 carries the
+  (`archive/docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md`). The doc's §7 carries the questions; §15 carries the
   2026-10-08 measurement and the revised decision below.
 - **Symptom.** On a session that ends oddly — the page stops answering, no initiator is known, the
   worker dies mid-run — the panel reports a tally as if it were final. The user cannot tell a clean
@@ -1632,13 +1659,13 @@ F-06); every other row below was re-read in the code and now states what the re-
 
 | Audit ID | What it is | Where the plan lives | What it still needs |
 |---|---|---|---|
-| `HOST-1` (+ `G1`–`G10`) | The breaker suppresses nothing: read in `findBestUrlWithValidation` only, invisible to the filter phase and the downloads — so an open breaker keeps hammering the host (8 candidates per item), and the picks go out unvalidated. **Today's MAIN-01 is this.** | `Docs/PLAN_96_FOLLOWUP_2026-09-13.md` — agreed, `⏳ не начато` | The `repro-host-quarantine` gate (not written yet), then the quarantine itself. **Re-checked 2026-10-23:** unchanged — one reader (`findBestUrlWithValidation`), no host label, no page-context probe |
-| `WALK-1` / `P6` | The walk is sequential; each element is closed by the `da.resolutionTimeout` cap (8 s); the status is announced only every 20 items — worst case ~90 minutes of silence. **Today's MAIN-02 is this.** | plan item `P6`; `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` for the estimates | Speed edits only from P1/P1.1 data, one step at a time, live run after each (§`PERF-1` re-entry rules). **Re-checked 2026-10-23:** the group arm still pays its unconditional 100 ms (`content.js` → `processNextInQueue`) |
+| `HOST-1` (+ `G1`–`G10`) | The breaker suppresses nothing: read in `findBestUrlWithValidation` only, invisible to the filter phase and the downloads — so an open breaker keeps hammering the host (8 candidates per item), and the picks go out unvalidated. **Today's MAIN-01 is this.** | `archive/docs/PLAN_96_FOLLOWUP_2026-09-13.md` — agreed, `⏳ не начато` | The `repro-host-quarantine` gate (not written yet), then the quarantine itself. **Re-checked 2026-10-23:** unchanged — one reader (`findBestUrlWithValidation`), no host label, no page-context probe |
+| `WALK-1` / `P6` | The walk is sequential; each element is closed by the `da.resolutionTimeout` cap (8 s); the status is announced only every 20 items — worst case ~90 minutes of silence. **Today's MAIN-02 is this.** | plan item `P6`; `archive/docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` for the estimates | Speed edits only from P1/P1.1 data, one step at a time, live run after each (§`PERF-1` re-entry rules). **Re-checked 2026-10-23:** the group arm still pays its unconditional 100 ms (`content.js` → `processNextInQueue`) |
 | `RETRY-2` | Row eviction still drops the oldest terminal rows, and `failed`/`canceled` share rank 1 with `completed` — a mass Retry cannot read its targets out of the table. **Verified**: `mdEvictOldestRows` ranks superseded `0` → finished `1` → live `2`, oldest first inside a rank; no separate register exists | plan item `P5` — **downstream of `R1`–`R11`** (not started), so nothing can consume it yet | Register + snapshot field. **Re-checked 2026-10-23:** still absent — no separate register exists, and nothing in the 2026-10-22 batch touches it |
 | `ROWS-2` | High 403 share on `wimg.rule34.xxx`, in the filter and in the browser download | needs a live measurement | A run; must count **items**, not rows (`SUPERSEDE-1` correction) |
 | `DUP-1-live` | `mdAdoptIfAlreadyDownloaded` has no run with a real worker restart behind it: the 2026-10-22 live checks exercised the adopt code, but never through a teardown | — | **Partly exercised, not closed (re-checked 2026-10-23).** The adopt path now has live evidence: F-18's live worker adopted a real history item and drained a restored task with zero fetches; F-10c re-queued a row with a dead download id on a live worker; F-19 proved the restore against the compiled worker source. **Still missing: a real teardown inside the window between Chrome writing the file and the snapshot recording it.** None of the 2026-10-22 runs entered that window, so do not count them as verified. |
 | `PIXIV-2` (= `D1`) | `case "download"` passes `sender.tab?.incognito` (a boolean) where a tab object is expected; `msg.tabId` is always lost in private windows | `PLAN_96_FOLLOWUP` item `D1` | **CLOSED 2026-10-22 by F-06** (`0be24d5`): `download(msg, sender.tab, sendResponse)` in both trees, executed lock in `md-unit-smoke`. The audit's live FF-private / Chrome-incognito row is still unrecorded |
-| `HANDOFF-3` (= `S2`–`S5`) | No ACK on fire-and-forget commands, no outgoing retry queue, the page goes silent on `resumeGroupAnalysis` once the walk ended, and `handleDownloadMass` refuses to revive a closed session — together: late findings are dropped | `Docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` — **decision requested; the recommendation is now revised (see that doc's §7 and §11)** | **Evidence 2026-10-08**: `not-delivered=0` in **all 15** saved logs that carry the line (2026-09-13 21:52 → 2026-09-21 14:01) — the demonstrated loss (172 of 180 at 21:09) has not recurred since `S1`/`S6`. So: do `S5` (the honest number) next, and `S2` + `S3`-lite **only if** a real log shows non-zero `not-delivered`; drop `S3′` (writes our URLs into the site's own storage for a case no log has shown) and `S3″` |
+| `HANDOFF-3` (= `S2`–`S5`) | No ACK on fire-and-forget commands, no outgoing retry queue, the page goes silent on `resumeGroupAnalysis` once the walk ended, and `handleDownloadMass` refuses to revive a closed session — together: late findings are dropped | `archive/docs/PLAN_HANDOFF_DURABILITY_2026-09-14.md` — **decision requested; the recommendation is now revised (see that doc's §7 and §11)** | **Evidence 2026-10-08**: `not-delivered=0` in **all 15** saved logs that carry the line (2026-09-13 21:52 → 2026-09-21 14:01) — the demonstrated loss (172 of 180 at 21:09) has not recurred since `S1`/`S6`. So: do `S5` (the honest number) next, and `S2` + `S3`-lite **only if** a real log shows non-zero `not-delivered`; drop `S3′` (writes our URLs into the site's own storage for a case no log has shown) and `S3″` |
 | `R1`–`R11` | Mass Retry with one button | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
 | `C1` | New session while downloads are still live | `PLAN_96_FOLLOWUP` | `⏳ не начато`, but the user-facing half is guarded (2026-09-14, verified in code): `mdStartDownloadAll` asks first — "Session still running: N downloaded, M item(s) left" with "Start over (cancel the rest)". `resetMassDownloadSession()` itself is unchanged: live `chrome.downloads` are neither cancelled nor stopped from writing into the new session. **Re-checked 2026-10-23:** F-07 fixed Clear All (the session owner is now called), which is the adjacent path, not this one |
 | `E1` | Diagnostics for "slow" elements | `PLAN_96_FOLLOWUP` | `⏳ не начато` |
@@ -1649,7 +1676,7 @@ F-06); every other row below was re-read in the code and now states what the re-
 | §6.3 | Fate of the duplicate `src-mv3/` tree (archive or delete) | `Audit` §6.3 | **CLOSED 2026-10-08: archived** to `archive/src-mv3/` (owner chose an in-repo move). No tool or script referenced `src-mv3/`; `AGENTS.md` + `Docs/MASS_DOWNLOAD_STRATEGY.md` updated |
 | `BT-09`, `BT-12` | Deliberately untouched / needs a live FF+pixiv run | `Audit` §9.6 | `BT-12` needs the run |
 | — | Live regression run after the `BT` batch: hover, e-hentai `/g/`, referer-retry > 10 MiB | `Audit` §9.6 | Never done. **2026-10-23:** the 2026-10-22 batch adds its own live matrix (see the batch section); the two have still not been run as one pass |
-| — | FF e-hentai Gallery Save (`REPORT_GALLERY_BATCH` §27); FF pixiv — zero log | `Audit` §9.5 | Live runs on Firefox |
+| — | FF e-hentai Gallery Save (`archive/docs/REPORT_GALLERY_BATCH_2026-09-06.md` §27); FF pixiv — zero log | `Audit` §9.5 | Live runs on Firefox |
 
 **The 2026-10-20 independent audit is tracked separately.** Its 16 findings and the follow-ons have their
 own status table above (*The 2026-10-22 remediation batch*), and `Audit/AUDIT_STATUS_CURRENT.md` has not yet

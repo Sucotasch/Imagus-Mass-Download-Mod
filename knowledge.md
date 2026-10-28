@@ -5,7 +5,7 @@
 A Chrome extension (Manifest V3): Imagus "hover-to-enlarge" plus a bulk media download feature. Based on [Imagus Reborn](https://github.com/hababr/Imagus-Reborn) (hababr) + original Imagus (Zren). Mass-download is a **hybrid overlay** on upstream Imagus-Reborn: SW logic split out into `mass-download/` modules; content patches stay **inline** in `content.js` because `PVI` is IIFE-local.
 
 - **Branch:** `mv3-version` (checked out; the release line) · current version `2026.10.28.1` (the number `2026.9.21.3` is TAKEN by the reverted walk-cost telemetry build — never reuse it, its logs exist locally)
-- **Released 2026-10-28: `v2026.10.28.1`.** Port of upstream v2026.9.14 / 9.27 / 10.22 / 10.25 (`Docs/UPSTREAM_927_PORT_PLAN_2026-10-22.md` §1–§9): full caption on hover (`#imagus-caption .side`), copy-caption button `T` + rebindable `keys.hz-copy`, `Ctrl+Space` play/pause and single-arrow album time-jump (`hz.singleArrowTimeJumpInAlbum`), `IMGS_src` instead of `PLAYER.src()` on video re-hover (#158), `textContent` in `injectCss`, SieveUI hotkeys fixed (`e.key === " "`, plus `Ctrl+Delete`), importer Clear button, `.imagus` root class, videojs `obj.merge`. P5 (grants/SPA model) declined, P6 (Turkish locale) postponed. Both trees byte-equal apart from the 3 canonical FF deltas.
+- **Released 2026-10-28: `v2026.10.28.1`.** Port of upstream v2026.9.14 / 9.27 / 10.22 / 10.25 (`archive/docs/UPSTREAM_927_PORT_PLAN_2026-10-22.md` §1–§9): full caption on hover (`#imagus-caption .side`), copy-caption button `T` + rebindable `keys.hz-copy`, `Ctrl+Space` play/pause and single-arrow album time-jump (`hz.singleArrowTimeJumpInAlbum`), `IMGS_src` instead of `PLAYER.src()` on video re-hover (#158), `textContent` in `injectCss`, SieveUI hotkeys fixed (`e.key === " "`, plus `Ctrl+Delete`), importer Clear button, `.imagus` root class, videojs `obj.merge`. P5 (grants/SPA model) declined, P6 (Turkish locale) postponed. Both trees byte-equal apart from the 3 canonical FF deltas.
 - **Released 2026-10-24: `v2026.10.24.1`.** Post-release audit fixes (session isolation in download queues, wall-clock failure delay pacing, media extensions with digits `.3gp`/`.3g2`/`.7z`, race guard in `mdAdoptIfAlreadyDownloaded`), restore-window multi-generation recovery, candidate chain reachability & own-candidate dedup, and transient interrupt retry. Annotated tag `v2026.10.24.1` on `mv3-version`.
 - **Released 2026-09-21: `v2026.9.21.4`.** The hardening work (`feature/post-96-hardening`, tip `e39eed8`) was fast-forwarded into `mv3-version` and tagged there as an annotated tag; the GitHub release "Imagus Reborn MD v2026.9.21.4" carries `Imagus-Reborn-MD-unpacked-Chrome-v2026.9.21.4.zip` and `…-Firefox-…zip` (same 76-entry layout as every earlier release: forward-slash names + explicit directory entries). **`master` is deliberately left behind** (owner's choice, 2026-09-21) — the release line is `mv3-version`, so do not merge into `master` without asking. Archives are built from the tree itself, nothing excluded, with `python .unlazy/make-release.py`; publishing uses the installed gh CLI (`C:\Program Files\GitHub CLI\gh.exe`) through `.unlazy/publish-release.mjs` — git's own credential helper IS that gh, which is why plain `git push` works here while `gh` is not on this shell's PATH. (bumped 2026-09-21 so a Save Log names the BUILD it came from: two live runs that day were analysed without any way to tell which tree answered, and one of them predated the fix it was testing)
 - **Active tree (default — edit this):** `src-mv3-overlay/` — load unpacked in Chrome (`chrome://extensions` → Developer mode; required for `chrome.userScripts`). No build step.
@@ -79,13 +79,13 @@ Details: `Docs/MASS_DOWNLOAD_ALGORITHM.md`, `Docs/MASS_DOWNLOAD_STRATEGY.md`.
   * **FIX-DUP-3 — the mark lived on the OBJECT.** The filter phase rebuilds the task whenever it re-routes an item (`triggerRefererDownload`'s pinned branch, `mdTryOffscreenDownload`, `advanceToNextCandidate`) and none of those clones copied `_restored`, so the guard read them as fresh-scan work. The log agrees exactly: every one of the 43 rows was `pick: breaker-open … host pinned to browser download`, and row `[007]` even lost `restored: yes`. Now `mdRestoredKeys` holds `fileKey()` of the task's URL **and of every candidate of its group**, and `mdIsRestoredTask(task)` (`_restored === true || key present`) is what both `mdHistoryGuard` and `serializeProgressEntry` ask — a clone, an advance or a re-filter cannot lose the mark.
   * **FIX-DUP-4 — the query window slid forward.** `mdApplySnapshot` re-keys `sessionStartTime` to the recovering worker and each snapshot then stored THAT value, so the bound advanced one generation per restart (gen 2 reported gen 1's start, …), leaving a 30-second window by gen 6; **28 of the 43 pairs** predated it. Now the snapshot carries `runOrigin` and `mdNextRunOrigin(current, snap)` combines it as an earliest value (never forward), with `sessionStart` only as the fallback for snapshots written before the field existed.
   Both are cleared by `resetMassDownloadSession()` (a new scan is a new run; a deliberate re-download still works). `mdHistoryGuard`, `mdIsRestoredTask` and `mdNextRunOrigin` are EXECUTED by `md-unit-smoke` (including a CLONE with no `_restored` being asked exactly once) and bitten by 8 new `mutation-check` entries.
-- **PERF-1 (walk-cost telemetry) was REVERTED on 2026-09-21 — do not re-apply that commit as-is.** With it (build 2026.9.21.3) the scan stopped starting at all: neither Ctrl+Q nor the popup button (gallery-window downloads still worked); after the revert to `a01ec9b` (2026.9.21.2) it starts again — owner-confirmed. The commit was measurement-only, and the ONLY structural change to the runtime was replacing `setTimeout(PVI.processNextInQueue, N)` with the wrapper `PVI._mdWalkDelay(N)` — the prime suspect, because a dead re-arm stops the walk after the first element with the error visible ONLY in the user-script world's console (invisible in a normal DevTools page console). Why static checks (`node --check`, `md-marker-check`, executed locks) all passed is still UNEXPLAINED — do not guess, and do not re-land it in one piece. Required for any retry: leave the scheduler call itself untouched (counters beside it, `delayMs` summed at the end), land one step at a time, and do a LIVE run (scan starts + files arrive) after each step. Full note: `Docs/FIX_PLAN_REVIEW_2026-09-12.md` §PERF-1.
+- **PERF-1 (walk-cost telemetry) was REVERTED on 2026-09-21 — do not re-apply that commit as-is.** With it (build 2026.9.21.3) the scan stopped starting at all: neither Ctrl+Q nor the popup button (gallery-window downloads still worked); after the revert to `a01ec9b` (2026.9.21.2) it starts again — owner-confirmed. The commit was measurement-only, and the ONLY structural change to the runtime was replacing `setTimeout(PVI.processNextInQueue, N)` with the wrapper `PVI._mdWalkDelay(N)` — the prime suspect, because a dead re-arm stops the walk after the first element with the error visible ONLY in the user-script world's console (invisible in a normal DevTools page console). Why static checks (`node --check`, `md-marker-check`, executed locks) all passed is still UNEXPLAINED — do not guess, and do not re-land it in one piece. Required for any retry: leave the scheduler call itself untouched (counters beside it, `delayMs` summed at the end), land one step at a time, and do a LIVE run (scan starts + files arrive) after each step. Full note: `archive/docs/FIX_PLAN_REVIEW_2026-09-12.md` §PERF-1.
 - **The two scan START defects are FIXED in `2026.9.21.4` (they existed in `a01ec9b` too, i.e. NOT from PERF-1; owner gave the go-ahead 2026-09-21).** Cause, both verified live: **(a) the popup/button path** threw `Uncaught ReferenceError: sendResponse is not defined` — `PVI.onMessage: function (d)` takes ONE parameter while its `downloadAll` branch (inside the mirrored `MASS-DOWNLOAD-MESSAGES` section) passed `sendResponse`/`d.sender` (introduced by `3221969`); the branch now forwards the listener's OWN 2nd/3rd arguments and returns `true` only while its answer is pending (`mdStartDownloadAll` returning `true`), so the response channel is held open exactly when it must be — the SW's `tabs.sendMessage(...).catch()` no longer logs its false "Failed to send downloadAll to content script". **(b) the hotkey** set `PVI.mdSessionConfirmBusy = true` before asking the worker (`getDownloadStatus`) and cleared it ONLY inside the answer callback: one lost answer locked the start out of that page for good (every later Ctrl+Q returned `already running` in silence). It is now cleared by a local `clearConfirm()` from the answer, from the send-failure `.catch`, and from an 8 s watchdog that also answers the popup with `status:'no-answer'`.
 - **RE-BASE HAZARD: the listener signature lives OUTSIDE the five marker sections.** `onMessage: function (d, sender, sendResponse)` is host-file code; only the `downloadAll` branch is mirrored in `content-block.js`. Nothing in `md-marker-check` (byte-sync of the sections) can notice if a re-base brings back `function (d)` — the button then dies silently again. `md-unit-smoke` holds wiring locks for BOTH ends of that handoff (and for the sender coming from the listener, not from `d.sender`), and 3 `mutation-check` entries prove they bite.
 - **A lock can CERTIFY a bug — always check both ends of a handoff.** The old `STATUS` lock asserted `PVI.mdStartDownloadAll(doc, sendResponse, d.sender);`: it read the sending side of the handoff and so passed for two months while the receiving side never declared those names. When a lock pins an argument list, pin the consumer's signature too.
 - **`walk=` in the Saved Log means the WALK only (fixed in `2026.9.21.4`).** `tWalkMs` is now stamped in `processNextInQueue` when the groups are handed to the worker, not in `handleGroupAnalysisComplete` after the analysis returned. The old stamping printed `walk=` = walk + the worker's group-analysis wait (in the 12:15 log that is why `walk=171.9 s` read as the walk while the analysis was inside it); `walk=` in a log of `2026.9.21.2` or older is NOT comparable with one from `2026.9.21.4`+. The analysis keeps its own worker-side phase stamp.
 - **Testing the extension itself: reload it, don't just relaunch.** An unpacked extension's `importScripts()` sub-scripts are served from the script cache until the extension is reloaded or its version changes, so a probe run after editing `mass-download/*.js` executes the OLD code (measured 2026-09-21: `ReferenceError: mdIsRestoredTask is not defined` in the real worker). Use `ext-dev-loop` with `--reload` (or bump the version) and read the log's `Version:` line first — a run cannot be told apart from the build it never loaded.
-- **The SINGLE save (hover toolbar / hotkey) on a Referer-gated host (SAVE-1, 2026-09-21).** Chrome refuses the extension-initiated download (no Referer) and the old fallback asked the PAGE to fetch the bytes — a cross-origin `i.pximg.net` response has no CORS headers, so that died with `Download failed: Failed to fetch` and saved nothing (plan §D2 of `Docs/PLAN_96_FOLLOWUP_2026-09-13.md`, live-verified broken). `mdSaveViaOffscreen(msg)` now runs from the `downloads.onChanged` interrupt: registry host + LIVE DNR rule + `chrome.offscreen` → the offscreen document fetches, its object URL goes to a fresh `download()`. Chrome-only delta (the FF `downloads` API carries the Referer), one attempt per item (`_offscreenDone`), no progress rows/counters/queues, `cleanup()` before the async attempt (one verdict per downloadId), revoke via `_objectUrlScope === 'offscreen'`. Every refusal/failure keeps the old page-fetch fallback. Live proof (Edge 153, scratch profile): `blob:chrome-extension://…` → `md-probe-p0.jpg`, complete, `image/jpeg`, 543078 B.
+- **The SINGLE save (hover toolbar / hotkey) on a Referer-gated host (SAVE-1, 2026-09-21).** Chrome refuses the extension-initiated download (no Referer) and the old fallback asked the PAGE to fetch the bytes — a cross-origin `i.pximg.net` response has no CORS headers, so that died with `Download failed: Failed to fetch` and saved nothing (plan §D2 of `archive/docs/PLAN_96_FOLLOWUP_2026-09-13.md`, live-verified broken). `mdSaveViaOffscreen(msg)` now runs from the `downloads.onChanged` interrupt: registry host + LIVE DNR rule + `chrome.offscreen` → the offscreen document fetches, its object URL goes to a fresh `download()`. Chrome-only delta (the FF `downloads` API carries the Referer), one attempt per item (`_offscreenDone`), no progress rows/counters/queues, `cleanup()` before the async attempt (one verdict per downloadId), revoke via `_objectUrlScope === 'offscreen'`. Every refusal/failure keeps the old page-fetch fallback. Live proof (Edge 153, scratch profile): `blob:chrome-extension://…` → `md-probe-p0.jpg`, complete, `image/jpeg`, 543078 B.
 - **Options page init is a race (2026-09-21).** The page is opened by our own "user scripts are OFF" notice at browser start, while `cfg` is still being fetched asynchronously (`cfg_get`); the zoom-key hint line read the global `cfg.keys` and threw `TypeError: can't access property "mOrig"` (found by the Firefox harness: 4/4 fresh profiles). Keep the guard `const fzKeys = cfg.keys || {};`. Related: the notice's text is per-platform via the existing `platform` const — Firefox has no Details page / "Allow user scripts" toggle, its grant lives on our own options page, and the branch is reachable there (measured).
 - **Message bus:** only `return true` for handlers that call `sendResponse` asynchronously (e.g. `get_file`, `getDownloadLog`); no blanket `return true`.
 - **`credentials: 'include'` in the page-context fetches is deliberate — do NOT "harden" it to `'omit'` on a same-origin test (2026-09-22).** PR #13 (automated OrbisAI CWE-200 report) proposed exactly that for the gallery stage-3 `loadViaPageFetch` and was CLOSED as not planned. Reasons, all code-verified: (1) the fetch runs in the PAGE context on a URL our own code writes (`m.dataset.mdSrc`, set from `img[data-idx]` in our generated grid at content.js:617–625, and from the resolver at :479/:501) — no trust boundary is crossed, the page could make the same request itself, so no demonstrable CWE-200; (2) the adaptive equivalent already exists as **P-1** (`4fa7764`): the SW probes `include`, then ONE `omit` probe, then pins the host to browser-context downloads (`_downloadWithReferer` reads `d.mode`); a static cross-origin rule duplicates and contradicts it; (3) hosts that allow credentialed cross-origin (`ACAO` = exact origin + `ACAC: true`) — the very hosts stage 3 exists for — would get 403 again (likely regression, untested); (4) `content/content.js` is NOT a canonical FF delta, so the FF-only patch fails `tools/md-ff-delta.mjs` (`Non-canonical files differ`) and leaves the Chrome tree plus both `content-block.js` mirrors untouched.
@@ -103,17 +103,21 @@ ReDoS in stop-word matching (escape keywords, try/catch); media-ext regex bugs (
 
 ## Docs
 
-- `AGENTS.md` — authoritative, most detailed; read first.
-- `Docs/PLAN_SESSION_STATUS_UI_2026-09-14.md` — the after-scan status panel: decisions, design, per-file changes, resource bounds
+Updated 2026-10-29 (the 2026-10-29 audit/cleanup archived completed snapshots; see the 2026-10-29 entry). Living set:
+
+- `Docs/DEV_GUIDE.md` — **the developer reference: read before changing code** (2026-10-29): concept, architecture, engine internals, invariants, principles, anti-patterns, gates, PR checklist, sieve/debug/hotkeys, Firefox
+- `Docs/PLAN.md` — the living ledger (MAIN/RESEARCH); a task not in it is not being worked on
+- `Docs/TRIAGE_CIVITAI_PERF2_HOVER.md` — ACTIVE work (rev. 2): Civitai rule 114 (A), PERF-2 body cancel (B, patch in root `files.zip`), random hover failure (C1 ready; C2 needs the owner; C3 with C1)
+- `Docs/LAB_ENVIRONMENT.md` — lab profiles, harness, run rules
 - `Docs/MASS_DOWNLOAD_STRATEGY.md` — overlay design, entry points, re-base procedure
-- `Docs/MASS_DOWNLOAD_ALGORITHM.md` — two-phase algorithm, heuristics, circuit breaker, candidate chains
-- `Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` — where a scan's seconds go, computed from the 12:15 log + the code: fixed inter-element waits are 43.6–46.0 s of the 171.9 s walk (25–27 %); `walk=` is an UPPER bound on the walk (on the groups path it includes the worker's group-analysis wait); the resolve path's deliberate delay (50 ms or `hz.delay`=300 ms) and the fully serial resolve (one in flight while the worker allows `maxConcurrentFilters`=5) are the bigger, still UNMEASURED lever. Every claim is labelled ФАКТ / РАСЧЁТ / ОЦЕНКА / НАБЛЮДЕНИЕ — read those labels before quoting a number.
-- `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` — post-audit dev guide (§14 = Imagus engine internals: hover→find→resolve→set)
+- `Docs/MASS_DOWNLOAD_ALGORITHM.md` — two-phase algorithm, heuristics, circuit breaker, candidate chains (actualized 2026-10-29: session persistence + remediation note)
 - `Docs/HASH_PREFIX_CONVENTION.md` — `#`-prefixed HD URL convention
 - `Docs/FIREFOX_OVERLAY.md` — Firefox deltas (only when working in the FF tree)
-- `Docs/UPSTREAM_725_INTEGRATION_PLAN.md`, `Docs/UPSTREAM_820_INTEGRATION_PLAN.md` — re-base checklists
-- `Docs/PROJECT_STRUCTURE.md`, `Docs/MV3_DEVELOPMENT.md`, `Docs/DEVELOPMENT_GUIDE.md`, `Docs/PROJECT_MV2.md`
-- `Audit/AUDIT_STATUS_CURRENT.md` — consolidated status of audit items (qualify BUG-xx IDs with audit date, e.g. `BUG-03@0720`).
+- `Docs/PROJECT_STRUCTURE.md`, `Docs/MV3_DEVELOPMENT.md`, `Docs/PROJECT_MV2.md` (`DEVELOPMENT_GUIDE.md` удалён 2026-10-29 — влит в `DEV_GUIDE.md` §9)
+- `Docs/README.md` — the index; also lists what moved where
+- `Audit/AUDIT_STATUS_CURRENT.md` — consolidated status of audit items (qualify BUG-xx IDs with audit date, e.g. `BUG-03@0720`); the 2026-10-29 reconciliation is §10.20
+- `archive/docs/` — completed snapshots (plans/ports 07-20…10-22), incl. `UPSTREAM_927_PORT_PLAN_2026-10-22.md`; **the old dev-guide's §14 (engine internals) and §15 (Firefox) remain the valid reference** — `archive/docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md`
+- `AGENTS.md` was deleted from the repo on 2026-10-24 (its content is absorbed by `knowledge.md` and `Docs/README.md`); do not look for it
 ## 2026-10-07 — userScripts grant (live-run blocker), tool fixes, and one product warning
 
 **The grant is per-profile and is the one step no tool can do.** Chrome/Edge >= 138 gate the
@@ -453,7 +457,7 @@ the thread got lost when we switched to fixing the tool. Confirmed: it was about
 access sits behind a Cloudflare interstitial that needs a human click. No saved URL/step file exists
 anywhere (checked knowledge.md, Docs/, .unlazy/, git messages) - the mechanism exists only as the
 skill's `ask` section, which is exactly what it was built for. This matters because the speed work
-(A-E, especially the C-2 `hz.delay` question in Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md) was measured
+(A-E, especially the C-2 `hz.delay` question in archive/docs/SCAN_DELAY_ANALYSIS_2026-09-21.md) was measured
 on a rule34 listing, and PERF-1's re-entry rules demand a LIVE run after every change.
 
 Shape that works for me (measured constraint, 2026-09-22): `--ask-keep` is USELESS to an agent - the
@@ -656,7 +660,7 @@ commit `e4a51ad`. Consequences were checked **before** the move: no gate and no 
 * `AGENTS.md` — the directory-map row, the "stable older tree" note, the Build table, plus one stale
   claim about a `README.md` legacy section (there is none) dropped.
 * `Docs/MASS_DOWNLOAD_STRATEGY.md` — 6 references.
-* `Docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` — 1 reference.
+* `archive/docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md` — 1 reference.
 
 The four standing gates were re-run after the move and the doc edits: `md-marker-check`, `md-ff-delta`,
 `md-unit-smoke`, `_chk_defaults` — **all EXIT 0**. They read only the two overlay trees, which were not
@@ -941,7 +945,7 @@ slow" does not hold as a rule here.)
 `elements` per run: 303 / 325 / 318 (round 1) and 314 / 334 / 464 / 436 (round 2); `unresolved` 211–370.
 A +50 % swing in element count between two loads of one URL makes absolute `tWalkMs` meaningless for a
 speed claim (and the run-to-run differences the user feels are largely this). The base doc
-(`Docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` §6-A/B/C) is still the right map: the measured pauses are
+(`archive/docs/SCAN_DELAY_ANALYSIS_2026-09-21.md` §6-A/B/C) is still the right map: the measured pauses are
 43.6–46.0 s of a 171.9 s walk in THAT log, and their per-element normalisation has not been done yet.
 
 **3. `MAIN-08` (unstable results) got its first real answer, and it is part page, part metric.**
@@ -1250,7 +1254,7 @@ reads them without any lab. What they say:
   validation because the breaker was open.
 * **THIRD reading of the same rows — and this one is also WITHDRAWN (2026-10-09).** I turned that row into “the
   breaker plus the pinned-host rule writes off the whole scan; that is the live rule34 defect” and wrote it in as a
-  finding. It is wrong, and the repo had already answered it: **`Docs/PLAN_96_FOLLOWUP_2026-09-13.md` Ф17** says the
+  finding. It is wrong, and the repo had already answered it: **`archive/docs/PLAN_96_FOLLOWUP_2026-09-13.md` Ф17** says the
   `'browser'` pin is set only on transport deaths, never on 403/404, so `referer skipped: host pinned to browser
   download` is a **decision, not a defect**; **Ф14** says the pinned browser download of the real URL came back
   `SERVER_FAILED` (429/5xx) — the host refusing URLs it had already served. And the numbers were never mine to
@@ -1347,3 +1351,74 @@ is now in the working tree:
   `up1025-content-lab` (caption, copy, video, marker, key guards) ALL PASS; the owner ran the fast
   in-browser pass and reported no errors. Not exercised live: real video pause/rate-hold timing, and
   grants-blocked sites (P5 declined, so `sieve: null` behaviour is unchanged).
+
+## 2026-10-29 — full audit + bughunt on the released tree; documentation actualized, junk archived
+
+Headline: **no new product bugs.** The tree at HEAD `453ace7` (`v2026.10.28.1`, both manifests
+`2026.10.28.1`, both release zips carry 75 files and the right version) passed every gate green:
+`md-unit-smoke`, `md-marker-check`, `md-ff-delta` (3 canonical FF files), `_chk_defaults`, and all
+13 `scripts/verify-*.mjs` — 17/17 exit 0.
+
+* **Bughunt scope.** The only code delta since the 2026-10-24 audit (§10.19) is the upstream-port
+  wave `bdbe310..453ace7` (46 files: content.js, options.js, SieveUI.js, defaults.json, service.js,
+  videojs_mod.js, 13 locale pairs, styles). The diff was read in full and matches the port plan
+  (§1–§9, §9.16); known traps hold: `copyUrls(e, caption)` reads `PVI.TRG.IMGS_caption` only where
+  the trigger is guaranteed; `hz_copy` has no default in `defaults.json` — that is upstream-faithful
+  and documented (port plan §9.3: empty default, bindable via the options field `keys_hz-copy`,
+  hyphen→underscore on save); the SieveUI `" "` fix skips only `#sieve_search`, so Ace keeps
+  Ctrl+Space/Ctrl+Delete inside the editor.
+* **Old audit claims re-checked against today's code** (the "audit cites closed bugs" sweep):
+  `PIXIV-2` (§10.18 said OPEN) is **fixed by F-06, 2026-10-22** — `case "download"` now passes the
+  full `sender.tab` object (`0be24d5`), not `sender.tab?.incognito`. `New.txt` (2026-07-25 note,
+  `(prefs[pref[0]] || []).map` crash at options.js:314) is **fixed by F-04** — the reader is now
+  `Array.isArray(...)`-guarded. The session snapshot (`MD_SNAPSHOT_KEY`/`mdBuildSnapshot`/`mdApplySnapshot`)
+  is in the code, so `MASS_DOWNLOAD_ALGORITHM.md`'s "queues are not persistent" was stale — the doc
+  got an actualization note instead of the stale claim.
+* **Still open, unchanged, verified in code today** (the working backlog, none of it new):
+  TRIAGE A/B/C1/C2/C3 (see `Docs/TRIAGE_CIVITAI_PERF2_HOVER.md`; B's patch waits in root `files.zip`);
+  `HOST-1` (G1–G10 not started), `HANDOFF-3` (S2–S5, owner decision), `BT-12` (needs a live FF run),
+  `E1`, `R-07` (by decision), `RETRY-2` (subordinate), the ≤1 s `DUP-1` residual window, and the
+  `SERVER_BAD_CONTENT`→"HTTP 404" label. `MAIN-04` stays blocked on `RES-02`.
+* **Documentation actualized.** `Docs/README.md` rewritten as the living index (entry points, active
+  work, references, gates, archive map). The 12 completed snapshots (FIX_PLAN_*, PLAN_96_FOLLOWUP,
+  PLAN_HANDOFF, PLAN_SESSION_STATUS_UI, SCAN_DELAY_ANALYSIS, UPSTREAM_725/820/96/927 port plans,
+  DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20) moved to `archive/docs/` with a README explaining the
+  criterion; **the old dev-guide's §14–§15 (engine internals, Firefox) remain the valid reference
+  from their archive path**. `Audit/` keeps only the living pair (`AUDIT_STATUS_CURRENT.md`,
+  `AUDIT_INDEPENDENT_POST_RELEASE_REVIEW_2026-10-24.md`); 16 historical audits moved to
+  `Audit/archive/`. In-body references in historical PLAN.md/knowledge.md blocks deliberately keep
+  old paths (history is not rewritten); the living reference sections were updated.
+* **Root cleanup.** Moved to `archive/root-2026-10-29/` (and ignored in `.gitignore`, so they cannot
+  resurface in `git status`): the Sep-13 GitHub/Reddit issue-research scratch (`gh_*.json`,
+  `w_issues.json`, `reddit_143.json`, `issues_*.txt`), `ErrorsOld.txt`/`Errors2.txt` (processed
+  2026-09-21), `New.txt` (verified fixed), `readiness-config.json`, `--grant-timeout`/`--sw-timeout`
+  (mis-parsed flag artifacts), `stash_diff.txt`, `queries.py`, `upstream_patch_plan_v2026.7.21.md`,
+  `_tmp_upstream/`, `upstream_v2026.7.21/`, the July sieve snapshot
+  `Imagus_sieve_2026.07.15_823.json` (the packaged `data/sieve.json` is the live copy of record),
+  release zips `v2026.9.21.4` and `v2026.10.24.1`, and the orphaned 23 MB `node_modules/`
+  (happy-dom, no package.json; no gate uses it). Kept at root: `files.zip` (PERF-2 patch, pending
+  Work B), `Errors.txt` (the owner's inbox), the current `v2026.10.28.1` zips, the MV2 build tooling
+  (upstream layout, used for re-base).
+* **`AGENTS.md` ghost fixed.** knowledge.md's Docs section said "AGENTS.md — read first", but the
+  file was deleted on 2026-10-24; the section now points at the living set instead.
+
+* **Dev guide verified on the same pass (follow-up).** `archive/docs/DEV_GUIDE_OVERLAY_RELIABILITY_2026-07-20.md`
+  was read against the code, not just re-pointed. Engine internals §14.1 confirmed against
+  `content.js`/`service.js` (`PVI.find/resolve/set`, `prepareCaption`, `IMGS_*` node state,
+  `cachedSieveRes`, `case "resolve"`). Three statements were stale and got dated inline corrections:
+  queue persistence ("not yet implemented" in §13/§14.7/§14.8 — implemented 2026-09-13, FIX-7/RESUME-1,
+  RESTORE-WINDOW), and the §14.1 sentence about `content/relay.js` (removed by F-01, 2026-10-22).
+  `REPORT_GALLERY_BATCH_2026-09-06.md` (deleted from the repo by `174f5e1` on 2026-09-21 while still
+  cited as evidence) was restored from git history into `archive/docs/`, and the references in
+  `Audit/AUDIT_STATUS_CURRENT.md` and `Docs/PLAN.md` were repointed. The guide's §15.4 open FF tasks
+  (e-hentai gallery-save §27, FF pixiv zero log) are still open and match the PLAN.md backlog.
+
+* **Living developer reference created.** `Docs/DEV_GUIDE.md` (2026-10-29) restores the dev-guide
+  role: a developer (human or agent) reads it before changing code and understands the project
+  without re-doing past research. It carries the still-valid sections of the archived guide
+  (concept, hard invariants, design principles, anti-patterns + the 2026-09/10 lessons, PR
+  checklist, file map, the full §14 engine internals verified against code, FF invariants/manual
+  check), the 17-gate table with what each gate protects, and the merged sieve/debug/hotkeys/Referer
+  content of the former `Docs/DEVELOPMENT_GUIDE.md` (file removed on 2026-10-29; only its content lives on in DEV_GUIDE §9). The archived guide's banner points here.
+* Nothing in `src-mv3-overlay/` or `src-mv3-overlay-firefox/` was touched. Doc/index/archive moves
+  only (`git mv` for tracked files); the next release is unaffected.

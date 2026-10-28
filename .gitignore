@@ -37,3 +37,7 @@ Imagus-Reborn-base/
 
 # ext-dev-loop scratch (browser profile + screenshots) — local-only
 .ext-dev-loop/
+
+# Archived junk (2026-10-29 cleanup): research scratch, old release zips, orphaned node_modules.
+# Everything inside is dead by decision — see knowledge.md 2026-10-29 and archive/root-2026-10-29.
+archive/root-2026-10-29/
