@@ -1378,7 +1378,12 @@ Headline: **no new product bugs.** The tree at HEAD `453ace7` (`v2026.10.28.1`, 
   TRIAGE A/B/C1/C2/C3 (see `Docs/TRIAGE_CIVITAI_PERF2_HOVER.md`; B's patch waits in root `files.zip`);
   `HOST-1` (G1–G10 not started), `HANDOFF-3` (S2–S5, owner decision), `BT-12` (needs a live FF run),
   `E1`, `R-07` (by decision), `RETRY-2` (subordinate), the ≤1 s `DUP-1` residual window, and the
-  `SERVER_BAD_CONTENT`→"HTTP 404" label. `MAIN-04` stays blocked on `RES-02`.
+  `SERVER_BAD_CONTENT`→"HTTP 404" label. `MAIN-04` stays blocked on `RES-02`. Evening addendum: every backlog item was then individually grepped against the
+  code (owner asked "are you sure"): Work B no body.cancel in validateSingleUrlContent/GET-fallback
+  (only the old readBodyCapped, 6f74ecf 08-17), C1 guard still commented (service.js:661/FF :714),
+  no `_` Civitai rules in the packaged sieve snapshot, no deferral around cacheSieve (C3), no E1
+  diagnostics, Chrome 0 mdAck vs FF 17 (HANDOFF-3). Evidence table: AUDIT_STATUS_CURRENT §10.20
+  addendum.
 * **Documentation actualized.** `Docs/README.md` rewritten as the living index (entry points, active
   work, references, gates, archive map). The 12 completed snapshots (FIX_PLAN_*, PLAN_96_FOLLOWUP,
   PLAN_HANDOFF, PLAN_SESSION_STATUS_UI, SCAN_DELAY_ANALYSIS, UPSTREAM_725/820/96/927 port plans,
