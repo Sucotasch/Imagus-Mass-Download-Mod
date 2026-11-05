@@ -1437,6 +1437,20 @@ the owner's decision after GRANTS-1 landed.
   API item lacks — the fallback builds `/original=true/undefined`). C2 (random hover) is next:
   instrument per §5.3 with the display path covered, one pass per site, decide per §5.4 — only
   the gated once-per-element retry is pre-approved.
+* **TRIAGE live stands (same day, ext-dev-loop probe):** Work A EXECUTES end-to-end on the logged-in
+  lab profile — the SW resource timeline recorded `api/v1/images?imageId=147348096&nsfw=true`
+  (exact `$1` substitution from the link regex) after a hover on a civitai.red feed card; the
+  console has NO `[rule 114]` XMLHttpRequest error and no `resolve fetch failed`; the hover marker
+  rides the card. Gotchas that cost iterations: civitai.com NSFW pages are an interstitial
+  ("Mature content now lives on civitai.red") — test .red; the model page's big preview is NOT an
+  `/images/` anchor (hover target = feed cards); synthetic hover needs `mouseover` on the element +
+  `mousemove` on window (mousemove alone never triggers find). The double `api/v1` entry for one
+  hover sequence is a watch item (C1 covers the answer side; the request side is benign).
+  Work B measured: delivered set identical 173/173 (names+bytes 56 670 850), failed 0/0,
+  skipped 9/9, timeouts 0/0, gen 1/1 — NO regression; timing unattributable (run-order page-cache
+  confound: pageTotal 93.4s -> 28.9s with the same 24.5/24.7s walk) and the deconfounding cold run
+  flaked on the scan-ab reload race (`serializeAllProgress is not defined` on the first poll) —
+  re-run pending, and PERF-2 claims no time anyway.
 
 ## 2026-10-29 — full audit + bughunt on the released tree; documentation actualized, junk archived
 
