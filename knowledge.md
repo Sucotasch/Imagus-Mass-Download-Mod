@@ -1452,6 +1452,19 @@ the owner's decision after GRANTS-1 landed.
   flaked on the scan-ab reload race (`serializeAllProgress is not defined` on the first poll) —
   re-run pending, and PERF-2 claims no time anyway.
 
+## 2026-11-05 — RELEASED: `v2026.11.05.1` (upstream 10.31 port + GRANTS-1/2 + TRIAGE C1/C3/B + #17 items)
+
+Owner verified Work A manually on .red (popup + model album). Release contents: the upstream
+2026.10.31 port (CSP-safe caption/gallery, SieveUI drag/search/delete, volume orientation, sieve
+updates delete dropped rules, Turkish locale), GRANTS-1/2 (host-anchored grant rules; upstream
+#164 reported with the fix), TRIAGE C1 (single `resolved` answer) and C3 (no sieve swap / reinit
+mid-scan), PERF-2 (unread validation bodies cancelled — memory/sockets; before/after scan identical
+173 files / 56 670 850 bytes / 0 failed), and the #17 progress UI (phase banner, ledger-driven
+tab counters with Details). Zips built from both trees at `2026.11.05.1`; 17/17 gates green at
+the bumped version. The `_CivitAI-*` rules stay owner-side (per §6 they never ship in
+`data/sieve.json`). Annotated tag `v2026.11.05.1` on `mv3-version`; GitHub Release with the two
+zips and notes.
+
 ## 2026-10-29 — full audit + bughunt on the released tree; documentation actualized, junk archived
 
 Headline: **no new product bugs.** The tree at HEAD `453ace7` (`v2026.10.28.1`, both manifests
