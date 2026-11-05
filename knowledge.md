@@ -1420,6 +1420,24 @@ improved SieveUI search); #17-D pixiv waits for the user's log; release bump is 
 (the number 2026.9.21.3 remains taken; suggest 2026.11.05.1). Upstream #164 comment: posted by
 the owner's decision after GRANTS-1 landed.
 
+* **TRIAGE executed (same day, `91590c4` + `ed9c50a`):** C1 — the resolve chain's null-body guard
+  armed in both trees (a media content-type resolve posted answer #1 and the next `.then` threw on
+  `body.slice(0,4096)`, so the catch posted a SECOND `resolved` for the same id and repainted the
+  popup with the red loader); the line-anchored lock was verified RED on the unfixed tree first.
+  C3 — `updateSieve` defers with 'Sieve update deferred: a scan is running' (the weekly deadline
+  survives; the hourly alarm retries via `res?.error`), and `deinitTabs` refuses to run mid-scan —
+  `reinit` -> `resetExtension()` restores `PVI.set`/`PVI.show` and STRIPS the mass-download
+  monkey-patch, the hard reason (§5.5 [R2]). Work B — PERF-2 applied verbatim from `files.zip` to
+  both trees: unread validation GET bodies are cancelled on every exit path; **zero time gain by
+  design** (memory/sockets fix, not a worker-death fix); the colorsuper before/after run (files,
+  failed, skipped, timeouts AND total bytes — the HTTP-cache-warm trade-off, §3.3 [R2]) is
+  REQUIRED before this ships. Work A — the two `_` Civitai rules (§2.2, SINGLE backslashes in the
+  editor; `res` must start with `:`) are owner-side; the upstream report must also mention that
+  the image/post branches are broken independently of CORS (`mk()` appends `i.name`, which the
+  API item lacks — the fallback builds `/original=true/undefined`). C2 (random hover) is next:
+  instrument per §5.3 with the display path covered, one pass per site, decide per §5.4 — only
+  the gated once-per-element retry is pre-approved.
+
 ## 2026-10-29 — full audit + bughunt on the released tree; documentation actualized, junk archived
 
 Headline: **no new product bugs.** The tree at HEAD `453ace7` (`v2026.10.28.1`, both manifests
