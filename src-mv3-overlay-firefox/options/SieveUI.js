@@ -386,7 +386,7 @@ var sieve_sec,
                     attrs: { class: "rule_line" },
                     nodes: [
                         { tag: "label", nodes: ["Note:"] },
-                        { tag: "textarea", attrs: { "data-name": "note", placeholder: "note", class: "" } },
+                        { tag: "textarea", attrs: { id: "note" + c, "data-name": "note", placeholder: "note", class: "" } },
                     ]
                 }
             ]);
@@ -527,34 +527,63 @@ var sieve_sec,
         move: function (e) {
             e.stopPropagation();
             SieveUI.lastXY = [e.clientX, e.clientY];
-            var div = e.target.parentNode,
-                i,
+            var div = e.target.closest("#sieve_container > div"),
                 list;
-            if (e.target.isContentEditable || e.target.nodeName !== "SPAN" || div.classList.contains("opened") || e.button !== 0) return;
+            if (e.target.isContentEditable || !e.target.matches("[data-action='rule']") ||
+                div.classList.contains("opened") || e.button !== 0
+            ) {
+                return;
+            }
+            if (div.classList.contains("selected")) {
+                div = sieve_container.querySelector(".selected");
+            }
+            const placeholder = document.createElement("div");
+            placeholder.className = "move-target";
             e.preventDefault();
+
             document.onmousemove = function (e) {
-                if (Math.abs(SieveUI.lastXY[0] - e.clientX) < 4 && Math.abs(SieveUI.lastXY[1] - e.clientY) < 4) return;
-                div.style.cssText = "left:" + (e.clientX + 15) + "px;" + "top:" + (e.clientY + 15) + "px";
+                if (Math.abs(SieveUI.lastXY[0] - e.clientX) < 4 &&
+                    Math.abs(SieveUI.lastXY[1] - e.clientY) < 4
+                ) {
+                    return;
+                }
+                div.style.cssText = `left: ${e.clientX + 15}px; top: ${e.clientY + 15}px`;
+                if (e.target === placeholder) return;
+                const target = e.target.closest("#sieve_container > div:not(.opened)") || div;
+                if (target) {
+                    sieve_container.insertBefore(
+                        placeholder,
+                        target.previousElementSibling === placeholder ? target.nextElementSibling : target
+                    );
+                }
                 if (div.classList.contains("move")) return;
+                sieve_container.classList.add("moving");
                 div.classList.add("move");
                 list = sieve_container.querySelectorAll((div.classList.contains("selected") ? ".selected, " : "") + ".move");
-                for (i = 0; i < list.length; ++i) if (div !== list[i]) list[i].classList.add("move_multi");
+                for (let i = 0; i < list.length; ++i) if (div !== list[i]) {
+                    list[i].classList.add("move_multi");
+                    list[i].classList.remove("opened");
+                }
             };
+
             document.onmouseup = function (e) {
-                if (div.classList.contains("move") && e.target.parentNode.rule) {
+                let target = e.target.closest("#sieve_container > div:not(.opened)");
+                if (div.classList.contains("move") && target) {
                     var dcfr = document.createDocumentFragment();
-                    for (i = 0; i < list.length; ++i) {
+                    for (let i = 0; i < list.length; ++i) {
                         sieve_container.removeChild(list[i]);
                         dcfr.appendChild(list[i]);
                     }
-                    sieve_container.insertBefore(dcfr, e.target.parentNode);
+                    sieve_container.insertBefore(dcfr, target.nextElementSibling);
                     $("save_button").classList.add("alert");
                 }
+                sieve_container.classList.remove("moving");
+                placeholder.remove();
                 div.classList.remove("move");
                 div.style.top = div.style.left = null;
                 list = sieve_container.querySelectorAll(".move_multi");
-                for (i = 0; i < list.length; ++i) list[i].classList.remove("move_multi");
-                sieve_container.onmouseover = document.onmouseup = document.onmousemove = null;
+                for (let i = 0; i < list.length; ++i) list[i].classList.remove("move_multi");
+                document.onmouseup = document.onmousemove = null;
             };
         },
         export: function (e, rules, copy) {
@@ -597,7 +626,14 @@ var sieve_sec,
         },
         remove: function (rules) {
             var list = rules || sieve_container.querySelectorAll("div.selected");
-            let names = [...list].map(d => d.querySelector('[data-action="rule"]').textContent).join(", ") || "All rules";
+            if (!list?.length) {
+                list = sieve_container.querySelectorAll(":scope > div:not(.hidden)");
+                if (list.length === sieve_container.children.length) {
+                    // no search and no selected rules - all will be removed
+                    list = [];
+                }
+            }
+            let names = [...list].map(d => d.querySelector('[data-action="rule"]').textContent).join(", ") || _("ALLRULES");
             if (!confirm(_("DELITEMS") + "\n\n" + names)) return;
 
             if (list?.length) {
@@ -668,10 +704,17 @@ var sieve_sec,
                 what = RegExp(str.trim() || ".", "i"),
                 list = sieve_container.children,
                 i = list.length;
+            const isOneSpaceAdded = str.endsWith(" ");
+            const isTwoSpaceAdded = str.endsWith("  ");
             while (i--) {
-                let name = list[i].querySelector(":scope > [data-action='rule']").textContent;
+                let name = list[i].querySelector(":scope > [data-action='rule']")?.textContent;
                 if (name) {
-                    list[i].classList[what.test(name) ? "remove" : "add"]("hidden");
+                    const rule = cfg.sieve[name] || {};
+                    const matched =
+                        what.test(name) ||
+                        isOneSpaceAdded && what.test(rule.note) ||
+                        isTwoSpaceAdded && what.test([rule.to, rule.url, rule.img, rule.link, rule.res].filter(Boolean).join("\n"));
+                    list[i].classList[matched ? "remove" : "add"]("hidden");
                 }
             }
             if (/^\d+$/.test(str)) {
