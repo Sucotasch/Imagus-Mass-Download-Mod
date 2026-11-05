@@ -4002,7 +4002,7 @@ return mdGrantMatches;`)();
         `GRANTS-1: ${tree} — a rule with a path matches that path`);
     assert.strictEqual(matcher({ op: '!', url: 'x.com/img' }, 'https://x.com/other'), false,
         `GRANTS-1: ${tree} — a rule with a path must not match other paths`);
-    assert.strictEqual(matcher({ op: '!!', url: 'x\.com/' }, 'https://x.com/'), true,
+    assert.strictEqual(matcher({ op: '!!', url: 'x\\.com/' }, 'https://x.com/'), true,
         `GRANTS-1: ${tree} — double-char ops stay user-authored regexes`);
     assert.strictEqual(matcher({ op: '!', url: '*' }, 'https://anything.example/'), true,
         `GRANTS-1: ${tree} — the '*' wildcard keeps matching everything`);
