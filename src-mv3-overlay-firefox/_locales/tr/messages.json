@@ -1,0 +1,689 @@
+{
+  "APP_DESCRIPTION": {
+    "message": "Küçük resimleri büyütün ve fare imlecini bağlantıların üzerine getirerek resimleri/videoları görüntüleyin."
+  },
+  "NAV_SIEVE": {
+    "message": "Süzgeç"
+  },
+  "NAV_GRANTS": {
+    "message": "İzinler"
+  },
+  "NAV_INFO": {
+    "message": "Bilgi"
+  },
+  "SHORTCUTS": {
+    "message": "Kısayollar"
+  },
+  "PH_CLICKFORSAMPLE": {
+    "message": "örnekler için tıklayın..."
+  },
+  "DISABLED": {
+    "message": "devre dışı"
+  },
+  "LOADING": {
+    "message": "Yükleniyor..."
+  },
+  "DETAILS": {
+    "message": "Ayrıntılar"
+  },
+  "AREYOUSURE": {
+    "message": "Emin misiniz?"
+  },
+  "DELITEMS": {
+    "message": "Bu kurallar kaldırılsın mı?"
+  },
+  "EMPTY": {
+    "message": "Boş..."
+  },
+  "NOMATCH": {
+    "message": "Eşleşme bulunamadı..."
+  },
+  "SEARCH": {
+    "message": "ara..."
+  },
+  "INVALIDFORMAT": {
+    "message": "Geçersiz biçim!"
+  },
+  "BUTTON_RESET": {
+    "message": "Tümünü sıfırla"
+  },
+  "BUTTON_SAVE": {
+    "message": "Kaydet"
+  },
+  "HZ_ENABLED": {
+    "message": "Etkin"
+  },
+  "HZ_DISABLED": {
+    "message": "Devre dışı"
+  },
+  "HZ_ENDIS_WHEN": {
+    "message": "basılı tutulduğunda"
+  },
+  "HZ_ENDIS_NONE": {
+    "message": "hiçbiri"
+  },
+  "HZ_ENDIS_TIP": {
+    "message": "<b>Hiçbirine</b> basılı tutulmadığında <b>Devre dışı</b> - her zaman etkindir.\n(<b>Tuş/düğme</b>) basılı tutulduğunda <b>Devre dışı</b> - yalnızca seçilen tuş/düğme basılıyken devre dışıdır, aksi hâlde etkindir.\n<b>Hiçbirine</b> basılı tutulmadığında <b>Etkin</b> - her zaman devre dışıdır.\n(<b>Tuş/düğme</b>) basılı tutulduğunda <b>Etkin</b> - yalnızca ilgili tuş/düğme basılıyken etkindir, aksi hâlde devre dışıdır."
+  },
+  "HZ_DELAY": {
+    "message": "Görüntüleme gecikmesi (ms)"
+  },
+  "HZ_ZOOMRESIZED": {
+    "message": "Yakınlaştırma için asgari boyut farkı"
+  },
+  "HZ_ZOOMRESIZED_TIP": {
+    "message": "Açılır pencerenin gösterilmesi için özgün resmin küçük resimden yüzde kaç daha büyük olması gerektiğini belirler."
+  },
+  "HZ_HIRES": {
+    "message": "Daha yüksek çözünürlüklü resimleri tercih et"
+  },
+  "SC_HIRES": {
+    "message": "yüksek çözünürlüklü resmi aç/kapat"
+  },
+  "HZ_HIRES_TIP": {
+    "message": "Birçok sunucu aynı resim için farklı boyutlar sağlar. Filtreler bu resimler için URL'ler oluşturabilir ve bunları yüksek (genellikle özgün resim) ve düşük (yaklaşık 800-1024 piksel orta boyutlu resimler) çözünürlük olarak işaretleyebilir.\nBu seçeneğin işareti kaldırılırsa varsayılan olarak düşük çözünürlük gösterilir; ancak Tab tuşuyla (veya tam yakınlaştırma modundayken başlıktaki boyutlara tıklanarak) çözünürlükler arasında dilediğiniz zaman geçiş yapılabilir.\nAçıklamada resim boyutlarını gösterme etkinse, boyutların rengi (açıklama biçimine bağlı olarak) düşük çözünürlükte camgöbeği veya kırmızı görünür; bu da (muhtemelen) daha büyük bir resim olduğunu belirtir."
+  },
+  "HZ_HIRESONFZ": {
+    "message": "Tam yakınlaştırmaya geçerken daha yüksek çözünürlüğü yükle"
+  },
+  "HZ_HIRESONFZ_TIP": {
+    "message": "Resim boyutlarının oranı (her zaman uzun kenarın kısa kenara bölümü) belirtilen değere eşit veya daha büyükse, tam yakınlaştırmaya geçerken resmin daha yüksek çözünürlüklü sürümünü yüklemeye çalışır."
+  },
+  "HZ_PLACEMENT": {
+    "message": "Açılır pencere konumu"
+  },
+  "HZ_FULLSPACE": {
+    "message": "Kullanılabilir tüm alanı kullan"
+  },
+  "HZ_SCALEUP_TIP": {
+    "message": "Bir kısayol tuşuyla da açılıp kapatılabilir."
+  },
+  "HZ_SCALEUP": {
+    "message": "Küçük resimleri pencereye sığacak şekilde büyüt"
+  },
+  "HZ_PLACEMENT_CURCOR": {
+    "message": "imleç açılır pencerenin köşesinde"
+  },
+  "HZ_PLACEMENT_CURSIDE": {
+    "message": "imleç açılır pencerenin kenarında"
+  },
+  "HZ_PLACEMENT_CENTER": {
+    "message": "ortada"
+  },
+  "HZ_PRELOAD": {
+    "message": "Resimleri önceden yükle"
+  },
+  "HZ_PRELOAD_NO": {
+    "message": "önceden yükleme yok"
+  },
+  "HZ_PRELOAD_MOUSEOVER": {
+    "message": "fareyle üzerine gelindiğinde"
+  },
+  "HZ_PRELOAD_PAGELOAD": {
+    "message": "sayfa yüklendiğinde"
+  },
+  "HZ_FULLZOOM": {
+    "message": "Tam yakınlaştırma"
+  },
+  "HZ_MARKONHOVER": {
+    "message": "Yakınlaştırılabilir ögeleri işaretle"
+  },
+  "HZ_MARKONHOVER_O_SOLID": {
+    "message": "düz dış çizgi"
+  },
+  "HZ_MARKONHOVER_O_DASHED": {
+    "message": "kesik çizgili dış çizgi"
+  },
+  "HZ_MARKONHOVER_O_DOTTED": {
+    "message": "noktalı dış çizgi"
+  },
+  "HZ_HOVER_CSS": {
+    "message": "Yakınlaştırılabilir ögelerin biçimi (CSS)"
+  },
+  "HZ_THUMBASBG": {
+    "message": "Küçük resmi açılır pencerenin arka planı olarak kullan"
+  },
+  "HZ_THUMBASBGMASK": {
+    "message": "Maske rengi ve opaklığı"
+  },
+  "HZ_MEDIA": {
+    "message": "Medya"
+  },
+  "HZ_CAPTION": {
+    "message": "Açıklama"
+  },
+  "HZ_CAP_POS": {
+    "message": "Açıklama konumu"
+  },
+  "HZ_CAP_TOP": {
+    "message": "üst"
+  },
+  "HZ_CAP_BOTTOM": {
+    "message": "alt"
+  },
+  "HZ_CAP_WRAP": {
+    "message": "Açıklamayı varsayılan olarak kaydır"
+  },
+  "HZ_CAP_OVER": {
+    "message": "Açıklamayı resmin üzerinde göster"
+  },
+  "HZ_CAP_NOSBAR": {
+    "message": "İpucu pencerelerini engelle (durum çubuğu gizliyken kullanışlıdır)"
+  },
+  "HZ_CAP_WH": {
+    "message": "Resim/video boyutlarını göster"
+  },
+  "HZ_APPEARANCE": {
+    "message": "Görünüm"
+  },
+  "HZ_FOLLOW": {
+    "message": "Gizlenirken imleci takip et"
+  },
+  "HZ_MOVE": {
+    "message": "Açılır pencereyi imleçle birlikte taşı"
+  },
+  "HZ_WAITHIDE": {
+    "message": "Başka bir yakınlaştırmaya başlamadan önce bekle"
+  },
+  "HZ_SC_TOGGLE": {
+    "message": "geçerli alan adı için etkinleştir/devre dışı bırak"
+  },
+  "HZ_SC_PRELOAD": {
+    "message": "resimleri elle önceden yükle"
+  },
+  "HZ_SC_FULLZOOM": {
+    "message": "tam yakınlaştırma modu (diğer hareket modu için <b>+ Shift</b>)"
+  },
+  "HZ_SC_FULLSPACE": {
+    "message": "kullanılabilir tüm alanı kullanmayı aç/kapat"
+  },
+  "HZ_SC_GALLERY": {
+    "message": "galeri modunu aç/kapat"
+  },
+  "HZ_SC_CAPTION": {
+    "message": "açıklamayı kaydır (veya <b>Shift</b> basılıyken gizle)"
+  },
+  "HZ_SC_OPEN": {
+    "message": "resmi yeni sekmede aç (arka plan sekmesi için <b>+ Shift</b>, açılır pencere için <b>+ Ctrl</b>)"
+  },
+  "HZ_SC_RESET": {
+    "message": "açılır pencereyi gizle ve yüklemeyi durdur"
+  },
+  "SC_ZOOMINOUT": {
+    "message": "Yakınlaştır / uzaklaştır"
+  },
+  "SC_PREFS": {
+    "message": "Tercihler"
+  },
+  "SC_MENU": {
+    "message": "Menüyü göster"
+  },
+  "SC_FLIPH": {
+    "message": "Yatay çevir"
+  },
+  "SC_FLIPV": {
+    "message": "Dikey çevir"
+  },
+  "SC_ROTL": {
+    "message": "Sola döndür"
+  },
+  "SC_ROTR": {
+    "message": "Sağa döndür"
+  },
+  "SC_MORIG": {
+    "message": "Doğal boyut"
+  },
+  "SC_MFIT": {
+    "message": "Otomatik sığdır"
+  },
+  "SC_MFITBOTH": {
+    "message": "Her iki yöne sığdır"
+  },
+  "SC_MFITW": {
+    "message": "Genişliğe sığdır"
+  },
+  "SC_MFITH": {
+    "message": "Yüksekliğe sığdır"
+  },
+  "SC_MZOOMLOCK": {
+    "message": "Yakınlaştırma kilidi"
+  },
+  "SC_TOGGSCALEUP": {
+    "message": "küçük resimleri pencereye sığacak şekilde büyütmeyi aç/kapat"
+  },
+  "SC_SENDTO": {
+    "message": "Resmi şuraya gönder..."
+  },
+  "SC_SCRLVIDWITHKEY": {
+    "message": "Videoyu sarmak için Ctrl basılı tutulmalıdır"
+  },
+  "OP_ZOOM": {
+    "message": "Bir resme Ctrl + Sağ tıklamak onu açılır pencerede açar"
+  },
+  "TLS_SENDIMGTO": {
+    "message": "Resmi şuraya gönder..."
+  },
+  "SIV_BUTT_NEW": {
+    "message": "Yeni kural"
+  },
+  "SIV_BUTT_DEL": {
+    "message": "Tümünü veya seçilenleri kaldır"
+  },
+  "SIV_BUTT_TOGGLE": {
+    "message": "Tümünü veya seçilenleri devre dışı bırak/etkinleştir"
+  },
+  "SIV_BUTT_IMP": {
+    "message": "İçe aktar"
+  },
+  "SIV_BUTT_EXP": {
+    "message": "Tümünü veya seçilenleri dışa aktar.\nCtrl: Yeni sekmeye aktar."
+  },
+  "SIV_BUTT_COPY": {
+    "message": "Tüm veya seçilen kuralları panoya kopyala."
+  },
+  "SIV_BUTT_UPD": {
+    "message": "Süzgeç'i Güncelle"
+  },
+  "SIV_REN_RULE": {
+    "message": "Kuralı yeniden adlandır"
+  },
+  "SIV_TOG_RULE": {
+    "message": "Kuralı devre dışı bırak/etkinleştir"
+  },
+  "SIV_DEL_RULE": {
+    "message": "Kuralı kaldır"
+  },
+  "SIV_EXP_RULE": {
+    "message": "Kuralı dışa aktar.\nCtrl: Yeni sekmeye aktar."
+  },
+  "SIV_COPY_RULE": {
+    "message": "Kuralı panoya kopyala."
+  },
+  "SIV_FORMAT_JS": {
+    "message": "JavaScript kodunu biçimlendir"
+  },
+  "SIV_CI": {
+    "message": "Büyük/küçük harfe duyarsız"
+  },
+  "SIV_DC": {
+    "message": "Bu parametreyle eşleşen sonuç URL'sinin kodunu çöz"
+  },
+  "SIV_LOOP": {
+    "message": "Sonuç URL'si ile Süzgeç döngüsünü yeniden çalıştır"
+  },
+  "SIV_USEIMG": {
+    "message": "\"img\" etiketine \"link\" yerine öncelik ver"
+  },
+  "SAVE_ALERT": {
+    "message": "Değişiklikleri kaydetmeli veya sayfayı yenilemelisiniz"
+  },
+  "SIV_UPDALERT": {
+    "message": "• Güncel kurallar eklenecek ve güncellenecektir.\n• \"_\" ile başlayan kurallar olduğu gibi korunacaktır.\n• Diğer kurallar kaldırılacaktır.\n\nDevam edilsin mi?"
+  },
+  "SIV_LOCALALERT": {
+    "message": "Varsayılan Süzgeç yüklensin mi?"
+  },
+  "SIV_ERR_EMPTYNAME": {
+    "message": "Kural adı boş olamaz!"
+  },
+  "SIV_ERR_DUPENAME": {
+    "message": "Her kuralın benzersiz bir adı olmalıdır!"
+  },
+  "SIV_DETAILS": {
+    "message": "Sıralamak için <b>Sol Fare</b> tuşuyla sürükleyin<br><b>Ctrl + Sol Fare</b>: seç (<b>Shift</b> ile çoklu seçim)<br><b>Esc</b>: seçimi iptal et<br><b>Sağ Fare</b>: yeniden adlandır (<b>Esc</b>/<b>Enter</b> çıkar)<br><b>Del</b>, <b>Ctrl + Sağ Fare</b>: sil<br><b>Ctrl + Boşluk</b>, <b>Shift + Sağ Fare</b>: devre dışı bırak/etkinleştir<br><b>Ctrl + I</b>, <b>Ins</b>: içe aktar<br><b>Ctrl + E</b>, <b>Alt + Sağ Fare</b>: dışa aktar<br><b>Ctrl + S</b>: kaydet"
+  },
+  "GRNT_RULEPERLINE": {
+    "message": "Her satıra bir kural. Daha fazla bilgi için yukarıdaki Ayrıntılar düğmesine tıklayın."
+  },
+  "PREF_IMPORT": {
+    "message": "Ayarları içe aktar"
+  },
+  "PREF_EXPORT": {
+    "message": "Ayarları dışa aktar"
+  },
+  "HZ_PRELOAD_MINIMAL": {
+    "message": "asgari"
+  },
+  "HZ_PRELOAD_TIP": {
+    "message": "<b>önceden yükleme yok</b> - aynı anda yalnızca tek bir resim yüklenebilir\n<b>asgari</b> - aynı anda birden fazla resim yüklenebilir; bir resim yüklenmeye başladıysa fare imleci hedeften ayrılsa bile yükleme tamamlanır\n<b>fareyle üzerine gelindiğinde</b> - resim imleç üzerine gelir gelmez yüklenmeye başlar\n<b>sayfa yüklendiğinde</b> - sayfa açıldıktan sonra tüm resimler yüklenmeye başlar"
+  },
+  "HZ_CAP_TEXT": {
+    "message": "Açıklama metnini göster"
+  },
+  "HZ_FZTOOLBAR": {
+    "message": "Araç çubuğunu göster"
+  },
+  "HZ_TOOLBAR_BTNS_TIP": {
+    "message": "Kullanılabilir düğmeler:\n<b>X</b> - araç çubuğunu gizle\n<b>S</b> - kaydet (indir)\n<b>O</b> - yeni sekmede/pencerede aç\n<b>C</b> - URL'yi (veya albümü) kopyala\n<b>T</b> - başlık metnini kopyala\n<b>G</b> - galeri modu\n<b>I</b> - git / ara\n<b>R</b> - döndür\n<b>P</b> - tercihleri aç\n\nVarsayılan: XSOCTGIRP"
+  },
+  "HZ_FZTOOLBAR_BTNS": {
+    "message": "Araç çubuğu düğmeleri"
+  },
+  "TOOLBAR_IMG": {
+    "message": "resmin üzerine gelindiğinde"
+  },
+  "TOOLBAR_CORNER": {
+    "message": "sağ üst köşenin üzerine gelindiğinde"
+  },
+  "TOOLBAR_ALWAYS": {
+    "message": "her zaman"
+  },
+  "TOOLBAR_NEVER": {
+    "message": "asla"
+  },
+  "HIDE_TOOLBAR": {
+    "message": "Araç çubuğunu gizle"
+  },
+  "SAVE": {
+    "message": "Kaydet"
+  },
+  "OPEN_IN_NEW_TAB": {
+    "message": "Yeni sekmede aç\n+Ctrl/Fare orta tuşu: arka planda\n+Shift: açılır pencere"
+  },
+  "COPY_URL": {
+    "message": "URL'yi kopyala\nÇift tıklama: tüm albümü kopyala"
+  },
+  "GALLERY": {
+    "message": "Galeri"
+  },
+  "GOTO_SEARCH": {
+    "message": "Git / Ara"
+  },
+  "ROTATE_RIGHT": {
+    "message": "Saat yönünde döndür"
+  },
+  "PREFERENCES": {
+    "message": "Tercihler"
+  },
+  "HZ_FZDEFAULT": {
+    "message": "Her zaman Tam yakınlaştırma modunda görüntüle"
+  },
+  "HZ_FZMODE": {
+    "message": "Hareket modu"
+  },
+  "HZ_FZMODE_FOLLOW": {
+    "message": "fare imlecine göre hareket et"
+  },
+  "HZ_FZMODE_DRAG": {
+    "message": "sürükleyerek hareket et"
+  },
+  "HZ_FZMODE_TIP": {
+    "message": "İlk mod, ekrandan küçükse resmi her zaman ortalar; aksi hâlde imlecin ekranda bulunduğu noktaya orantılı olarak yakınlaştırır. Ayrıca fare imleci hareket ettikçe konumu da değişir.\nİkinci modda resmin konumu sabittir, ancak sürüklenerek kaydırılabilir."
+  },
+  "HZ_RESIZEMODE": {
+    "message": "Boyutlandırma modu"
+  },
+  "HZ_RESIZEMODE_MEMORY": {
+    "message": "Son kullanılanı hatırla"
+  },
+  "HZ_CAP_STYLE": {
+    "message": "Açıklama biçimi"
+  },
+  "HZ_CAP_STYLE_DARK": {
+    "message": "koyu"
+  },
+  "HZ_CAP_STYLE_LIGHT": {
+    "message": "açık"
+  },
+  "HZ_MARKONHOVER_TIP": {
+    "message": "Fare imleci bir bağlantının veya küçük resmin üzerine getirildiğinde ve yakınlaştırılacak bir öge olduğunda:\n• <span style=\"padding: 1px; translate: -1px -1px; outline: rgb(255, 120, 120) dashed 2px; box-shadow: white 0px 0px 0px 2px; border-radius: 2px;\">hedefin</span> dış çizgisi değiştirilebilir (gelişmiş modda özelleştirilebilir)\n• ve/veya <b class=\"cur_zmin\">imleç simgesi değiştirilebilir</b>"
+  },
+  "HZ_FULLSPACE_TIP": {
+    "message": "Bu seçenek, imleç ile sayfa kenarı arasında yeterli alan kalmadığında açılır pencerenin fare imlecinin altına doğru genişlemesine izin verir.\nKonumlandırma ortalanmış olarak ayarlanırsa (önceki seçenek) bu ayarın bir etkisi olmaz; çünkü pencere her zaman kullanılabilir tüm alanı kaplar."
+  },
+  "HZ_PILEWHEEL": {
+    "message": "Albümlerde fare tekerleğiyle gezin"
+  },
+  "HZ_PILEWHEEL_TIP": {
+    "message": "Kısayollara ek olarak albüm ögeleri arasında geçiş yapmak için fare tekerleği kullanılabilir.\nEtkinleştirildiğinde, açılır pencere görünür durumdayken web sayfasının kaydırılmasını engeller.\nTam yakınlaştırmada iki modda çalışır:\n• Resmin üzerindeyken yakınlaştırma/uzaklaştırma\n• Resmin dışındayken veya pencere kenarlarına yakınken (100px) resimler arasında geçiş yapma."
+  },
+  "HZ_FZONPRESS": {
+    "message": "Sağ fare düğmesiyle etkinleştirme"
+  },
+  "HZ_HISTORY": {
+    "message": "Üzerine gelinen bağlantıları tarayıcı geçmişine ekle"
+  },
+  "HZ_HISTORY_TIP": {
+    "message": "Açılır pencere görünür olduğunda üzerine gelinen bağlantıyı otomatik olarak ziyaret edilmiş olarak işaretler.\nAlbümlerde en az ilk iki ögenin görüntülenmiş olması gerekir.\nKısayol tuşu kullanılarak bağlantıları elle işaretlemek de mümkündür (aşağıya bakın). Bağlantı geçmişte zaten mevcutsa kaldırılır.\n<b>Shift + kısayol tuşu</b> bu seçeneği istendiğinde etkinleştirir/devre dışı bırakır."
+  },
+  "HZ_SC_HISTORY": {
+    "message": "geçmişe ekle veya geçmişten kaldır"
+  },
+  "IMPR_CLEAR_DATA": {
+    "message": "İçe aktarmadan önce verileri temizle"
+  },
+  "IMPR_FROM_FILE": {
+    "message": "Dosyadan"
+  },
+  "IMPR_FROM_TEXT": {
+    "message": "Metinden"
+  },
+  "IMPR_IMPORT": {
+    "message": "İçe aktar"
+  },
+  "IMPR_OVERWRITE": {
+    "message": "Mevcut verilerin üzerine yaz"
+  },
+  "IMPR_HINT": {
+    "message": "Esc: kapat | Ctrl + Enter: metinden içe aktar | Alt + R: verilerin üzerine yaz | Alt + C: verileri temizle"
+  },
+  "LANGUAGE": {
+    "message": "Dil"
+  },
+  "TRANSLATIONS": {
+    "message": "Çeviriler"
+  },
+  "TRANSLATIONS_TIP": {
+    "message": "Çevirmen olmak istiyorsanız bildiğiniz dilleri belirterek <a data-mail>bu adrese</a> bir e-posta gönderin."
+  },
+  "TRANSLATORS": {
+    "message": "Çevirmenler"
+  },
+  "HZ_ENDIS_RIGHT_BUTTON": {
+    "message": "sağ düğme"
+  },
+  "SIV_AUTOUPDATE": {
+    "message": "Süzgeç'i otomatik güncelle"
+  },
+  "ADVANCED": {
+    "message": "Gelişmiş"
+  },
+  "HZ_SCOFFININPUT": {
+    "message": "Metin düzenlerken kısayolları devre dışı bırak"
+  },
+  "HZ_CSS": {
+    "message": "Özel biçim (CSS)"
+  },
+  "HZ_CSS_OPTIONS": {
+    "message": "Seçenekler sayfası için özel biçim (CSS)"
+  },
+  "HZ_MARKONHOVER_CR": {
+    "message": "imleci değiştir"
+  },
+  "HZ_MARKONHOVER_STYLED": {
+    "message": "dış çizgi (özel biçim)"
+  },
+  "HZ_MARKONHOVER_BOTH": {
+    "message": "her ikisi"
+  },
+  "HZ_HIDEIDLECURSOR": {
+    "message": "Açılır pencere üzerindeki hareketsiz imleci gizle"
+  },
+  "HZ_PLACEMENT_NOCOVER": {
+    "message": "imleci örtme"
+  },
+  "HZ_MINPOPUPDISTANCE": {
+    "message": "Açılır pencere ile imleç arasındaki asgari mesafe"
+  },
+  "HZ_HIDEIDLECURSOR_TIP": {
+    "message": "<b>-1</b> - her zaman görünür\n<b>0-49</b> - her zaman gizli\n<b>&gt;=50</b> - belirtilen süreden sonra gizle (ms)"
+  },
+  "HZ_FZONPRESS_CLICK": {
+    "message": "tıklama"
+  },
+  "HZ_FZONPRESS_LONG": {
+    "message": "uzun basma"
+  },
+  "HZ_SC_SAVE": {
+    "message": "Açılır pencere içeriğini kaydet"
+  },
+  "HZ_SC_COPY": {
+    "message": "URL'yi kopyala (başlık metnini kopyalamak için iki kez basın)"
+  },
+  "SIV_CACHERES": {
+    "message": "Çözümlenen içeriği önbelleğe al"
+  },
+  "HZ_PLACEMENT_CURCENTER": {
+    "message": "imleç açılır pencerenin ortasında"
+  },
+  "HZ_PILECYCLE": {
+    "message": "Albümlerde döngüsel kaydırma"
+  },
+  "APP_INSTALLED": {
+    "message": "Uzantı yüklendi!"
+  },
+  "APP_UPDATED": {
+    "message": "Uzantı yeni bir sürüme güncellendi!"
+  },
+  "GRNT_HELP": {
+    "message": "Temel sözdizim: <b>işleç:URL</b>\nİşleçler: <b>!</b> (engelle), <b>~</b> (izin ver).\nBir satırı devre dışı bırakmak için başına <b>;</b> (noktalı virgül) koyun.\nİşleci çift yazarak URL içinde düzenli ifade (RegEx) kullanın.\n* (yıldız) tüm URL'ler anlamına gelir.\n\nYalnızca Imgur'da izin ver\n<code>!:*\n~:https://imgur.com/</code>\n<br>\nBirkaç siteyi engelle\n<code>!:flickr.com/\n!:youtube.com/\n!!:^https?://www\\.ebay\\.\n!!:^ftp://</code>\n\nReddit'te yalnızca /r/pics ve /r/funny alt başlıklarına izin ver\n<code>!:https://www.reddit.com/\n~~:^https://www\\.reddit\\.com/r/(?:pics|funny)/</code>"
+  },
+  "GRNT_WEBSITE": {
+    "message": "Web sitesi kuralları:"
+  },
+  "GRNT_ELEMENT": {
+    "message": "Resim/Bağlantı (öge yoksayma) kuralları:"
+  },
+  "IGNORE_ELEMENT": {
+    "message": "Ögeyi yoksay..."
+  },
+  "CANNOT_FIND_URL": {
+    "message": "Bu öge için URL bulunamadı"
+  },
+  "ADD_TO_IGNORE_LIST": {
+    "message": "Bu öge yoksayılanlar listesine eklensin mi?"
+  },
+  "DOWNLOAD_FAILED": {
+    "message": "İndirme başarısız oldu"
+  },
+  "INVALID_URL": {
+    "message": "Geçersiz URL"
+  },
+  "APP_VERSIONINFO": {
+    "message": "Bu sürümün <a data-hl>öne çıkan yeniliklerine</a> göz atın ve/veya tam <a data-cl>değişiklik günlüğünü</a> inceleyin!"
+  },
+  "HZ_DELAYONIDLE": {
+    "message": "Fare hareketinde gecikmeyi sıfırla"
+  },
+  "HZ_PILEWHEEL_ON": {
+    "message": "etkin"
+  },
+  "HZ_PILEWHEEL_HORIZ_ONLY": {
+    "message": "yalnızca yatay kaydırmada"
+  },
+  "HZ_CAP_LINKTEXT": {
+    "message": "Bağlantı metnini açıklama olarak kabul et"
+  },
+  "HZ_AUTOPLAY": {
+    "message": "Otomatik oynat"
+  },
+  "HZ_MEDIAVOLUME": {
+    "message": "Varsayılan medya ses düzeyi (%)"
+  },
+  "HZ_MEDIAVOLORIENT": {
+    "message": "Ses kontrolü yönü"
+  },
+  "HZ_MEDIAVOLORIENT_VERTICAL": {
+    "message": "Dikey"
+  },
+  "HZ_MEDIAVOLORIENT_HORIZONTAL": {
+    "message": "Yatay"
+  },
+  "HZ_HIDECONTROLSDELAY": {
+    "message": "Denetimlerin gizlenme süresi"
+  },
+  "HZ_HIDECONTROLS_TIP": {
+    "message": "<b>-1</b> - her zaman gizli\n<b>0</b> - her zaman görünür\n<b>&gt;0</b> - belirtilen süreden sonra gizle (ms)\n\nDuraklatıldığında ve Boşluk tuşu basılıyken de görünür. Shift+Boşluk ile açılıp kapatılabilir."
+  },
+  "HZ_MEDIALOOP": {
+    "message": "Medya döngü davranışı"
+  },
+  "HZ_MEDIALOOP_DEFAULT": {
+    "message": "Varsayılan (yalnızca kısa medyalar)"
+  },
+  "HZ_MEDIALOOP_ALWAYS": {
+    "message": "Her zaman döngüye al"
+  },
+  "HZ_MEDIALOOP_NEVER": {
+    "message": "Asla döngüye alma"
+  },
+  "HZ_INVERTWHEEL": {
+    "message": "Fare tekerleği yönünü tersine çevir (ses düzeyi ve zaman çubuğu)"
+  },
+  "HZ_SMOOTHSCROLL": {
+    "message": "Yumuşak kaydırma desteği (izleme dörtgeni / hassas tekerlekli fare)"
+  },
+  "HZ_SCROLLDELAY": {
+    "message": "Kaydırma gecikmesi (ms)"
+  },
+  "ALLOW_USER_SCRIPTS": {
+    "message": "Devam etmek için <a href=\"#\">uzantı ayrıntılarından</a> Kullanıcı Komut Dosyalarına izin vermelisiniz. Ardından buraya geri dönün."
+  },
+  "ALLOW_DEV_MODE": {
+    "message": "Devam etmek için <a href=\"#\">Uzantılar sayfasında</a> Geliştirici Modu'nu etkinleştirmelisiniz. Ardından buraya geri dönün."
+  },
+  "APP_READY": {
+    "message": "Harika! \"Imagus\" artık kullanıma hazır."
+  },
+  "ALLOW_USER_SCRIPTS_FF": {
+    "message": "Devam etmek için <a href=\"#\">Kullanıcı Komut Dosyalarına izin vermelisiniz</a>."
+  },
+  "DEBUG_RULES": {
+    "message": "Kural hata ayıklamasını etkinleştir"
+  },
+  "OPTIONS": {
+    "message": "Seçenekler"
+  },
+  "HZ_GENERAL": {
+    "message": "Genel"
+  },
+  "RESET_CONFIRM": {
+    "message": "Tüm ayarlar ve Süzgeç kuralları varsayılana sıfırlansın mı?"
+  },
+  "HZ_ACTIVATION": {
+    "message": "Etkinleştirme"
+  },
+  "HZ_ACTIONS": {
+    "message": "Eylemler"
+  },
+  "GET_HELP": {
+    "message": "Yardım al"
+  },
+  "SIV_RULES_CNT": {
+    "message": "Toplam kural sayısı (etkin kural sayısı)"
+  },
+  "HZ_SC_FRAMESTEP": {
+    "message": "Bir kare geri/ileri"
+  },
+  "HZ_SC_CLEAR": {
+    "message": "bu sayfadaki odaklanılmış kısayol tuşunu temizlemek için"
+  },
+  "HZ_SAVEDIR": {
+    "message": "İndirilenler klasöründe kaydedilecek dizin"
+  },
+  "HZ_SAVEDIR_TIP": {
+    "message": "Tarayıcının İndirilenler klasöründeki alt dizin. Doğrudan İndirilenler klasörüne kaydetmek için boş bırakın.\nŞu yer tutucuları kullanabilirsiniz:\n• <b>{page_domain}</b> - kaydettiğiniz sayfanın alan adı\n• <b>{link_domain}</b> - üzerine geldiğiniz URL'nin alan adı\n• <b>{file_domain}</b> - indirdiğiniz URL'nin alan adı\n• <b>{y}</b> - geçerli yıl\n• <b>{m}</b> - geçerli ay (01-12)\n• <b>{d}</b> - geçerli gün (01-31)\n• <b>.</b> veya <b>/</b> - doğrudan İndirilenler'e kaydet, ancak diğer uzantıların üzerine yazmayı dene\n\nÖrnek: <b>Imagus/{page_domain}/{y}_{m}_{d}</b>"
+  },
+  "CLEAR": {
+    "message": "Temizle"
+  },
+  "COPY_CAPTION": {
+    "message": "Başlık metnini kopyala"
+  },
+  "SEARCH_TIP": {
+    "message": "Düzenli ifadeler kullanılabilir.\nNotlarda da arama yapmak için bir boşlukla bitirin.\nTüm alanlarda arama yapmak için iki boşlukla bitirin.\nKuralı dizine göre eşleştirmek için bir sayı girin."
+  },
+  "ALLRULES": {
+    "message": "Tüm kurallar"
+  }
+}
