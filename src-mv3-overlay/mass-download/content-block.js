@@ -1071,7 +1071,9 @@
                         // the panel under it after three seconds.
                         PVI.mdForceStatusTick();
                     } else {
-                        PVI._updateDownloadAllStatus('Scan canceled by user');
+                        PVI._updateDownloadAllStatus('Scan canceled by user', {
+                            warning: 'You can keep using this page.'
+                        });
                         setTimeout(PVI._stopKeepAwake, 3000);
                     }
                 } else if (PVI.mdSessionPolling) {
@@ -1231,7 +1233,7 @@
             const warning = doc.createElement('strong');
             warning.textContent = (opts && opts.warning)
                 ? String(opts.warning)
-                : 'Do not leave this page until scanning is complete!';
+                : 'For long scans (hundreds of images), switching to another tab may stop the download. Short scans finish on their own.';
             const line = doc.createElement('div');
             line.style.fontSize = '14px';
             line.textContent = String(progressText == null ? '' : progressText);
@@ -1708,7 +1710,10 @@
                     // covered? no rule match at all?). The summary counts
                     // every stage so an empty scan is analyzable from the
                     // progress tab alone.
-                    const finalMessage = `Scan complete. Found ${PVI.downloadAllFound} files.`;
+                    // The session poller replaces this within a second with
+                    // the live ledger, so no counts here on purpose (issue
+                    // #17: "Found N files" read as the final say).
+                    const finalMessage = 'Scan complete. Downloads continue.';
                     PVI._updateDownloadAllStatus(finalMessage);
                     Port.send({ cmd: 'updateStatus', status: `Finished. Found ${PVI.downloadAllFound} items. (scanned ${PVI.downloadAllTotal}, prefiltered ${PVI.downloadAllFiltered}, covered ${PVI.downloadAllCoveredCount}, unresolved ${PVI.downloadAllUnresolved})`, done: true, sendStats: Port.snapshot() });
                     if (PVI.downloadAllDiag) {
@@ -1749,9 +1754,24 @@
             const itemsScanned = PVI.downloadAllTotal - itemsLeft;
 
             if (itemsScanned % 20 === 0) {
-                const statusText = `Scanned ${itemsScanned}/${PVI.downloadAllTotal}... Found ${PVI.downloadAllFound} files.`;
-                PVI._updateDownloadAllStatus(statusText);
-                Port.send({ cmd: 'updateStatus', status: `Scanned ${itemsScanned}/${PVI.downloadAllTotal}...`, done: false });
+                const statusText = `Scanning ${itemsScanned}/${PVI.downloadAllTotal} elements…`;
+                Port.send({ cmd: 'updateStatus', status: `Scanning ${itemsScanned}/${PVI.downloadAllTotal}…`, done: false });
+                // Live outcomes next to the scan progress (issue #17): the SW
+                // already knows what the streaming downloads finished with, so
+                // one compact counters request per banner refresh answers it.
+                // The sequence token keeps a late answer from overwriting a
+                // newer banner line.
+                const seq = (PVI.mdScanBannerSeq = (PVI.mdScanBannerSeq || 0) + 1);
+                const pendingReq = Port.send({ cmd: 'getDownloadStatus', compact: true }, function (resp) {
+                    if (!resp || !resp.phase || seq !== PVI.mdScanBannerSeq) return;
+                    const parts = _mdTailCounterParts(resp.outcomes, resp.pending);
+                    const counters = _mdTailCounters(resp.outcomes, resp.pending);
+                    PVI._updateDownloadAllStatus(counters ? statusText + ' · ' + counters : statusText, {
+                        lineParts: [{ text: statusText }].concat(parts),
+                        warning: 'For long scans (hundreds of images), switching to another tab may stop the download. Short scans finish on their own.'
+                    });
+                });
+                if (pendingReq && typeof pendingReq.catch === 'function') pendingReq.catch(() => {});
             }
 
             const original_set = PVI.set;
