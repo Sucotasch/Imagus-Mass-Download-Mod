@@ -1830,6 +1830,12 @@
                 preload: "auto",
                 inactivityTimeout: cfg.hz.hideControlsDelay,
                 plugins: {},
+                // volume slider orientation, set by the "Volume control orientation" option
+                controlBar: {
+                    volumePanel: {
+                        inline: cfg.hz.mediaVolOrient === "horizontal"
+                    }
+                },
                 html5: {
                     vhs: {
                         // VideoJs will select an optimal quality for the given dimensions
@@ -4029,8 +4035,9 @@
                 )
             ) {
                 pdsp(e);
-                const wheelDown = cfg.hz.invertWheel ? e.deltaY < 0 : e.deltaY > 0;
+                let wheelDown = cfg.hz.invertWheel ? e.deltaY < 0 : e.deltaY > 0;
                 if (target.closest(".vjs-volume-panel")) {
+                    if (cfg.hz.mediaVolOrient === "vertical") wheelDown = !wheelDown;
                     PVI.key_action({ which: wheelDown ? 38 : 40, target: PVI.CNT });
                 } else {
                     PVI.key_action({ which: wheelDown ? 39 : 37, ctrlKey: true, target: PVI.CNT });
