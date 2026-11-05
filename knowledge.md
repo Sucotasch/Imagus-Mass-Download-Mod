@@ -1352,6 +1352,66 @@ is now in the working tree:
   in-browser pass and reported no errors. Not exercised live: real video pause/rate-hold timing, and
   grants-blocked sites (P5 declined, so `sieve: null` behaviour is unchanged).
 
+
+## 2026-11-05 — upstream v2026.10.31 ported + GRANTS-1/2 + issue #17 cosmetics; version NOT bumped yet
+
+Plan: `Docs/UPSTREAM_1031_PORT_PLAN_2026-11-05.md` (decisions taken as planned). All 17 gates green
+after every step. Commits, in order:
+
+* **GRANTS-1 (`247ba95`)** — single-char grant ops are host-anchored. `!:x.com/` matched any URL
+  containing `x.com/` as a substring, so `yandex.com/images` was disabled too (our instance of
+  upstream issue #164, AUDIT §10.21). The #164 path is the SW matcher (`mdGrantMatches` via
+  `grantsIsBlocked` → `sieve: null`); the content-side `isUrlIgnored` had the same defect — both
+  fixed in both trees: `host === h || host.endsWith('.' + h)` + path prefix, fail-open on
+  unparseable URLs, `*` and `!!` user regexes unchanged, degenerate `/path` rules keep legacy
+  substring. Lock: md-unit-smoke GRANTS-1 section (8 behavioral cases on the cut matcher).
+* **GRANTS-2 (same commit, minor)** — the content-side `!!` regex compilation in `isUrlIgnored`
+  had no try/catch: an invalid regex threw and killed the whole scan. Now the rule is skipped
+  (SW-side F-04 semantics).
+* **CSP fixes (`2a10282`)** — upstream `b35dc10`: `prepareCaption` strips tags textually and
+  decodes entities via DOMParser (no innerHTML round-trip on the detached helper); the gallery
+  grid clears via `textContent`. Engine regions outside the markers.
+* **SieveUI batch** — dragging rewritten around a move-target placeholder (upstream #162),
+  search in notes (one trailing space) and all rule fields (two), search-scoped deletion +
+  localized 'All rules' + no-accidental-delete-all guard, note textarea id, css for the sticky
+  search bar and the drag placeholder. Common files; trees stay byte-identical.
+* **Locales (`a64a3c2`)** — SIV_UPDALERT reworded (dropped repository rules are REMOVED now),
+  ALLRULES/SEARCH_TIP/HZ_MEDIAVOLORIENT×3 in all 13 locales from upstream's own translations;
+  new `_locales/tr` (P6 closes itself; our DA_*/SIV_REPO keys fall back to en). Known
+  pre-existing gap: SIV_REPO untranslated in 11 locales.
+* **Volume orientation (`bb21e07`)** — `hz.mediaVolOrient` (default horizontal): videojs
+  controlBar volumePanel.inline + wheel inversion in the vertical mode. Live stand pending.
+* **updateSieve (`cf91a18`)** — dropped repository rules are deleted on update, not
+  zombie-disabled; `_` rules and off-states preserved. Upstream's one-time migration hook NOT
+  ported (upstream-version-specific; would reset our users' statuses; our updateSieve has its
+  own signature: HTTPS-enforce, mirror, retries).
+* **Banner phases (`493db97`, #17-A/B)** — the scan-phase banner carries live download outcomes
+  (one compact getDownloadStatus per refresh, seq token against late answers); raw "Found N
+  files" is gone; the warning says what matters (long scans + tab switching); cancel gets its
+  own warning; "Scan complete. Found N files." → "Scan complete. Downloads continue." Edits in
+  the canonical content-block.js (MESSAGES + METHODS) marker-synced into both content.js.
+* **Progress tab counters (`4412c3b`, #17-C)** — primary row = the closing ledger (Downloaded /
+  Failed from the outcome ledger — items, not transitions; In progress; muted "Filtered out
+  (not errors)" outside the sum); phase line shows a denominator only when one exists
+  ("Scanning — N elements so far" → "Downloading — D of N"; `mdPendingSnapshot` gained
+  `downloadQueued` so filter-queue candidates never inflate N); raw counters moved into a
+  collapsed Details block (and the Saved Log). The tab polls compact every 2 s; pushes keep
+  owning the rows. The ROWS lock for the Downloaded tile was rewritten to the ledger contract
+  (F-17 precedent).
+
+**Process notes:** (1) the cancel-path banner call sits in the MESSAGES marker section, not
+METHODS — the first sync missed it and the DIAG mirror lock caught it; md-marker-check must be
+read in FULL, not by its last line. (2) `mdGrantHostRule`/`mdGrantMatches` are cut-function
+locked; `mdPendingSnapshot` locks are presence-regexes and tolerate the new field.
+
+**Not exercised live (owner stands):** SieveUI drag/search/delete; volume orientation both
+modes; caption on a strict-CSP page; Yandex Images with `!:x.com/` + x.com blocked; a long scan
+for the banner phases and the tab's D-of-N line; FF build of all of the above.
+**Still open:** TRIAGE Work A/B/C1/C2/C3 (A's local rules are now even easier to add through the
+improved SieveUI search); #17-D pixiv waits for the user's log; release bump is the owner's call
+(the number 2026.9.21.3 remains taken; suggest 2026.11.05.1). Upstream #164 comment: posted by
+the owner's decision after GRANTS-1 landed.
+
 ## 2026-10-29 — full audit + bughunt on the released tree; documentation actualized, junk archived
 
 Headline: **no new product bugs.** The tree at HEAD `453ace7` (`v2026.10.28.1`, both manifests
