@@ -2866,6 +2866,8 @@ async function processFilterQueue() {
                 if (!scanInProgress) continue;
                 if (task._session !== sessionId) continue;
                 if (!response.ok) {
+                    // PERF-2: an error page is never read — release its body.
+                    try { if (response.body) response.body.cancel().catch(() => {}); } catch (_) { /* best-effort */ }
                     task.httpStatus = response.status;
                     task.filterMethod = 'GET';
                     // Stage 5: 403/404 usually means the host wants cookies /
@@ -2879,6 +2881,8 @@ async function processFilterQueue() {
 
                 const contentType = response.headers.get('Content-Type') || '';
                 if (contentType.startsWith('text/html')) {
+                    // PERF-2: the HTML page is only identified, never read.
+                    try { if (response.body) response.body.cancel().catch(() => {}); } catch (_) { /* best-effort */ }
                     task.filterTimeMs = Date.now() - filterStart;
                     task.httpStatus = response.status;
                     task.filterMethod = 'GET';
@@ -4490,13 +4494,22 @@ async function validateSingleUrlContent(url, referer, timeout = 3000) {
             credentials: 'include',
             signal: controller.signal
         });
-        if (!response.ok) return { url: absUrl, isValid: false, reason: `HTTP ${response.status}` };
-        const contentType = response.headers.get('Content-Type') || '';
-        const contentLength = parseContentLength(response.headers) || 0;
-        if (contentType.startsWith('text/html')) return { url: absUrl, isValid: false, reason: 'HTML page' };
-        const isValidMedia = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/');
-        if (!isValidMedia && contentLength < 1024) return { url: absUrl, isValid: false, reason: 'too small' };
-        return { url: absUrl, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
+        // PERF-2 (2026-10-28): only the HEADERS are read below. This is a GET
+        // (HEAD is unreliable on the hosts that need validation), so without
+        // an explicit cancel the body of every candidate — up to 5 per group,
+        // originals and videos included — stays attached to a live connection
+        // until GC. Release it on every exit; the verdict never uses the body.
+        try {
+            if (!response.ok) return { url: absUrl, isValid: false, reason: `HTTP ${response.status}` };
+            const contentType = response.headers.get('Content-Type') || '';
+            const contentLength = parseContentLength(response.headers) || 0;
+            if (contentType.startsWith('text/html')) return { url: absUrl, isValid: false, reason: 'HTML page' };
+            const isValidMedia = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/');
+            if (!isValidMedia && contentLength < 1024) return { url: absUrl, isValid: false, reason: 'too small' };
+            return { url: absUrl, isValid: isValidMedia || contentLength > 1024, contentType, contentLength, reason: 'valid' };
+        } finally {
+            try { if (response.body) response.body.cancel().catch(() => {}); } catch (_) { /* best-effort */ }
+        }
     } catch (error) {
         return { url: absUrl, isValid: false, reason: error.name === 'AbortError' ? 'timeout' : 'network-error' };
     } finally {
