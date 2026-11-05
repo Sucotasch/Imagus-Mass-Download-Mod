@@ -1,5 +1,13 @@
 # TRIAGE 2026-10-28 — Civitai sieve error, PERF-2 body cancel, random hover failure
 
+> **Статус 2026-11-05 (после волны порта v2026.10.31):** **C1 закрыт** (`ed9c50a`, гвард arm'ирован
+> в обоих деревьях + line-anchored лок, verified red-first); **C3 закрыт** (`ed9c50a`: `updateSieve`
+> деферралит с ошибкой при `scanInProgress` — alarm-retry сохранён; `deinitTabs` отказывается
+> работать mid-scan — она снимает mass-download monkey-patch); **B применён** (`91590c4`, патч из
+> `files.zip` как есть; ⚠ colorsuper-замер §3.4 — ОБЯЗАТЕЛЕН до релиза: bytes/failed/skipped);
+> **A подготовлена** (правила §2.2/§2.3 — вносит владелец в свой живой сит, без скана); **C2 —
+> следующий шаг** (§5.3 инструментирование с покрытием display-пути, прогон после C1).
+
 Hand-off document. Baseline: branch `mv3-version`, HEAD `18f3e29`, version `2026.10.24.1`.
 All line numbers are from that commit; if a file has moved, find the code by the quoted text, not by number.
 
