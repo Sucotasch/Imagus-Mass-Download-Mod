@@ -1455,8 +1455,13 @@ return { mdDnrRequestFor: mdDnrRequestFor, mdRuleIdForHost: mdRuleIdForHost, hos
         // be deaf to the counters being removed.
         assert.ok(/This session: downloaded=/.test(cutFnBalanced(tab, 'mdListNoteText')),
             `ROWS: ${tree} — the note must print the live downloaded counter (not just name the log)`);
-        assert.ok(/statsDownloadedEl\.textContent = stats\.downloaded/.test(cutFnBalanced(tab, 'updateGlobalStats')),
-            `ROWS: ${tree} — the Downloaded tile must be fed by the worker's live counter (the cap cannot falsify it)`);
+        // 2026-11-05 (#17-C): the tile moved to the outcome ledger (items, not
+        // transitions — a retried item is counted once). The invariant the cap
+        // cannot falsify it is KEPT: mdPhaseTick reads the ledger counter, and
+        // updateGlobalStats no longer writes the tile.
+        assert.ok(/statsDownloadedEl\.textContent = Number\(out\.completed\) \|\| 0/.test(cutFnBalanced(tab, 'mdPhaseTick'))
+            && !/statsDownloadedEl\.textContent = stats\.downloaded/.test(cutFnBalanced(tab, 'updateGlobalStats')),
+            `ROWS: ${tree} — the Downloaded tile must be fed by the outcome ledger (the cap cannot falsify it)`);
         const tabHtml = readNorm(tree, 'options/download-progress.html');
         assert.ok(/id="listNote"/.test(tabHtml), `ROWS: ${tree} — the note element must exist in the page`);
         assert.ok(/id="stats-downloaded"/.test(tabHtml) && /Downloaded/.test(tabHtml),

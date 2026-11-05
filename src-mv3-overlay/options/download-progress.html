@@ -182,6 +182,30 @@
       font-size: 12px;
       color: #6c757d;
     }
+
+    /* 2026-11-05 (#17-C): the muted tile is outside the ledger sum on purpose */
+    .stat-item.stat-muted .stat-value,
+    .stat-item.stat-muted .stat-label {
+      color: #868e96;
+    }
+    #mdPhaseLine {
+      text-align: center;
+      font-size: 1.05em;
+      margin: 8px 0;
+      color: #212529;
+      font-weight: 600;
+      min-height: 1.2em;
+    }
+    #stats-details {
+      margin: 10px auto 0;
+      max-width: 720px;
+    }
+    #stats-details summary {
+      cursor: pointer;
+      color: #495057;
+      font-size: 0.95em;
+      text-align: center;
+    }
   </style>
 </head>
 
@@ -192,10 +216,36 @@
     </header>
     <p id="scanStatus" style="text-align: center; font-size: 1.1em; margin: 10px 0; color: #495057;"></p>
 
-    <div class="stats">
+    <!-- 2026-11-05 (#17-C): the primary row is the closing ledger — items,
+         not transitions (a retried item is counted once). "Filtered out" is
+         deliberately OUTSIDE the sum: prefilter rejects and size/type skips
+         are by design, not errors. Everything raw lives in Details and the
+         Saved Log. -->
+    <div class="stats" id="stats-primary">
+      <div class="stat-item">
+        <div class="stat-value" id="stats-downloaded">0</div>
+        <div class="stat-label">Downloaded</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="stats-active">0</div>
+        <div class="stat-label">In progress</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="stats-failed">0</div>
+        <div class="stat-label">Failed</div>
+      </div>
+      <div class="stat-item stat-muted">
+        <div class="stat-value" id="stats-filteredout">0</div>
+        <div class="stat-label">Filtered out (not errors)</div>
+      </div>
+    </div>
+    <p id="mdPhaseLine"></p>
+    <details id="stats-details">
+      <summary>Details — scan totals and row-window counters</summary>
+      <div class="stats">
       <div class="stat-item">
         <div class="stat-value" id="stats-found">0</div>
-        <div class="stat-label">Found</div>
+        <div class="stat-label">Found (elements)</div>
       </div>
       <div class="stat-item">
         <div class="stat-value" id="stats-prefiltered">0</div>
@@ -204,14 +254,6 @@
       <div class="stat-item">
         <div class="stat-value" id="stats-skipped">0</div>
         <div class="stat-label">Skipped</div>
-      </div>
-      <!-- 2026-09-13: the only number eviction cannot falsify. The grid below
-           counts the ROWS SHOWN; this one is the worker's live counter, so
-           "Completed in List 0" beside "Failed 100" stops reading as "nothing
-           was downloaded" (live Firefox log: 291 downloaded, 0 completed rows). -->
-      <div class="stat-item">
-        <div class="stat-value" id="stats-downloaded">0</div>
-        <div class="stat-label">Downloaded</div>
       </div>
       <div class="stat-item">
         <div class="stat-value" id="totalFiles">0</div>
@@ -223,13 +265,14 @@
       </div>
       <div class="stat-item">
         <div class="stat-value" id="failedFiles">0</div>
-        <div class="stat-label">Failed</div>
+        <div class="stat-label">Failed (rows)</div>
       </div>
       <div class="stat-item">
         <div class="stat-value" id="canceledFiles">0</div>
         <div class="stat-label">Canceled</div>
       </div>
-    </div>
+      </div>
+    </details>
     <!-- 2026-09-12: the grid counts the ROWS SHOWN, the list is a rolling
          window (da.maxProgressRecords), and the scan totals live in the Saved
          Log. Without this line "17 completed" next to seventy failures reads as

@@ -18,6 +18,11 @@
     const statsSkippedEl = document.getElementById('stats-skipped');
     // 2026-09-13: the worker's live downloaded counter (see updateGlobalStats).
     const statsDownloadedEl = document.getElementById('stats-downloaded');
+    // 2026-11-05 (#17-C): the primary row is counter-driven (see mdPhaseTick).
+    const statsActiveEl = document.getElementById('stats-active');
+    const statsFailedLedgerEl = document.getElementById('stats-failed');
+    const statsFilteredOutEl = document.getElementById('stats-filteredout');
+    const mdPhaseLineEl = document.getElementById('mdPhaseLine');
     const refreshBtn = document.getElementById('refreshBtn');
     const saveLogBtn = document.getElementById('saveLogBtn');
     const clearBtn = document.getElementById('clearBtn');
@@ -573,15 +578,62 @@
         if (stats.found !== undefined) statsFoundEl.textContent = stats.found;
         if (stats.prefiltered !== undefined && statsPrefilteredEl) statsPrefilteredEl.textContent = stats.prefiltered;
         if (stats.skipped !== undefined && statsSkippedEl) statsSkippedEl.textContent = stats.skipped;
-        // `downloaded` gets its own tile because it is the ONE counter the row
-        // cap cannot falsify: the rows are a rolling window, this is the live
-        // scan total (2026-09-13 Firefox: 291 downloaded, 0 completed rows).
-        if (stats.downloaded !== undefined && statsDownloadedEl) statsDownloadedEl.textContent = stats.downloaded;
+        // `downloaded` left this function (2026-11-05, #17-C): the primary
+        // tile is fed by the outcome ledger in mdPhaseTick — items, not
+        // transitions, so a retried item is never counted twice. The
+        // transition counter still rides lastStats for the Saved Log.
         // Merge (not replace): a partial push must not wipe known totals, and
         // the window note below prints them on every update.
         lastStats = Object.assign({}, lastStats, stats);
         updateListNote();
     }
+
+    // --- Live phase line + primary tiles (issue #17-C, 2026-11-05) ----------
+    // The push channel drives the row table; these tiles and the phase line
+    // are counter-driven, so they read the compact ledger endpoint every 2 s
+    // (~200 B) instead of growing the broadcast payload. The ledger counts
+    // items, not transitions: a retried item is never counted twice. The
+    // phase line shows only a denominator that is actually known: the DOM
+    // element count while scanning, the download-queue total once the walk
+    // has finished, and nothing during "none". The finished ledger itself
+    // stays on the sessionSummary line (push-driven), as before.
+    function mdPhaseTick() {
+        if (document.hidden) return;
+        chrome.runtime.sendMessage({ cmd: 'getDownloadStatus', compact: true }, function (resp) {
+            if (chrome.runtime.lastError || !resp || !resp.phase) return;
+            const st = resp.stats || {};
+            if (statsFilteredOutEl) statsFilteredOutEl.textContent =
+                (Number(st.prefiltered) || 0) + (Number(st.skipped) || 0);
+            const out = resp.outcomes || {};
+            const pd = resp.pending || {};
+            if (statsDownloadedEl) statsDownloadedEl.textContent = Number(out.completed) || 0;
+            if (statsFailedLedgerEl) statsFailedLedgerEl.textContent = Number(out.failed) || 0;
+            if (statsActiveEl) statsActiveEl.textContent =
+                (Number(pd.downloading) || 0) + (Number(pd.retries) || 0);
+            if (!mdPhaseLineEl) return;
+            if (resp.phase === 'scan') {
+                mdPhaseLineEl.textContent = 'Scanning — ' + (Number(st.found) || 0)
+                    + ' elements collected so far; downloads start as items are validated.';
+            } else if (resp.phase === 'tail') {
+                const n = (Number(out.completed) || 0) + (Number(out.failed) || 0)
+                    + (Number(out.canceled) || 0) + (Number(pd.downloading) || 0)
+                    + (Number(pd.retries) || 0) + (Number(pd.downloadQueued) || 0);
+                mdPhaseLineEl.textContent = 'Downloading — ' + (Number(out.completed) || 0)
+                    + ' of ' + n
+                    + (Number(out.failed) ? ' · failed ' + Number(out.failed) : '')
+                    + (Number(out.canceled) ? ' · canceled ' + Number(out.canceled) : '');
+            } else {
+                // 'done'/'canceled' — the sessionSummary line owns the closing
+                // ledger; 'none' — nothing to say.
+                mdPhaseLineEl.textContent = '';
+            }
+        });
+    }
+    setInterval(mdPhaseTick, 2000);
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) mdPhaseTick();
+    });
+    mdPhaseTick();
 
     // Update the entire display
     function updateDisplay() {

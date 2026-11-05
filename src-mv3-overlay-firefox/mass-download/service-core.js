@@ -44,7 +44,10 @@ function mdPendingSnapshot() {
         filtering: activeFilters,
         downloading: activeDownloads,
         queued: filterQueue.length + downloadQueue.length,
-        retries: activeRefererRetries,
+        // The download queue alone (#17-C): the progress tab's "D of N"
+        // denominator must not count filter-queue candidates that may still
+        // be rejected.
+        downloadQueued: downloadQueue.length,
         stalled: (filterQueue.length + downloadQueue.length) > 0
             && activeFilters === 0 && activeDownloads === 0 && activeRefererRetries === 0,
         // Seconds since the last row changed anything. Context for the tab; it is
