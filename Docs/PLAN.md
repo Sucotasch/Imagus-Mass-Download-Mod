@@ -35,6 +35,29 @@ Adding an item: give it a stable ID (`MAIN-xx` / `RES-xx`), a **symptom** (what 
 
 ---
 
+## Where the plan stands — 2026-11-05
+
+**Upstream v2026.10.31 studied; port plan written, nothing applied.** `Docs/UPSTREAM_1031_PORT_PLAN_2026-11-05.md`
+holds the decisions: take the CSP fixes, the SieveUI batch, volume orientation, the `updateSieve`
+merge-logic change (WITHOUT upstream's version-migration hook — our `updateSieve` has its own
+signature: HTTPS-enforce, mirror, retries), and the `tr` locale (P6 closes itself). Separate items
+agreed with the owner:
+
+1. **GRANTS-1 — fix AND report upstream.** Our `isUrlIgnored` matches single-bang `!:` grant rules
+   by substring, so `!:x.com/` disables `yandex.com/images` — the same defect as upstream issue
+   #164 (`Audit/AUDIT_STATUS_CURRENT.md` §10.21, fix spec in the port plan §6 with the comment
+   draft in its Appendix A).
+2. **Issue #17 (ours)** — 17-A banner phase text and 17-B warning rewording (both in the
+   `content-block.js` marker mirror), 17-C progress-tab counter simplification (owner already
+   agreed in the thread), 17-D pixiv: no code, waiting for the user's log.
+3. **PARKED — copy-image-to-clipboard (upstream #165).** Offscreen-CLIPBOARD path for Chrome is
+   ~150–250 lines × 2 trees; Firefox has no offscreen API and content-side canvas is CORS-tainted.
+   No demand in our issues. Sketch preserved here so it is not re-researched: SW fetch bytes →
+   offscreen (reason `CLIPBOARD`) → `createImageBitmap` → `OffscreenCanvas.convertToBlob('image/png')`
+   → `navigator.clipboard.write(ClipboardItem)`. Revisit only on explicit demand.
+
+---
+
 ## Where the plan stands — 2026-10-29
 
 **Verified against HEAD `453ace7` (release `v2026.10.28.1` in both trees), not against this file's
