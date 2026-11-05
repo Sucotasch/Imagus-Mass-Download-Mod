@@ -103,6 +103,14 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
     const { sieve: curSieve, sieveRepository: sieveRepoUrl } = await cfg.get(["sieveRepository", "sieve"]);
     local = local || !sieveRepoUrl;
 
+    // TRIAGE C3 (2026-11-05): never swap the sieve cache under a running scan
+    // - cachedSieve/cachedSieveRes are positional and a swap reindexes rule
+    // ids out from under the pages mid-walk (U-01 then fail-fasts every
+    // resolve to m: null). Returning an error keeps the weekly deadline in
+    // place, so the hourly alarm retries (autoUpdateSieve bails on res.error),
+    // and SieveUI.update shows the wording to a manual click.
+    if (scanInProgress) return { error: 'Sieve update deferred: a scan is running', deferred: true };
+
     // A remote repository is executable code. Refuse a plaintext transport
     // before the fetch: a policy rejection must not fall through to the mirror
     // or the bundled local sieve.
@@ -658,7 +666,12 @@ function handleMessage(message, sender, sendResponse) {
                 })
                 .then((body) => {
                     mdResolveSettled();
-                    // if (body === null) return;
+                    // TRIAGE C1 (2026-11-05): the media branch already posted
+                    // answer #1 and returned null here - falling through used
+                    // to throw on body.slice(0, 4096), and the catch posted a
+                    // SECOND 'resolved' for the same id, repainting the popup
+                    // with the red loader (TRIAGE_CIVITAI_PERF2_HOVER §4).
+                    if (body === null) return;
                     let base = body.slice(0, 4096);
                     const baseHrefMatch = /<base\s+href\s*=\s*("[^"]+"|'[^']+')/.exec(base);
                     base = baseHrefMatch
@@ -814,6 +827,12 @@ function handleMessage(message, sender, sendResponse) {
 }
 
 async function deinitTabs() {
+    // TRIAGE C3 (2026-11-05): 'reinit' -> resetExtension() restores
+    // PVI.set/PVI.show from their *_original copies, i.e. it strips the
+    // mass-download monkey-patch - the rest of a running scan would capture
+    // nothing. Deferred callers (sieve update alarm, ignore-list add) retry
+    // on their own; nothing here is worth breaking a live scan for.
+    if (scanInProgress) return;
     const tabs = await chrome.tabs.query({ url: "<all_urls>" });
     for (const tab of tabs) {
         chrome.tabs.sendMessage(tab.id, { cmd: "reinit" }).catch(() => {});

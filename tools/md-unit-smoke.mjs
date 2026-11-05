@@ -4018,5 +4018,17 @@ return mdGrantMatches;`)();
         `GRANTS-1: ${tree} — the old unconditional substring condition must be gone from isUrlIgnored`);
 }
 
+// --- TRIAGE C1 (2026-11-05): the resolve chain must not answer twice --------
+// A content-type media resolve posts answer #1, returns null, and the next
+// .then used to run body.slice(0, 4096) on it - the TypeError went to the
+// catch, which posted answer #2 for the SAME id (TRIAGE_CIVITAI_PERF2_HOVER 4).
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const svc = readNorm(tree, 'background/service.js');
+    const armed = /^[ 	]*if \(body === null\) return;[ 	]*$/m.test(svc);
+    const stillCommented = /^[ 	]*\/\/ ?if \(body === null\) return;/m.test(svc);
+    assert.ok(armed && !stillCommented,
+        `TRIAGE C1: ${tree} - the resolve chain's null-body guard must be armed (not commented)`);
+}
+
 console.log('md-unit-smoke: remediation contracts (F-04..F-13) hold in both trees');
 
