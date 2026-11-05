@@ -1404,9 +1404,17 @@ METHODS — the first sync missed it and the DIAG mirror lock caught it; md-mark
 read in FULL, not by its last line. (2) `mdGrantHostRule`/`mdGrantMatches` are cut-function
 locked; `mdPendingSnapshot` locks are presence-regexes and tolerate the new field.
 
-**Not exercised live (owner stands):** SieveUI drag/search/delete; volume orientation both
-modes; caption on a strict-CSP page; Yandex Images with `!:x.com/` + x.com blocked; a long scan
-for the banner phases and the tab's D-of-N line; FF build of all of the above.
+**Live-verified 2026-11-05 (CfT 137 headless, cft-md profile, probe.mjs --script + --code-proof;
+steps in `.unlazy/stands-2026-11-05.json`):** GRANTS-1 on the REAL compiled worker after a
+`--reload` (yandex=false, self/sub=true, notx=false, path rules, wildcard — the first launch ran
+the profile's cached OLD worker and the code-proof/behavior caught it: the SW script cache
+survives a fresh launch while the version string is unchanged, exactly the 2026-10-08(12) trap);
+`getDownloadStatus` compact carries phase + `pending.downloadQueued` + `outcomes`; the options
+page renders the volume-orientation select (2 options, default horizontal) and the sieve search
+tip; the progress tab renders the new primary tiles + phase line + Details and answers a compact
+status through its own page. **Still owner stands:** SieveUI drag/delete interactions (probe
+clicks), volume on a real video, caption on a strict-CSP page, Yandex/x.com with a real grant
+list, a long scan for the banner phases and D-of-N, and the FF build.
 **Still open:** TRIAGE Work A/B/C1/C2/C3 (A's local rules are now even easier to add through the
 improved SieveUI search); #17-D pixiv waits for the user's log; release bump is the owner's call
 (the number 2026.9.21.3 remains taken; suggest 2026.11.05.1). Upstream #164 comment: posted by
