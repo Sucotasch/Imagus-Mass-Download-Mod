@@ -247,14 +247,14 @@ async function updateSieve(local, retryCount = 0, useMirror = false, force = fal
                 }
             }
             for (let key in newSieve) {
-                merged[key] = newSieve[key];
+                merged[key] ||= newSieve[key];
             }
+            // copy disabled state for existing rules; remove all other rules
+            // (upstream 2026.10.31 c5a1f70: rules dropped from the repository
+            // are deleted instead of lingering disabled at the end)
             for (let key in curSieve) {
                 if (merged[key]) {
                     merged[key].off = curSieve[key].off;
-                } else {
-                    curSieve[key].off = 1;
-                    merged[key] = curSieve[key];
                 }
             }
             newSieve = merged;
