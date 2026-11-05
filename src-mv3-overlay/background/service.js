@@ -1333,6 +1333,18 @@ function mdCompileGrants(grants) {
     }
 }
 
+// GRANTS-1 (2026-11-05, upstream #164): a single-char op ("!:" / "+:") is
+// host-anchored — "x.com/" must match x.com and its subdomains, not
+// yandex.com (whose name ends in "x.com/"). Double-char ops stay
+// user-authored regexes, unanchored by design.
+function mdGrantHostRule(grant) {
+    if (grant._host !== undefined) return grant;
+    const slash = grant.url.indexOf("/");
+    grant._host = (slash === -1 ? grant.url : grant.url.slice(0, slash)).toLowerCase();
+    grant._path = slash === -1 ? "" : grant.url.slice(slash).toLowerCase();
+    return grant;
+}
+
 function mdGrantMatches(grant, url) {
     if (!grant || typeof grant.url !== "string" || typeof grant.op !== "string" || !grant.op) return false;
     if (grant.url === "*") return true;
@@ -1340,7 +1352,12 @@ function mdGrantMatches(grant, url) {
     if (grant.op.length === 2) {
         try { return new RegExp(grant.url, "i").test(url); } catch (e) { return false; }
     }
-    return url.indexOf(grant.url) > -1;
+    const g = mdGrantHostRule(grant);
+    if (!g._host) return url.indexOf(grant.url) > -1; // degenerate rule ("/path") — legacy behaviour
+    let host = "";
+    try { host = new URL(url).hostname.toLowerCase(); } catch (e) { return false; }
+    return (host === g._host || host.endsWith("." + g._host)) &&
+           (!g._path || url.toLowerCase().includes(g._path));
 }
 
 // check if Imagus is disabled on the given URL

@@ -3981,5 +3981,37 @@ await new Promise(resolve => setTimeout(resolve, 20));
 assert.ok(failWorld.state().error, 'F-12: two failures must surface snapshotError');
 assert.strictEqual(failWorld.state().busy, false, 'F-12: mdPersistBusy must be released after failure');
 
+// --- GRANTS-1 (2026-11-05, upstream #164): single-char grant ops are host-anchored.
+// '!:x.com/' must match x.com + subdomains, never yandex.com ("x.com/" is a
+// suffix of "yandex.com/"). Double-char ops stay user-authored regexes.
+for (const tree of ['src-mv3-overlay', 'src-mv3-overlay-firefox']) {
+    const sw = readNorm(tree, 'background/service.js');
+    const matcher = new Function(`
+${cutFnFrom(sw, 'mdGrantHostRule')}
+${cutFnFrom(sw, 'mdGrantMatches')}
+return mdGrantMatches;`)();
+    assert.strictEqual(matcher({ op: '!', url: 'x.com/' }, 'https://yandex.com/images/123'), false,
+        `GRANTS-1: ${tree} — '!:x.com/' must not match yandex.com (suffix-host)`);
+    assert.strictEqual(matcher({ op: '!', url: 'x.com/' }, 'https://x.com/'), true,
+        `GRANTS-1: ${tree} — '!:x.com/' must match x.com itself`);
+    assert.strictEqual(matcher({ op: '!', url: 'x.com/' }, 'https://sub.x.com/pic.jpg'), true,
+        `GRANTS-1: ${tree} — subdomains of the rule host must match`);
+    assert.strictEqual(matcher({ op: '!', url: 'x.com/' }, 'https://notx.com/'), false,
+        `GRANTS-1: ${tree} — a host merely ending in the rule text must not match`);
+    assert.strictEqual(matcher({ op: '!', url: 'x.com/img' }, 'https://x.com/img/7'), true,
+        `GRANTS-1: ${tree} — a rule with a path matches that path`);
+    assert.strictEqual(matcher({ op: '!', url: 'x.com/img' }, 'https://x.com/other'), false,
+        `GRANTS-1: ${tree} — a rule with a path must not match other paths`);
+    assert.strictEqual(matcher({ op: '!!', url: 'x\.com/' }, 'https://x.com/'), true,
+        `GRANTS-1: ${tree} — double-char ops stay user-authored regexes`);
+    assert.strictEqual(matcher({ op: '!', url: '*' }, 'https://anything.example/'), true,
+        `GRANTS-1: ${tree} — the '*' wildcard keeps matching everything`);
+    const grantsContent = readNorm(tree, 'content/content.js');
+    assert.ok(grantsContent.includes('GRANTS-1 (2026-11-05, upstream #164)'),
+        `GRANTS-1: ${tree} — isUrlIgnored must carry the host-anchor fix`);
+    assert.ok(!/^\s*if \(g\.op\[0\] === "!" && \(typeof g\.url\.test === "function" \? g\.url\.test\(url\) : url\.includes\(g\.url\)\)\) \{\s*$/m.test(grantsContent),
+        `GRANTS-1: ${tree} — the old unconditional substring condition must be gone from isUrlIgnored`);
+}
+
 console.log('md-unit-smoke: remediation contracts (F-04..F-13) hold in both trees');
 

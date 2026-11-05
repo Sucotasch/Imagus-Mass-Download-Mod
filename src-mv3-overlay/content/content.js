@@ -1142,9 +1142,28 @@
 
         for (const g of cfg.grantUrls) {
             if (g.op[1] && typeof g.url === "string") {
-                g.url = new RegExp(g.url, "i");
+                try { g.url = new RegExp(g.url, "i"); } catch (_) { continue; } // GRANTS-2: an invalid regex must be skipped, not thrown
             }
-            if (g.op[0] === "!" && (typeof g.url.test === "function" ? g.url.test(url) : url.includes(g.url))) {
+            if (g.op[0] !== "!") continue;
+            // GRANTS-1 (2026-11-05, upstream #164): a single-bang rule is
+            // host-anchored — "x.com/" must not match "yandex.com/images"
+            // ("x.com/" is a suffix of "yandex.com/"). Double-bang stays a
+            // user-authored regex, unanchored by design.
+            if (!g.op[1] && typeof g.url === "string" && g._host === undefined) {
+                const slash = g.url.indexOf("/");
+                g._host = (slash === -1 ? g.url : g.url.slice(0, slash)).toLowerCase();
+                g._path = slash === -1 ? "" : g.url.slice(slash).toLowerCase();
+            }
+            let hit = false;
+            if (g._host) {
+                let host = "";
+                try { host = new URL(url).hostname.toLowerCase(); } catch (_) { host = ""; }
+                hit = !!host && (host === g._host || host.endsWith("." + g._host)) &&
+                      (!g._path || url.toLowerCase().includes(g._path));
+            } else {
+                hit = typeof g.url.test === "function" ? g.url.test(url) : url.includes(g.url);
+            }
+            if (hit) {
                 console.log(`Imagus ignore element with url: ${url}`);
                 return true;
             }
